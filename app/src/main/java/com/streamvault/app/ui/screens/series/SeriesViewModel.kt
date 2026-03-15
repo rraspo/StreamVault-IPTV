@@ -64,6 +64,7 @@ class SeriesViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            try {
             providerRepository.getActiveProvider()
                 .filterNotNull()
                 .flatMapLatest { provider ->
@@ -118,10 +119,14 @@ class SeriesViewModel @Inject constructor(
                             categoryCounts = snapshot.categoryCounts,
                             libraryCount = snapshot.libraryCount,
                             filteredSeries = if (isReordering) it.filteredSeries else emptyList(),
-                            isLoading = false
+                            isLoading = false,
+                            errorMessage = null
                         )
                     }
                 }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false, errorMessage = e.message ?: "Failed to load series") }
+            }
         }
 
         viewModelScope.launch {
@@ -889,5 +894,6 @@ data class SeriesUiState(
     val groupToDelete: Category? = null,
     val isReorderMode: Boolean = false,
     val reorderCategory: Category? = null,
-    val filteredSeries: List<Series> = emptyList()
+    val filteredSeries: List<Series> = emptyList(),
+    val errorMessage: String? = null
 )

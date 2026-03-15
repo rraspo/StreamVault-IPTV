@@ -156,6 +156,13 @@ fun SeriesScreen(
                     )
                 }
             }
+        } else if (uiState.errorMessage != null) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                AppMessageState(
+                    title = stringResource(R.string.home_error_load_failed),
+                    subtitle = uiState.errorMessage ?: ""
+                )
+            }
         } else if (uiState.seriesByCategory.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AppMessageState(

@@ -64,6 +64,7 @@ class MoviesViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
+            try {
             providerRepository.getActiveProvider()
                 .filterNotNull()
                 .flatMapLatest { provider ->
@@ -118,10 +119,14 @@ class MoviesViewModel @Inject constructor(
                             categoryCounts = snapshot.categoryCounts,
                             libraryCount = snapshot.libraryCount,
                             filteredMovies = if (isReordering) it.filteredMovies else emptyList(),
-                            isLoading = false
+                            isLoading = false,
+                            errorMessage = null
                         )
                     }
                 }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isLoading = false, errorMessage = e.message ?: "Failed to load movies") }
+            }
         }
 
         viewModelScope.launch {
@@ -886,5 +891,6 @@ data class MoviesUiState(
     val groupToDelete: Category? = null,
     val isReorderMode: Boolean = false,
     val reorderCategory: Category? = null,
-    val filteredMovies: List<Movie> = emptyList()
+    val filteredMovies: List<Movie> = emptyList(),
+    val errorMessage: String? = null
 )
