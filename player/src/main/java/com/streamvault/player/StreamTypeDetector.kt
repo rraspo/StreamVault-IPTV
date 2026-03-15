@@ -20,18 +20,21 @@ object StreamTypeDetector {
             // DASH
             cleanUrl.endsWith(".mpd") -> StreamType.DASH
             url.contains("/dash/", ignoreCase = true) -> StreamType.DASH
+            url.contains(".mpd", ignoreCase = true) -> StreamType.DASH
 
             // MPEG-TS
             cleanUrl.endsWith(".ts") -> StreamType.MPEG_TS
             url.contains("/live/", ignoreCase = true) && !cleanUrl.endsWith(".mp4") -> StreamType.MPEG_TS
 
-            // Progressive (MP4, MKV, AVI)
+            // Progressive (MP4, MKV, AVI, etc.)
             cleanUrl.endsWith(".mp4") -> StreamType.PROGRESSIVE
             cleanUrl.endsWith(".mkv") -> StreamType.PROGRESSIVE
             cleanUrl.endsWith(".avi") -> StreamType.PROGRESSIVE
             cleanUrl.endsWith(".flv") -> StreamType.PROGRESSIVE
+            cleanUrl.endsWith(".webm") -> StreamType.PROGRESSIVE
+            cleanUrl.endsWith(".mov") -> StreamType.PROGRESSIVE
 
-            // Unknown — let ExoPlayer figure it out
+            // Unknown — let ExoPlayer figure it out via content sniffing
             else -> StreamType.UNKNOWN
         }
     }

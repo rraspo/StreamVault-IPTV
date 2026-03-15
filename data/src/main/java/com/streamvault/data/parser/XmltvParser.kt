@@ -30,7 +30,8 @@ class XmltvParser {
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US),
         SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US),
-        SimpleDateFormat("yyyyMMddHHmm", Locale.US)
+        SimpleDateFormat("yyyyMMddHHmm", Locale.US),
+        SimpleDateFormat("yyyyMMdd", Locale.US)
     ).onEach { it.timeZone = TimeZone.getTimeZone("UTC") }
 
     fun parse(inputStream: InputStream): List<Program> {

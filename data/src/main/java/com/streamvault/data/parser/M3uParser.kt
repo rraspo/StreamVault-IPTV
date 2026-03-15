@@ -276,6 +276,13 @@ class M3uParser {
         return -1
     }
 
+    private fun String.indexOfFirst(startIndex: Int, predicate: (Char) -> Boolean): Int {
+        for (i in startIndex until length) {
+            if (predicate(this[i])) return i
+        }
+        return -1
+    }
+
     private fun parseAttributes(content: String, startIndex: Int): Map<String, String> {
         val attributes = mutableMapOf<String, String>()
         if (startIndex < 0 || startIndex >= content.length) {
@@ -331,11 +338,27 @@ class M3uParser {
                 }
                 parsed
             } else {
+                // Unquoted value — consume until the next known attribute key or end
                 val valueStart = index
-                while (index < length && !content[index].isWhitespace()) {
-                    index++
+                var end = index
+                while (end < length) {
+                    if (content[end].isWhitespace()) {
+                        val nextTokenStart = content.indexOfFirst(end) { !it.isWhitespace() }
+                        if (nextTokenStart < 0) break
+                        val eqPos = content.indexOf('=', nextTokenStart)
+                        if (eqPos > nextTokenStart) {
+                            val candidateKey = content.substring(nextTokenStart, eqPos).trim().lowercase()
+                            if (candidateKey.isNotEmpty() && !candidateKey.any { it.isWhitespace() }) {
+                                break
+                            }
+                        }
+                        end++
+                    } else {
+                        end++
+                    }
                 }
-                content.substring(valueStart, index)
+                index = end
+                content.substring(valueStart, end).trim()
             }
 
             if (key.isNotBlank()) {

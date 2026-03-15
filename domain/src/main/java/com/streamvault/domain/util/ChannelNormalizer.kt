@@ -1,5 +1,6 @@
 package com.streamvault.domain.util
 
+import java.text.Normalizer
 import java.util.Locale
 
 object ChannelNormalizer {
@@ -37,16 +38,20 @@ object ChannelNormalizer {
         // 2. Remove isolated country prefixes like "US:", "UK -", "FR:"
         normalized = normalized.replace(Regex("^[a-z]{2,3}[:\\-]\\s*"), " ")
 
-        // 3. Remove all non-alphanumeric characters (keeps spaces for word boundary checking)
+        // 3. Strip accents for multilingual channel names
+        normalized = Normalizer.normalize(normalized, Normalizer.Form.NFD)
+            .replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+
+        // 4. Remove all non-alphanumeric characters (keeps spaces for word boundary checking)
         normalized = normalized.replace(specialCharactersRegex, " ")
 
-        // 4. Tokenize and remove quality tags
+        // 5. Tokenize and remove quality tags
         val words = normalized.split(extraSpacesRegex).filter { it.isNotBlank() }
         val filteredWords = words.filter { word ->
             !qualityTags.contains(word)
         }
 
-        // 5. Rejoin and strip all spaces for the final deterministic ID
+        // 6. Rejoin and strip all spaces for the final deterministic ID
         // Also prepend the providerId so we don't merge across different subscriptions 
         // unless explicitly desired (which is complex for playback tokens).
         val baseId = filteredWords.joinToString("").ifEmpty {
