@@ -1,4 +1,4 @@
-﻿package com.streamvault.app.ui.screens.dashboard
+package com.streamvault.app.ui.screens.dashboard
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -17,9 +17,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,7 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -40,6 +44,7 @@ import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.streamvault.app.R
+import com.streamvault.app.ui.components.ChannelLogoBadge
 import com.streamvault.app.navigation.Routes
 import com.streamvault.app.ui.components.CategoryRow
 import com.streamvault.app.ui.components.ChannelCard
@@ -81,7 +86,7 @@ fun DashboardScreen(
     currentRoute: String,
     viewModel: DashboardViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val provider = uiState.provider
 
     AppScreenScaffold(
@@ -102,20 +107,22 @@ fun DashboardScreen(
         }
         val orderedSections = rememberDashboardSections(uiState)
 
-        if (uiState.isLoading) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Primary)
-            }
-            return@AppScreenScaffold
-        }
-
         androidx.compose.foundation.lazy.LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 28.dp)
         ) {
+            if (uiState.isLoading && orderedSections.isEmpty()) {
+                item(key = "dashboard_loading") {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 28.dp, bottom = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Primary)
+                    }
+                }
+            }
             if (uiState.providerWarnings.isNotEmpty()) {
                 item(key = "provider_warnings") {
                     DashboardProviderWarningCard(
@@ -772,25 +779,17 @@ private fun FavoriteChannelLogoCard(
                 modifier = Modifier
                     .size(54.dp)
                     .clip(RoundedCornerShape(999.dp))
-                    .background(AppColors.SurfaceEmphasis),
-                contentAlignment = Alignment.Center
             ) {
-                if (!channel.logoUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = rememberCrossfadeImageModel(channel.logoUrl),
-                        contentDescription = channel.name,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(8.dp)
-                    )
-                } else {
-                    Text(
-                        text = channel.name.take(2).uppercase(),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = TextPrimary
-                    )
-                }
+                ChannelLogoBadge(
+                    channelName = channel.name,
+                    logoUrl = channel.logoUrl,
+                    shape = RoundedCornerShape(999.dp),
+                    backgroundColor = AppColors.SurfaceEmphasis,
+                    contentPadding = PaddingValues(8.dp),
+                    textStyle = MaterialTheme.typography.labelLarge,
+                    textColor = TextPrimary,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
             Text(

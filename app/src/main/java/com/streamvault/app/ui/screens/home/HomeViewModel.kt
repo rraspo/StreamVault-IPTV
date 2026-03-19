@@ -3,8 +3,10 @@ package com.streamvault.app.ui.screens.home
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.di.AuxiliaryPlayerEngine
+import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.model.LiveTvChannelMode
 import com.streamvault.data.preferences.PreferencesRepository
+import com.streamvault.data.sync.SyncManager
 import com.streamvault.domain.manager.ParentalControlManager
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
@@ -14,6 +16,7 @@ import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.StreamInfo
+import com.streamvault.domain.model.SyncState
 import com.streamvault.domain.model.VirtualCategoryIds
 import com.streamvault.domain.repository.CategoryRepository
 import com.streamvault.domain.repository.ChannelRepository
@@ -26,6 +29,7 @@ import com.streamvault.player.PlaybackState
 import com.streamvault.player.PlayerEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import com.streamvault.app.R
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
@@ -48,6 +52,8 @@ class HomeViewModel @Inject constructor(
     private val playbackHistoryRepository: PlaybackHistoryRepository,
     private val getCustomCategories: GetCustomCategories,
     private val parentalControlManager: ParentalControlManager,
+    private val syncManager: SyncManager,
+    private val tvInputChannelSyncManager: TvInputChannelSyncManager,
     @AuxiliaryPlayerEngine
     private val playerEngineProvider: InjectProvider<PlayerEngine>
 ) : ViewModel() {
@@ -73,8 +79,23 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             providerRepository.getActiveProvider()
                 .filterNotNull()
+                .distinctUntilChangedBy { it.id }
                 .collectLatest { provider ->
-                    _uiState.update { it.copy(provider = provider) }
+                    _uiState.update {
+                        it.copy(
+                            provider = provider,
+                            categories = emptyList(),
+                            recentChannels = emptyList(),
+                            lastVisitedCategory = null,
+                            selectedCategory = null,
+                            filteredChannels = emptyList(),
+                            hasChannels = false,
+                            isLoading = false,
+                            isCategoriesLoading = true,
+                            errorMessage = null
+                        )
+                    }
+                    _localChannels.value = emptyList()
                     loadCategoriesAndChannels(provider.id)
                     observeRecentChannels(provider.id)
                     preferencesRepository.setLastActiveProviderId(provider.id)
@@ -100,7 +121,13 @@ class HomeViewModel @Inject constructor(
                     }
                 }
 
-                _uiState.update { it.copy(filteredChannels = markedChannels, isLoading = false) }
+                _uiState.update { state ->
+                    if (state.isChannelReorderMode) {
+                        state
+                    } else {
+                        state.copy(filteredChannels = markedChannels)
+                    }
+                }
                 val previewChannelId = _uiState.value.previewChannelId
                 if (previewChannelId != null && markedChannels.none { it.id == previewChannelId }) {
                     clearPreview()
@@ -153,6 +180,27 @@ class HomeViewModel @Inject constructor(
                     }
                 }
         }
+
+        viewModelScope.launch {
+            _uiState.map { it.provider?.id }
+                .distinctUntilChanged()
+                .flatMapLatest { providerId ->
+                    providerId?.let { syncManager.syncStateForProvider(it) } ?: flowOf(SyncState.Idle)
+                }
+                .collectLatest { syncState ->
+                    val isSyncing = syncState is SyncState.Syncing
+                    _uiState.update { state ->
+                        state.copy(
+                            isSyncing = isSyncing,
+                            isLoading = when {
+                                state.hasChannels -> false
+                                isSyncing && state.selectedCategory != null -> true
+                                else -> state.isLoading && isSyncing
+                            }
+                        )
+                    }
+                }
+        }
     }
 
     private fun loadAllProviders() {
@@ -172,81 +220,95 @@ class HomeViewModel @Inject constructor(
     private fun loadCategoriesAndChannels(providerId: Long) {
         categoriesJob?.cancel()
         categoriesJob = viewModelScope.launch {
-            combine(
-                channelRepository.getCategories(providerId),
-                getCustomCategories(),
-                playbackHistoryRepository.getRecentlyWatchedByProvider(providerId, limit = 24),
-                preferencesRepository.defaultCategoryId,
-                preferencesRepository.getLastLiveCategoryId(providerId)
-            ) { providerCats, customCats, history, defaultId, lastVisitedCategoryId ->
-                val recentCategory = Category(
-                    id = VirtualCategoryIds.RECENT,
-                    name = "Recent",
-                    type = ContentType.LIVE,
-                    isVirtual = true,
-                    count = history.toRecentLiveContentIds().size
-                )
-
-                val orderedCategories = buildList {
-                    val favoritesCategory = customCats.find { it.id == VirtualCategoryIds.FAVORITES }
-                    if (favoritesCategory != null) {
-                        add(favoritesCategory)
-                    }
-                    add(recentCategory)
-                    addAll(
-                        customCats.filter { it.id != VirtualCategoryIds.FAVORITES }
+            try {
+                _uiState.update { it.copy(isCategoriesLoading = true, errorMessage = null) }
+                combine(
+                    channelRepository.getCategories(providerId),
+                    getCustomCategories(),
+                    preferencesRepository.defaultCategoryId,
+                    preferencesRepository.getLastLiveCategoryId(providerId)
+                ) { providerCats, customCats, defaultId, lastVisitedCategoryId ->
+                    val recentCategory = Category(
+                        id = VirtualCategoryIds.RECENT,
+                        name = "Recent",
+                        type = ContentType.LIVE,
+                        isVirtual = true,
+                        count = _uiState.value.recentChannels.size
                     )
-                    addAll(providerCats)
-                }
 
-                CategorySelectionContext(
-                    categories = orderedCategories,
-                    defaultCategoryId = defaultId,
-                    lastVisitedCategoryId = lastVisitedCategoryId
-                )
-            }.collect { selectionContext ->
-                val categories = selectionContext.categories
-                val defaultId = selectionContext.defaultCategoryId
-                val preferredCategoryId = _preferredInitialCategoryId.value
-                val lastVisitedCategory = selectionContext.lastVisitedCategoryId?.let { lastVisitedId ->
-                    categories.find { it.id == lastVisitedId && it.id != VirtualCategoryIds.RECENT }
-                }
-                _uiState.update { it.copy(categories = categories, lastVisitedCategory = lastVisitedCategory) }
-
-                val currentSelected = _uiState.value.selectedCategory
-                val preferredCategory = preferredCategoryId?.let { categoryId ->
-                    categories.find { it.id == categoryId }
-                }
-
-                if (preferredCategory != null && currentSelected?.id != preferredCategory.id) {
-                    _preferredInitialCategoryId.value = null
-                    selectCategory(preferredCategory)
-                    return@collect
-                }
-
-                if (currentSelected == null && categories.isNotEmpty()) {
-                    val defaultCat = defaultId?.let { id -> categories.find { it.id == id } }
-                    val favoritesCat = categories.find { it.id == VirtualCategoryIds.FAVORITES }
-
-                    if (defaultCat != null) selectCategory(defaultCat)
-                    else if (favoritesCat != null) selectCategory(favoritesCat)
-                    else selectCategory(categories.first())
-                } else if (currentSelected != null) {
-                    val reselectedCat = categories.find { it.id == currentSelected.id }
-
-                    if (reselectedCat != null) {
-                        if (reselectedCat != currentSelected) {
-                            _uiState.update { it.copy(selectedCategory = reselectedCat) }
+                    val orderedCategories = buildList {
+                        val favoritesCategory = customCats.find { it.id == VirtualCategoryIds.FAVORITES }
+                        if (favoritesCategory != null) {
+                            add(favoritesCategory)
                         }
-                        loadChannelsForCategory(reselectedCat)
-                    } else {
+                        add(recentCategory)
+                        addAll(customCats.filter { it.id != VirtualCategoryIds.FAVORITES })
+                        addAll(providerCats)
+                    }
+
+                    CategorySelectionContext(
+                        categories = orderedCategories,
+                        defaultCategoryId = defaultId,
+                        lastVisitedCategoryId = lastVisitedCategoryId
+                    )
+                }.collect { selectionContext ->
+                    val categories = selectionContext.categories
+                    val defaultId = selectionContext.defaultCategoryId
+                    val preferredCategoryId = _preferredInitialCategoryId.value
+                    val lastVisitedCategory = selectionContext.lastVisitedCategoryId?.let { lastVisitedId ->
+                        categories.find { it.id == lastVisitedId && it.id != VirtualCategoryIds.RECENT }
+                    }
+                    _uiState.update {
+                        it.copy(
+                            categories = categories,
+                            lastVisitedCategory = lastVisitedCategory,
+                            isCategoriesLoading = false
+                        )
+                    }
+
+                    val currentSelected = _uiState.value.selectedCategory
+                    val preferredCategory = preferredCategoryId?.let { categoryId ->
+                        categories.find { it.id == categoryId }
+                    }
+
+                    if (preferredCategory != null && currentSelected?.id != preferredCategory.id) {
+                        _preferredInitialCategoryId.value = null
+                        selectCategory(preferredCategory)
+                        return@collect
+                    }
+
+                    if (currentSelected == null && categories.isNotEmpty()) {
                         val defaultCat = defaultId?.let { id -> categories.find { it.id == id } }
                         val favoritesCat = categories.find { it.id == VirtualCategoryIds.FAVORITES }
 
                         if (defaultCat != null) selectCategory(defaultCat)
                         else if (favoritesCat != null) selectCategory(favoritesCat)
-                        else if (categories.isNotEmpty()) selectCategory(categories.first())
+                        else selectCategory(categories.first())
+                    } else if (currentSelected != null) {
+                        val reselectedCat = categories.find { it.id == currentSelected.id }
+
+                        if (reselectedCat != null) {
+                            if (reselectedCat != currentSelected) {
+                                _uiState.update { it.copy(selectedCategory = reselectedCat) }
+                            }
+                        } else {
+                            val defaultCat = defaultId?.let { id -> categories.find { it.id == id } }
+                            val favoritesCat = categories.find { it.id == VirtualCategoryIds.FAVORITES }
+
+                            if (defaultCat != null) selectCategory(defaultCat)
+                            else if (favoritesCat != null) selectCategory(favoritesCat)
+                            else if (categories.isNotEmpty()) selectCategory(categories.first())
+                        }
                     }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isCategoriesLoading = false,
+                        errorMessage = appContext.getString(R.string.home_error_load_failed)
+                    )
                 }
             }
         }
@@ -256,7 +318,13 @@ class HomeViewModel @Inject constructor(
         if (_uiState.value.selectedCategory?.id == category.id) return
         parentalControlManager.clearUnlockedCategories(_uiState.value.provider?.id)
         clearPreview()
-        _uiState.update { it.copy(selectedCategory = category, isLoading = true) }
+        _uiState.update {
+            it.copy(
+                selectedCategory = category,
+                isLoading = true,
+                errorMessage = null
+            )
+        }
         _preferredInitialCategoryId.value = null
         if (category.id != VirtualCategoryIds.RECENT) {
             val providerId = _uiState.value.provider?.id
@@ -290,50 +358,65 @@ class HomeViewModel @Inject constructor(
         loadChannelsJob?.cancel()
         loadChannelsJob = viewModelScope.launch {
             try {
-            val queryFlow = _uiState.map { it.channelSearchQuery }
-                .debounce(150)
-                .distinctUntilChanged()
+                _uiState.update {
+                    it.copy(
+                        isLoading = true,
+                        errorMessage = null
+                    )
+                }
 
-            val channelsFlow = if (category.isVirtual) {
-                val orderedFlow = if (category.id == VirtualCategoryIds.RECENT) {
-                    playbackHistoryRepository.getRecentlyWatchedByProvider(providerId, limit = 24)
-                        .map { it.toRecentLiveContentIds() }
-                        .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
-                } else if (category.id == VirtualCategoryIds.FAVORITES) {
-                    favoriteRepository.getFavorites(ContentType.LIVE)
-                        .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
-                        .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
+                val queryFlow = _uiState.map { it.channelSearchQuery }
+                    .debounce(150)
+                    .distinctUntilChanged()
+
+                val channelsFlow = if (category.isVirtual) {
+                    val orderedFlow = if (category.id == VirtualCategoryIds.RECENT) {
+                        playbackHistoryRepository.getRecentlyWatchedByProvider(providerId, limit = 24)
+                            .map { it.toRecentLiveContentIds() }
+                            .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
+                    } else if (category.id == VirtualCategoryIds.FAVORITES) {
+                        favoriteRepository.getFavorites(ContentType.LIVE)
+                            .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
+                            .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
+                    } else {
+                        val groupId = -category.id
+                        favoriteRepository.getFavoritesByGroup(groupId)
+                            .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
+                            .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
+                    }
+
+                    combine(orderedFlow, queryFlow) { channels, query ->
+                        if (query.isBlank()) {
+                            channels
+                        } else {
+                            channels.filter { it.name.contains(query, ignoreCase = true) }
+                        }
+                    }
                 } else {
-                    val groupId = -category.id
-                    favoriteRepository.getFavoritesByGroup(groupId)
-                        .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
-                        .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
-                }
-
-                combine(orderedFlow, queryFlow) { channels, query ->
-                    if (query.isBlank()) {
-                        channels
-                    } else {
-                        channels.filter { it.name.contains(query, ignoreCase = true) }
+                    queryFlow.flatMapLatest { query ->
+                        if (query.isBlank()) {
+                            channelRepository.getChannelsByCategory(providerId, category.id)
+                        } else {
+                            channelRepository.searchChannelsByCategory(providerId, category.id, query)
+                        }
                     }
                 }
-            } else {
-                queryFlow.flatMapLatest { query ->
-                    if (query.isBlank()) {
-                        channelRepository.getChannelsByCategory(providerId, category.id)
-                    } else {
-                        channelRepository.searchChannelsByCategory(providerId, category.id, query)
+
+                channelsFlow.collect { channels ->
+                    val numberedChannels = channels.mapIndexed { index, channel ->
+                        channel.copy(number = index + 1)
+                    }
+                    _localChannels.value = numberedChannels
+                    _uiState.update {
+                        it.copy(
+                            hasChannels = numberedChannels.isNotEmpty(),
+                            isLoading = numberedChannels.isEmpty() && it.isSyncing,
+                            errorMessage = null
+                        )
                     }
                 }
-            }
-
-            channelsFlow.collect { channels ->
-                val numberedChannels = channels.mapIndexed { index, channel ->
-                    channel.copy(number = index + 1)
-                }
-                _uiState.update { it.copy(hasChannels = numberedChannels.isNotEmpty(), isLoading = false, errorMessage = null) }
-                _localChannels.value = numberedChannels
-            }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -346,10 +429,25 @@ class HomeViewModel @Inject constructor(
     }
 
     fun updateCategorySearchQuery(query: String) {
+        if (_uiState.value.isChannelReorderMode) return
         _uiState.update { it.copy(categorySearchQuery = query) }
     }
 
+    fun clearVisibleChannelsForFilteredCategories() {
+        clearPreview()
+        _localChannels.value = emptyList()
+        _uiState.update {
+            it.copy(
+                filteredChannels = emptyList(),
+                hasChannels = false,
+                isLoading = false,
+                errorMessage = null
+            )
+        }
+    }
+
     fun updateChannelSearchQuery(query: String) {
+        if (_uiState.value.isChannelReorderMode) return
         _uiState.update { it.copy(channelSearchQuery = query) }
     }
 
@@ -400,10 +498,10 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            when (val result = channelRepository.getStreamUrl(channel)) {
+            when (val result = channelRepository.getStreamInfo(channel)) {
                 is Result.Success -> {
                     engine.stop()
-                    engine.prepare(StreamInfo(url = result.data))
+                    engine.prepare(result.data)
                     engine.setVolume(0f)
                     engine.play()
                 }
@@ -532,7 +630,18 @@ class HomeViewModel @Inject constructor(
                 .flatMapLatest { ids -> loadChannelsByOrderedIds(ids) }
                 .collect { channels ->
                     _uiState.update { it.copy(recentChannels = channels) }
+                    updateRecentCategoryCount(channels.size)
                 }
+        }
+    }
+
+    private fun updateRecentCategoryCount(count: Int) {
+        _uiState.update { state ->
+            state.copy(
+                categories = state.categories.map { category ->
+                    if (category.id == VirtualCategoryIds.RECENT) category.copy(count = count) else category
+                }
+            )
         }
     }
 
@@ -693,6 +802,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             providerRepository.refreshProviderData(provider.id, force = true)
+            tvInputChannelSyncManager.refreshTvInputCatalog()
             _uiState.update { it.copy(isLoading = false) }
         }
     }
@@ -729,9 +839,14 @@ class HomeViewModel @Inject constructor(
         val providerId = _uiState.value.provider?.id ?: return
         viewModelScope.launch {
             val newStatus = !category.isUserProtected
-            categoryRepository.setCategoryProtection(providerId, category.id, category.type, newStatus)
-            val msg = if (newStatus) "Locked '${category.name}'" else "Unlocked '${category.name}'"
-            _uiState.update { it.copy(userMessage = msg) }
+            when (categoryRepository.setCategoryProtection(providerId, category.id, category.type, newStatus)) {
+                is Result.Success -> {
+                    val msg = if (newStatus) "Locked '${category.name}'" else "Unlocked '${category.name}'"
+                    _uiState.update { it.copy(userMessage = msg) }
+                }
+                is Result.Error -> _uiState.update { it.copy(userMessage = "Failed to update category lock") }
+                Result.Loading -> Unit
+            }
         }
     }
 
@@ -886,6 +1001,8 @@ data class HomeUiState(
     val filteredChannels: List<Channel> = emptyList(),
     val hasChannels: Boolean = false,
     val isLoading: Boolean = true,
+    val isCategoriesLoading: Boolean = true,
+    val isSyncing: Boolean = false,
     val categorySearchQuery: String = "",
     val channelSearchQuery: String = "",
     val showDialog: Boolean = false,

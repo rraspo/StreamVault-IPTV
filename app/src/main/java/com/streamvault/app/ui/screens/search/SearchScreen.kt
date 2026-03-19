@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.TextButton
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,8 +23,15 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.tv.material3.*
@@ -148,6 +156,14 @@ class SearchViewModel @Inject constructor(
         onSearchSubmitted()
     }
 
+    fun submitExternalQuery(query: String) {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.length < 2) return
+
+        _query.value = normalizedQuery
+        onSearchSubmitted()
+    }
+
     fun clearRecentQueries() {
         _recentQueries.value = emptyList()
     }
@@ -168,7 +184,7 @@ private data class SearchFilterParams(
     val level: Int
 )
 
-enum class SearchTab(@StringRes val titleRes: Int) {
+enum class SearchTab(@get:StringRes val titleRes: Int) {
     ALL(R.string.search_all),
     LIVE(R.string.search_live_tv),
     MOVIES(R.string.search_movies),
@@ -192,6 +208,7 @@ data class SearchUiState(
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun SearchScreen(
+    initialQuery: String = "",
     onChannelClick: (Channel) -> Unit,
     onMovieClick: (Movie) -> Unit,
     onSeriesClick: (Series) -> Unit,
@@ -199,10 +216,10 @@ fun SearchScreen(
     currentRoute: String,
     viewModel: SearchViewModel = hiltViewModel()
 ) {
-    val query by viewModel.query.collectAsState()
-    val selectedTab by viewModel.selectedTab.collectAsState()
-    val recentQueries by viewModel.recentQueries.collectAsState()
-    val uiState by viewModel.uiState.collectAsState()
+    val query by viewModel.query.collectAsStateWithLifecycle()
+    val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
+    val recentQueries by viewModel.recentQueries.collectAsStateWithLifecycle()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val focusManager = LocalFocusManager.current
     val searchFocusRequester = remember { FocusRequester() }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -212,9 +229,17 @@ fun SearchScreen(
     var pendingMovie by remember { mutableStateOf<Movie?>(null) }
     var pendingSeries by remember { mutableStateOf<Series?>(null) }
     val scope = rememberCoroutineScope()
+    val selectedStateLabel = stringResource(R.string.a11y_selected)
 
     LaunchedEffect(Unit) {
         runCatching { searchFocusRequester.requestFocus() }
+    }
+
+    LaunchedEffect(initialQuery) {
+        if (initialQuery.isNotBlank()) {
+            viewModel.submitExternalQuery(initialQuery)
+            focusManager.clearFocus()
+        }
     }
 
     LaunchedEffect(showPinDialog) {
@@ -270,7 +295,8 @@ fun SearchScreen(
                 Text(
                     text = stringResource(R.string.search_title),
                     style = MaterialTheme.typography.headlineSmall,
-                    color = TextPrimary
+                    color = TextPrimary,
+                    modifier = Modifier.semantics { heading() }
                 )
             }
 
@@ -305,6 +331,12 @@ fun SearchScreen(
                         FilterChip(
                             selected = tab == selectedTab,
                             onClick = { viewModel.onTabSelected(tab) },
+                            modifier = Modifier.semantics {
+                                selected = tab == selectedTab
+                                if (tab == selectedTab) {
+                                    stateDescription = selectedStateLabel
+                                }
+                            },
                             colors = FilterChipDefaults.colors(
                                 selectedContainerColor = Primary,
                                 selectedContentColor = Color.White
@@ -326,7 +358,8 @@ fun SearchScreen(
                         Text(
                             text = stringResource(R.string.search_recent_title),
                             style = MaterialTheme.typography.titleSmall,
-                            color = OnSurface
+                            color = OnSurface,
+                            modifier = Modifier.semantics { heading() }
                         )
                         TextButton(onClick = { viewModel.clearRecentQueries() }) {
                             Text(stringResource(R.string.search_clear_history))
@@ -339,11 +372,19 @@ fun SearchScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(recentQueries, key = { it }) { recentQuery ->
+                            val recentQueryDescription = stringResource(R.string.a11y_recent_search, recentQuery)
                             FilterChip(
                                 selected = recentQuery.equals(query, ignoreCase = true),
                                 onClick = {
                                     viewModel.onRecentQuerySelected(recentQuery)
                                     focusManager.clearFocus()
+                                },
+                                modifier = Modifier.semantics {
+                                    contentDescription = recentQueryDescription
+                                    if (recentQuery.equals(query, ignoreCase = true)) {
+                                        selected = true
+                                        stateDescription = selectedStateLabel
+                                    }
                                 },
                                 colors = FilterChipDefaults.colors(
                                     selectedContainerColor = Primary,
@@ -482,7 +523,9 @@ fun SectionHeader(title: String) {
         text = title,
         style = MaterialTheme.typography.titleMedium,
         color = Primary,
-        modifier = Modifier.padding(vertical = 8.dp)
+        modifier = Modifier
+            .padding(vertical = 8.dp)
+            .semantics { heading() }
     )
 }
 
@@ -493,6 +536,7 @@ private fun SearchResultsSummaryRow(
     selectedTab: SearchTab,
     onTabSelected: (SearchTab) -> Unit
 ) {
+    val selectedStateLabel = stringResource(R.string.a11y_selected)
     val summaryChips = listOf(
         SearchSummaryChip(SearchTab.ALL, stringResource(R.string.search_all), uiState.totalResults),
         SearchSummaryChip(SearchTab.LIVE, stringResource(R.string.search_live_tv), uiState.channels.size),
@@ -500,13 +544,16 @@ private fun SearchResultsSummaryRow(
         SearchSummaryChip(SearchTab.SERIES, stringResource(R.string.search_series), uiState.series.size)
     )
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { liveRegion = LiveRegionMode.Polite },
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(
             text = stringResource(R.string.search_results_title, uiState.totalResults),
             style = MaterialTheme.typography.titleMedium,
-            color = OnSurface
+            color = OnSurface,
+            modifier = Modifier.semantics { heading() }
         )
         androidx.compose.foundation.lazy.LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -515,6 +562,12 @@ private fun SearchResultsSummaryRow(
                 FilterChip(
                     selected = chip.tab == selectedTab,
                     onClick = { onTabSelected(chip.tab) },
+                    modifier = Modifier.semantics {
+                        selected = chip.tab == selectedTab
+                        if (chip.tab == selectedTab) {
+                            stateDescription = selectedStateLabel
+                        }
+                    },
                     colors = FilterChipDefaults.colors(
                         selectedContainerColor = Primary,
                         selectedContentColor = Color.White
@@ -534,7 +587,8 @@ private fun SearchMessageState(
 ) {
     TvEmptyState(
         title = title,
-        subtitle = subtitle
+        subtitle = subtitle,
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
     )
 }
 

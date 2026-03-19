@@ -17,12 +17,12 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace = "com.streamvault.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.streamvault.app"
         minSdk = 28
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -58,10 +58,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
         buildConfig = true
@@ -69,6 +65,12 @@ android {
 
     testOptions {
         animationsDisabled = true
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -92,6 +94,10 @@ dependencies {
 
     // Media3
     implementation(libs.media3.exoplayer)
+    implementation(libs.media3.exoplayer.hls)
+    implementation(libs.media3.exoplayer.dash)
+    implementation(libs.media3.exoplayer.rtsp)
+    implementation(libs.media3.datasource.okhttp)
     implementation(libs.media3.ui)
 
     // Room
@@ -131,6 +137,9 @@ dependencies {
     // Core
     implementation(libs.core.ktx)
     implementation(libs.coroutines.android)
+    implementation(libs.appcompat)
+    implementation(libs.mediarouter)
+    implementation(libs.play.services.cast.framework)
 
     // Test
     testImplementation(libs.junit)

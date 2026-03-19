@@ -6,13 +6,12 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -31,7 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.tv.material3.*
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -51,8 +50,6 @@ import com.streamvault.app.ui.components.dialogs.PremiumDialog
 import com.streamvault.app.ui.components.dialogs.PremiumDialogFooterButton
 import com.streamvault.app.ui.components.dialogs.RenameGroupDialog
 import com.streamvault.app.ui.components.ReorderTopBar
-import com.streamvault.app.ui.components.SkeletonCard
-import com.streamvault.app.ui.components.shimmerEffect
 import com.streamvault.app.ui.components.shell.AppNavigationChrome
 import com.streamvault.app.ui.components.shell.AppScreenScaffold
 import com.streamvault.app.ui.design.FocusRestoreHost
@@ -81,6 +78,29 @@ private enum class FocusRestoreTarget {
     CHANNEL
 }
 
+@Composable
+private fun HomeLoadingPane(
+    message: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            CircularProgressIndicator(color = Color.White)
+            Text(
+                text = message,
+                color = Color.White.copy(alpha = 0.7f),
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
 
 // ── Screen ─────────────────────────────────────────────────────────
 
@@ -98,7 +118,8 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
     multiViewViewModel: MultiViewViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val isReorderMode = uiState.isChannelReorderMode
     val isProMode = uiState.liveTvChannelMode == LiveTvChannelMode.PRO
     val isDenseMode = uiState.liveTvChannelMode != LiveTvChannelMode.COMFORTABLE
     val channelRowHeight = when (uiState.liveTvChannelMode) {
@@ -117,7 +138,7 @@ fun HomeScreen(
     val snackbarHostState = remember { SnackbarHostState() }
 
     // Split screen state
-    val splitSlots by multiViewViewModel.slotsFlow.collectAsState()
+    val splitSlots by multiViewViewModel.slotsFlow.collectAsStateWithLifecycle()
     val hasSplitChannels = splitSlots.any { it != null }
     var showSplitManagerDialog by rememberSaveable { mutableStateOf(false) }
     var pendingSplitPlannerChannel by remember { mutableStateOf<Channel?>(null) }
@@ -145,7 +166,7 @@ fun HomeScreen(
     val hasOverlay = showPinDialog || showSplitManagerDialog || pendingSplitPlannerChannel != null ||
         uiState.showDialog || uiState.showDeleteGroupDialog ||
         uiState.showRenameGroupDialog || uiState.selectedCategoryForOptions != null ||
-        uiState.isChannelReorderMode
+        isReorderMode
 
     BackHandler(enabled = hasOverlay) {
         when {
@@ -161,7 +182,7 @@ fun HomeScreen(
             uiState.selectedCategoryForOptions != null -> viewModel.dismissCategoryOptions()
             uiState.showDialog -> viewModel.onDismissDialog()
             showSplitManagerDialog -> showSplitManagerDialog = false
-            uiState.isChannelReorderMode -> viewModel.exitChannelReorderMode()
+            isReorderMode -> viewModel.exitChannelReorderMode()
         }
     }
 
@@ -196,6 +217,9 @@ fun HomeScreen(
                             viewModel.toggleCategoryLock(category)
                             pendingLockToggleCategory = null
                         }
+
+                        pendingUnlockCategory = null
+                        pendingUnlockChannel = null
                     } else {
                         pinError = context.getString(R.string.home_incorrect_pin)
                     }
@@ -207,14 +231,17 @@ fun HomeScreen(
 
     if (uiState.selectedCategoryForOptions != null) {
         val category = uiState.selectedCategoryForOptions!!
+        val isCategoryLocked = (category.isAdult || category.isUserProtected) && uiState.parentalControlLevel == 1
         CategoryOptionsDialog(
             category = category,
             onDismissRequest = { viewModel.dismissCategoryOptions() },
-            onSetAsDefault = {
-                viewModel.setDefaultCategory(category)
-                viewModel.dismissCategoryOptions()
+            onSetAsDefault = if (isCategoryLocked) null else {
+                {
+                    viewModel.setDefaultCategory(category)
+                    viewModel.dismissCategoryOptions()
+                }
             },
-            onRename = if (category.isVirtual && category.id !in setOf(VirtualCategoryIds.FAVORITES, VirtualCategoryIds.RECENT)) {
+            onRename = if (!isCategoryLocked && category.isVirtual && category.id !in setOf(VirtualCategoryIds.FAVORITES, VirtualCategoryIds.RECENT)) {
                 { viewModel.requestRenameGroup(category) }
             } else null,
             onToggleLock = {
@@ -222,12 +249,12 @@ fun HomeScreen(
                 pendingLockToggleCategory = category
                 showPinDialog = true
             },
-            onDelete = if (category.isVirtual && category.id !in setOf(VirtualCategoryIds.FAVORITES, VirtualCategoryIds.RECENT)) {
+            onDelete = if (!isCategoryLocked && category.isVirtual && category.id !in setOf(VirtualCategoryIds.FAVORITES, VirtualCategoryIds.RECENT)) {
                 {
                     viewModel.requestDeleteGroup(category)
                 }
             } else null,
-            onReorderChannels = if (category.isVirtual && category.id != VirtualCategoryIds.RECENT) {
+            onReorderChannels = if (!isCategoryLocked && category.isVirtual && category.id != VirtualCategoryIds.RECENT) {
                 { viewModel.enterChannelReorderMode(category) }
             } else null
         )
@@ -243,7 +270,7 @@ fun HomeScreen(
             compactHeader = true,
             showScreenHeader = false
         ) {
-            if (uiState.isChannelReorderMode) {
+            if (isReorderMode) {
                 ReorderTopBar(
                     categoryName = uiState.reorderCategory?.name ?: uiState.selectedCategory?.name ?: "Channels",
                     onSave = { viewModel.saveChannelReorder() },
@@ -252,69 +279,100 @@ fun HomeScreen(
                 )
             }
 
-            if (uiState.isLoading && uiState.categories.isEmpty()) {
+            if (uiState.isCategoriesLoading && uiState.categories.isEmpty()) {
                 Row(modifier = Modifier.fillMaxSize()) {
-                    // Sidebar skeleton
-                    Column(
+                    Box(
                         modifier = Modifier
                             .width(272.dp)
                             .fillMaxHeight()
                             .background(SurfaceElevated)
-                            .padding(vertical = 16.dp, horizontal = 16.dp)
+                            .padding(horizontal = 16.dp, vertical = 24.dp)
                     ) {
-                        repeat(10) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .padding(vertical = 4.dp)
-                                    .background(Color.DarkGray, RoundedCornerShape(8.dp))
-                                    .shimmerEffect(baseColor = MaterialTheme.colorScheme.onSurface)
-                            )
-                        }
+                        HomeLoadingPane(
+                            message = stringResource(R.string.home_loading_categories)
+                        )
                     }
-                    // Content skeleton
-                    Column(
+
+                    Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
                             .padding(24.dp)
                     ) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 180.dp),
-                            modifier = Modifier.fillMaxSize(),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            items(20) {
-                                SkeletonCard(
-                                    modifier = Modifier.aspectRatio(16f/9f)
-                                )
-                            }
-                        }
+                        HomeLoadingPane(
+                            message = stringResource(R.string.home_loading_channels)
+                        )
                     }
                 }
             } else {
                 val channelSearchFocusRequester = remember { FocusRequester() }
                 val categoryFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
                 val channelFocusRequesters = remember { mutableMapOf<Long, FocusRequester>() }
+                val visibleCategories = remember(uiState.categories, uiState.categorySearchQuery) {
+                    uiState.categories.filter {
+                        uiState.categorySearchQuery.isEmpty() ||
+                            it.name.contains(uiState.categorySearchQuery, ignoreCase = true)
+                    }
+                }
+                val isCategoryLocked: (Category) -> Boolean = remember(uiState.parentalControlLevel) {
+                    { category ->
+                        (category.isAdult || category.isUserProtected) && uiState.parentalControlLevel == 1
+                    }
+                }
                 var lastFocusedCategoryId by rememberSaveable { mutableStateOf<Long?>(null) }
                 var lastFocusedChannelId by rememberSaveable { mutableStateOf<Long?>(null) }
                 var preferredRestoreTarget by rememberSaveable { mutableStateOf(FocusRestoreTarget.CHANNEL.name) }
                 var shouldRestoreCategoryFocus by remember { mutableStateOf(false) }
                 var shouldRestoreChannelFocus by remember { mutableStateOf(false) }
 
+                val visibleCategoryIds = remember(visibleCategories) {
+                    visibleCategories.mapTo(mutableSetOf()) { it.id }
+                }
+                val displayedCategory = uiState.selectedCategory?.takeIf {
+                    it.id in visibleCategoryIds && !isCategoryLocked(it)
+                } ?: visibleCategories.firstOrNull { !isCategoryLocked(it) }
+                val hasBlockedCategorySearch = displayedCategory == null && visibleCategories.isNotEmpty()
+
+                LaunchedEffect(uiState.categories) {
+                    val validIds = uiState.categories.mapTo(mutableSetOf()) { it.id }
+                    categoryFocusRequesters.keys.retainAll(validIds)
+                }
+
+                LaunchedEffect(uiState.filteredChannels) {
+                    val validIds = uiState.filteredChannels.mapTo(mutableSetOf()) { it.id }
+                    channelFocusRequesters.keys.retainAll(validIds)
+                }
+
+                LaunchedEffect(uiState.categorySearchQuery, displayedCategory?.id, isReorderMode, hasBlockedCategorySearch) {
+                    if (isReorderMode) return@LaunchedEffect
+                    if (displayedCategory == null) {
+                        viewModel.clearVisibleChannelsForFilteredCategories()
+                        return@LaunchedEffect
+                    }
+                    val selectedCategory = uiState.selectedCategory
+                    if (selectedCategory?.id == displayedCategory.id) return@LaunchedEffect
+                    viewModel.selectCategory(displayedCategory)
+                }
+
                 LaunchedEffect(
                     uiState.showDialog,
                     showPinDialog,
                     uiState.showDeleteGroupDialog,
-                    uiState.selectedCategoryForOptions
+                    uiState.selectedCategoryForOptions,
+                    uiState.showRenameGroupDialog,
+                    showSplitManagerDialog,
+                    pendingSplitPlannerChannel,
+                    isReorderMode
                 ) {
                     val modalClosed =
                         !uiState.showDialog &&
                         !showPinDialog &&
                         !uiState.showDeleteGroupDialog &&
-                        uiState.selectedCategoryForOptions == null
+                        !uiState.showRenameGroupDialog &&
+                        !showSplitManagerDialog &&
+                        pendingSplitPlannerChannel == null &&
+                        uiState.selectedCategoryForOptions == null &&
+                        !isReorderMode
 
                     if (!modalClosed) return@LaunchedEffect
 
@@ -422,10 +480,15 @@ fun HomeScreen(
                             )
                             SearchInput(
                                 value = uiState.categorySearchQuery,
-                                onValueChange = { viewModel.updateCategorySearchQuery(it) },
+                                onValueChange = {
+                                    if (!isReorderMode) {
+                                        viewModel.updateCategorySearchQuery(it)
+                                    }
+                                },
                                 placeholder = stringResource(R.string.home_search_categories),
                                 focusRequester = categorySearchFocusRequester,
-                                modifier = Modifier.padding(bottom = 10.dp)
+                                modifier = Modifier.padding(bottom = 10.dp),
+                                enabled = !isReorderMode
                             )
                         }
 
@@ -491,13 +554,10 @@ fun HomeScreen(
                         }
 
                         items(
-                            items = uiState.categories.filter {
-                                uiState.categorySearchQuery.isEmpty() ||
-                                it.name.contains(uiState.categorySearchQuery, ignoreCase = true)
-                            },
+                            items = visibleCategories,
                             key = { it.id }
                         ) { category ->
-                            val isLocked = (category.isAdult || category.isUserProtected) && uiState.parentalControlLevel == 1
+                            val isLocked = isCategoryLocked(category)
                             val categoryFocusRequester = categoryFocusRequesters.getOrPut(category.id) { FocusRequester() }
 
                             CategoryItem(
@@ -506,6 +566,7 @@ fun HomeScreen(
                                 isLocked = isLocked,
                                 focusRequester = categoryFocusRequester,
                                 onClick = {
+                                    if (isReorderMode) return@CategoryItem
                                     if (isLocked) {
                                         pendingUnlockCategory = category
                                         showPinDialog = true
@@ -514,6 +575,7 @@ fun HomeScreen(
                                     }
                                 },
                                 onLongClick = {
+                                    if (isReorderMode || isLocked) return@CategoryItem
                                     preferredRestoreTarget = FocusRestoreTarget.CATEGORY.name
                                     viewModel.showCategoryOptions(category)
                                 },
@@ -556,7 +618,11 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(if (isDenseMode) 2.dp else 4.dp)
                         ) {
                             Text(
-                                text = uiState.selectedCategory?.name ?: stringResource(R.string.home_all_channels),
+                                text = displayedCategory?.name ?: if (hasBlockedCategorySearch) {
+                                    stringResource(R.string.home_locked_short)
+                                } else {
+                                    stringResource(R.string.home_all_channels)
+                                },
                                 style = if (isDenseMode) MaterialTheme.typography.titleMedium else MaterialTheme.typography.titleLarge,
                                 color = OnBackground
                             )
@@ -595,11 +661,16 @@ fun HomeScreen(
                             ) {
                                 SearchInput(
                                     value = uiState.channelSearchQuery,
-                                    onValueChange = { viewModel.updateChannelSearchQuery(it) },
+                                    onValueChange = {
+                                        if (!isReorderMode) {
+                                            viewModel.updateChannelSearchQuery(it)
+                                        }
+                                    },
                                     placeholder = stringResource(R.string.home_search_channels),
                                     onSearch = { focusManager.clearFocus() },
                                     focusRequester = channelSearchFocusRequester,
-                                    modifier = Modifier.width(if (isProMode) 270.dp else if (isDenseMode) 300.dp else 340.dp)
+                                    modifier = Modifier.width(if (isProMode) 270.dp else if (isDenseMode) 300.dp else 340.dp),
+                                    enabled = !isReorderMode
                                 )
                                 if (hasSplitChannels) {
                                     StatusPill(
@@ -654,29 +725,48 @@ fun HomeScreen(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Text(
-                                        text = stringResource(R.string.home_no_channels_found),
-                                        style = MaterialTheme.typography.titleLarge,
-                                        color = OnBackground
-                                    )
-                                    Text(
-                                        text = stringResource(R.string.home_no_channels_found_subtitle),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = OnSurfaceDim
-                                    )
-                                    val selectedCategory = uiState.selectedCategory
-                                    if (selectedCategory?.isVirtual == true && selectedCategory.id == VirtualCategoryIds.FAVORITES) {
+                                    if (hasBlockedCategorySearch) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Lock,
+                                            contentDescription = null,
+                                            tint = OnBackground,
+                                            modifier = Modifier.size(34.dp)
+                                        )
                                         Text(
-                                            text = stringResource(R.string.home_add_favorites_hint),
+                                            text = stringResource(R.string.home_locked_short),
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = OnBackground
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.home_no_channels_found_subtitle),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = OnSurfaceDim
                                         )
-                                    } else if (selectedCategory?.isVirtual == true && selectedCategory.id == VirtualCategoryIds.RECENT) {
+                                    } else {
                                         Text(
-                                            text = stringResource(R.string.home_recent_channels_hint),
+                                            text = stringResource(R.string.home_no_channels_found),
+                                            style = MaterialTheme.typography.titleLarge,
+                                            color = OnBackground
+                                        )
+                                        Text(
+                                            text = stringResource(R.string.home_no_channels_found_subtitle),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = OnSurfaceDim
                                         )
+                                        val selectedCategory = uiState.selectedCategory
+                                        if (selectedCategory?.isVirtual == true && selectedCategory.id == VirtualCategoryIds.FAVORITES) {
+                                            Text(
+                                                text = stringResource(R.string.home_add_favorites_hint),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = OnSurfaceDim
+                                            )
+                                        } else if (selectedCategory?.isVirtual == true && selectedCategory.id == VirtualCategoryIds.RECENT) {
+                                            Text(
+                                                text = stringResource(R.string.home_recent_channels_hint),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = OnSurfaceDim
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -693,8 +783,8 @@ fun HomeScreen(
 
                             var draggingChannel by remember { mutableStateOf<Channel?>(null) }
 
-                            LaunchedEffect(uiState.isChannelReorderMode) {
-                                if (!uiState.isChannelReorderMode) {
+                            LaunchedEffect(isReorderMode) {
+                                if (!isReorderMode) {
                                     draggingChannel = null
                                 }
                             }
@@ -757,7 +847,7 @@ fun HomeScreen(
                                         isDragging = isDraggingThis,
                                         rowHeight = channelRowHeight,
                                         onClick = {
-                                            if (uiState.isChannelReorderMode) {
+                                            if (isReorderMode) {
                                                 draggingChannel = if (isDraggingThis) null else channel
                                             } else if (ignoreNextClick) {
                                                 ignoreNextClick = false
@@ -778,7 +868,7 @@ fun HomeScreen(
                                             }
                                         },
                                         onLongClick = {
-                                            if (!uiState.isChannelReorderMode) {
+                                            if (!isReorderMode) {
                                                 ignoreNextClick = true
                                                 preferredRestoreTarget = FocusRestoreTarget.CHANNEL.name
                                                 viewModel.onShowDialog(channel)
@@ -850,6 +940,7 @@ fun HomeScreen(
             onLaunch = {
                 pendingSplitPlannerChannel = null
                 viewModel.onDismissDialog()
+                viewModel.clearPreview()
                 onNavigate(Routes.MULTI_VIEW)
             },
             viewModel = multiViewViewModel
@@ -892,6 +983,7 @@ fun HomeScreen(
             onDismiss = { showSplitManagerDialog = false },
             onLaunch = {
                 showSplitManagerDialog = false
+                viewModel.clearPreview()
                 onNavigate(Routes.MULTI_VIEW)
             },
             viewModel = multiViewViewModel

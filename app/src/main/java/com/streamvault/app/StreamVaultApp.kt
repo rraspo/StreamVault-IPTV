@@ -7,6 +7,7 @@ import coil3.SingletonImageLoader
 import coil3.disk.DiskCache
 import coil3.memory.MemoryCache
 import coil3.request.crossfade
+import com.streamvault.app.ui.accessibility.isReducedMotionEnabled
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.Dispatchers
 import okio.Path.Companion.toOkioPath
@@ -16,7 +17,6 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
-import java.util.concurrent.TimeUnit
 
 @HiltAndroidApp
 class StreamVaultApp : Application(), SingletonImageLoader.Factory {
@@ -28,6 +28,7 @@ class StreamVaultApp : Application(), SingletonImageLoader.Factory {
         // BLD-H02: Require network + device idle so the worker doesn't drain battery.
         val gcConstraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiresBatteryNotLow(true)
             .setRequiresDeviceIdle(true)
             .build()
 
@@ -58,7 +59,7 @@ class StreamVaultApp : Application(), SingletonImageLoader.Factory {
             // Limit concurrent decoding and fetching to 6 for TV hardware constraints
             .fetcherCoroutineContext(Dispatchers.IO.limitedParallelism(6))
             .decoderCoroutineContext(Dispatchers.Default.limitedParallelism(4))
-            .crossfade(true)
+            .crossfade(!isReducedMotionEnabled(context))
             .build()
     }
 }

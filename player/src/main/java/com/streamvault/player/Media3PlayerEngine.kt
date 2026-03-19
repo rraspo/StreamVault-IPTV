@@ -16,6 +16,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.ScrubbingModeParameters
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
@@ -37,6 +38,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import android.graphics.Color as AndroidColor
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -44,6 +46,7 @@ import kotlin.math.abs
 import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
+import java.util.Locale
 
 @OptIn(UnstableApi::class)
 class Media3PlayerEngine @Inject constructor(
@@ -61,6 +64,14 @@ class Media3PlayerEngine @Inject constructor(
      * Set to true for multi-view slots so each instance doesn't compete for 4K bandwidth.
      */
     var constrainResolutionForMultiView: Boolean = false
+    /**
+     * Multi-view slots should not compete for global audio focus; only the audible slot needs volume.
+     */
+    var bypassAudioFocus: Boolean = false
+    /**
+     * Auxiliary players do not need MediaSession registration.
+     */
+    var enableMediaSession: Boolean = true
     private var pollingJob: Job? = null
     private var lastStreamInfo: StreamInfo? = null
     private var retryCount = 0
@@ -73,13 +84,18 @@ class Media3PlayerEngine @Inject constructor(
     private var shouldResumeOnAudioFocusGain = false
     private var currentVolume = 1f
     private var isDucked = false
+    /** Remembers the volume before mute so unmute restores it. */
+    private var volumeBeforeMute = 1f
+    /** Pre-warmed media source for rapid next-channel start. */
+    private var preloadedSource: MediaSource? = null
+    private var preloadedStreamInfo: StreamInfo? = null
 
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 hasAudioFocus = true
                 isDucked = false
-                exoPlayer?.volume = currentVolume
+                applyPlayerVolume()
                 if (shouldResumeOnAudioFocusGain) {
                     shouldResumeOnAudioFocusGain = false
                     exoPlayer?.playWhenReady = true
@@ -88,7 +104,7 @@ class Media3PlayerEngine @Inject constructor(
 
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 isDucked = true
-                exoPlayer?.volume = (currentVolume * 0.2f).coerceAtLeast(0.05f)
+                applyPlayerVolume()
             }
 
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
@@ -96,7 +112,7 @@ class Media3PlayerEngine @Inject constructor(
                 isDucked = false
                 shouldResumeOnAudioFocusGain = exoPlayer?.isPlaying == true
                 exoPlayer?.playWhenReady = false
-                exoPlayer?.volume = currentVolume
+                applyPlayerVolume()
             }
 
             AudioManager.AUDIOFOCUS_LOSS -> {
@@ -104,7 +120,7 @@ class Media3PlayerEngine @Inject constructor(
                 isDucked = false
                 shouldResumeOnAudioFocusGain = false
                 exoPlayer?.playWhenReady = false
-                exoPlayer?.volume = currentVolume
+                applyPlayerVolume()
             }
         }
     }
@@ -144,10 +160,30 @@ class Media3PlayerEngine @Inject constructor(
     private val _playerStats = MutableStateFlow(PlayerStats())
     override val playerStats: StateFlow<PlayerStats> = _playerStats.asStateFlow()
 
+    private val _isMuted = MutableStateFlow(false)
+    override val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
+
+    private val _mediaTitle = MutableStateFlow<String?>(null)
+    override val mediaTitle: StateFlow<String?> = _mediaTitle.asStateFlow()
+
+    private fun effectiveVolume(): Float {
+        return when {
+            _isMuted.value -> 0f
+            isDucked -> (currentVolume * 0.2f).coerceAtLeast(0.05f)
+            else -> currentVolume
+        }
+    }
+
+    private fun applyPlayerVolume() {
+        exoPlayer?.volume = effectiveVolume()
+    }
+
     private fun getOrCreatePlayer(): ExoPlayer {
         return exoPlayer ?: createPlayer().also {
             exoPlayer = it
-            mediaSession = MediaSession.Builder(context, it).build()
+            if (enableMediaSession) {
+                mediaSession = MediaSession.Builder(context, it).build()
+            }
         }
     }
 
@@ -162,14 +198,16 @@ class Media3PlayerEngine @Inject constructor(
             )
         }
 
-        // Tuned for IPTV live streams: larger buffer for variable network conditions
+        // Tuned for IPTV live streams: aggressive start with comfortable cruise buffer.
+        // Low buffer-for-playback gets the first frame on screen sooner during channel zapping.
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
-                30_000, // min buffer
-                60_000, // max buffer
-                2500,   // buffer for playback
-                5000    // buffer for rebuffering
+                15_000, // min buffer – keep smaller so the player starts faster
+                60_000, // max buffer – comfortable cruise; avoids OOM on 100k playlists
+                500,    // buffer for playback – half-second is enough for key-frame start
+                2500    // buffer for rebuffering – recover quickly on network hiccup
             )
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         val trackSelector = androidx.media3.exoplayer.trackselection.DefaultTrackSelector(context).apply {
@@ -183,6 +221,8 @@ class Media3PlayerEngine @Inject constructor(
         return ExoPlayer.Builder(context, renderersFactory)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
+            .setSeekBackIncrementMs(10_000)
+            .setSeekForwardIncrementMs(10_000)
             .setAudioAttributes(
                 Media3AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -289,6 +329,15 @@ class Media3PlayerEngine @Inject constructor(
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        // Behind-live-window: just seek to the live edge — no retry counter needed
+                        if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                            Log.w(TAG, "Behind live window — seeking to live edge")
+                            exoPlayer?.let { p ->
+                                p.seekToDefaultPosition()
+                                p.prepare()
+                            }
+                            return
+                        }
                         if (retryCount < MAX_RETRIES && isRecoverableError(error)) {
                             retryCount++
                             Log.w(TAG, "Recoverable error (attempt $retryCount/$MAX_RETRIES), retrying...")
@@ -311,6 +360,12 @@ class Media3PlayerEngine @Inject constructor(
                         _currentPosition.value = newPosition.positionMs
                     }
 
+                    override fun onMediaMetadataChanged(metadata: androidx.media3.common.MediaMetadata) {
+                        // ICY / HLS metadata: the stream itself reports a title change.
+                        val title = metadata.title?.toString()?.takeIf { it.isNotBlank() }
+                        _mediaTitle.value = title
+                    }
+
                     override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                         val audioTracks = mutableListOf<PlayerTrack>()
                         val subtitleTracks = mutableListOf<PlayerTrack>()
@@ -324,7 +379,7 @@ class Media3PlayerEngine @Inject constructor(
                                 for (i in 0 until group.length) {
                                     val format = group.mediaTrackGroup.getFormat(i)
                                     val id = format.id ?: "${group.mediaTrackGroup.hashCode()}_$i"
-                                    val name = format.label ?: format.language ?: "Track ${i + 1}"
+                                    val name = buildTrackName(format = format, trackType = type, index = i)
                                     val isSelected = group.isTrackSelected(i)
 
                                     val track = PlayerTrack(
@@ -360,12 +415,34 @@ class Media3PlayerEngine @Inject constructor(
         val player = getOrCreatePlayer()
         _error.tryEmit(null)
         _playerStats.value = PlayerStats() // reset stats
+        _mediaTitle.value = null
+        _availableAudioTracks.value = emptyList()
+        _availableSubtitleTracks.value = emptyList()
+        applyPlayerVolume()
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_AUDIO)
+            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+            .build()
 
-        val dataSourceFactory = createDataSourceFactory(streamInfo)
-        val streamType = streamInfo.streamType.takeIf { it != StreamType.UNKNOWN }
-            ?: StreamTypeDetector.detect(streamInfo.url)
-
-        val mediaSource = createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title)
+        // If we already preloaded this exact stream, use the cached source
+        val mediaSource = if (preloadedStreamInfo?.url == streamInfo.url && preloadedSource != null) {
+            preloadedSource!!.also {
+                preloadedSource = null
+                preloadedStreamInfo = null
+            }
+        } else {
+            preloadedSource = null
+            preloadedStreamInfo = null
+            val dataSourceFactory = createDataSourceFactory(streamInfo)
+            val streamType = streamInfo.streamType.takeIf { it != StreamType.UNKNOWN }
+                ?: StreamTypeDetector.detect(streamInfo.url)
+            createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title)
+        }
 
         player.setMediaSource(mediaSource)
         player.prepare()
@@ -412,6 +489,7 @@ class Media3PlayerEngine @Inject constructor(
         return when (streamType) {
             StreamType.HLS -> HlsMediaSource.Factory(dataSourceFactory)
                 .setAllowChunklessPreparation(true)
+                // Start from the live edge rather than 3 segments behind it
                 .createMediaSource(mediaItem)
 
             StreamType.DASH -> DashMediaSource.Factory(dataSourceFactory)
@@ -492,11 +570,61 @@ class Media3PlayerEngine @Inject constructor(
 
     override fun setVolume(volume: Float) {
         currentVolume = volume.coerceIn(0f, 1f)
-        exoPlayer?.volume = if (isDucked) {
-            (currentVolume * 0.2f).coerceAtLeast(0.05f)
-        } else {
-            currentVolume
+        if (currentVolume > 0f) {
+            volumeBeforeMute = currentVolume
+            _isMuted.value = false
         }
+        applyPlayerVolume()
+    }
+
+    override fun setMuted(muted: Boolean) {
+        if (muted == _isMuted.value) {
+            applyPlayerVolume()
+            return
+        }
+
+        if (muted) {
+            if (currentVolume > 0f) {
+                volumeBeforeMute = currentVolume.coerceAtLeast(0.1f)
+            }
+            _isMuted.value = true
+        } else {
+            _isMuted.value = false
+            if (currentVolume <= 0f) {
+                currentVolume = volumeBeforeMute.coerceIn(0.1f, 1f)
+            }
+        }
+
+        applyPlayerVolume()
+    }
+
+    override fun toggleMute() {
+        setMuted(!_isMuted.value)
+    }
+
+    override fun setScrubbingMode(enabled: Boolean) {
+        val player = exoPlayer ?: return
+        if (enabled) {
+            player.setScrubbingModeEnabled(true)
+        } else {
+            player.setScrubbingModeEnabled(false)
+            player.setScrubbingModeParameters(ScrubbingModeParameters.DEFAULT)
+        }
+    }
+
+    override fun preload(streamInfo: StreamInfo?) {
+        if (streamInfo == null) {
+            preloadedSource = null
+            preloadedStreamInfo = null
+            return
+        }
+        // Don't preload the stream that's already playing
+        if (streamInfo.url == lastStreamInfo?.url) return
+        val dataSourceFactory = createDataSourceFactory(streamInfo)
+        val streamType = streamInfo.streamType.takeIf { it != StreamType.UNKNOWN }
+            ?: StreamTypeDetector.detect(streamInfo.url)
+        preloadedSource = createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title)
+        preloadedStreamInfo = streamInfo
     }
 
     override fun selectAudioTrack(trackId: String) {
@@ -566,6 +694,8 @@ class Media3PlayerEngine @Inject constructor(
         handler.removeCallbacksAndMessages(null)
         shouldResumeOnAudioFocusGain = false
         abandonAudioFocusIfHeld()
+        preloadedSource = null
+        preloadedStreamInfo = null
         mediaSession?.release()
         mediaSession = null
         exoPlayer?.release()
@@ -576,14 +706,63 @@ class Media3PlayerEngine @Inject constructor(
         scope = CoroutineScope(Dispatchers.Main + supervisorJob)
         _playbackState.value = PlaybackState.IDLE
         _isPlaying.value = false
+        _isMuted.value = false
+        _mediaTitle.value = null
+    }
+
+    private fun buildTrackName(format: Format, trackType: Int, index: Int): String {
+        val explicitLabel = format.label
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !it.matches(Regex("(?i)^track\\s*\\d+$")) }
+
+        if (explicitLabel != null) {
+            return explicitLabel
+        }
+
+        val parts = mutableListOf<String>()
+        val languageCode = format.language
+            ?.takeIf { it.isNotBlank() && it != C.LANGUAGE_UNDETERMINED }
+
+        languageCode?.let { code ->
+            val locale = Locale.forLanguageTag(code)
+            val displayLanguage = locale.getDisplayLanguage(Locale.getDefault())
+                .takeIf { it.isNotBlank() }
+                ?: locale.displayLanguage.takeIf { it.isNotBlank() }
+            if (!displayLanguage.isNullOrBlank()) {
+                parts += displayLanguage.replaceFirstChar { char ->
+                    if (char.isLowerCase()) char.titlecase(Locale.getDefault()) else char.toString()
+                }
+            }
+        }
+
+        if (trackType == C.TRACK_TYPE_TEXT) {
+            if ((format.selectionFlags and C.SELECTION_FLAG_FORCED) != 0) {
+                parts += "Forced"
+            }
+            if ((format.roleFlags and C.ROLE_FLAG_CAPTION) != 0) {
+                parts += "CC"
+            }
+            if ((format.roleFlags and C.ROLE_FLAG_DESCRIBES_MUSIC_AND_SOUND) != 0) {
+                parts += "SDH"
+            }
+        }
+
+        if (parts.isNotEmpty()) {
+            return parts.joinToString(" ")
+        }
+
+        return when (trackType) {
+            C.TRACK_TYPE_AUDIO -> "Audio ${index + 1}"
+            C.TRACK_TYPE_TEXT -> "Subtitle ${index + 1}"
+            else -> "Track ${index + 1}"
+        }
     }
 
     private fun isRecoverableError(error: PlaybackException): Boolean {
         return when (error.errorCode) {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
-            PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
-            PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW -> true
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> true
             else -> false
         }
     }
@@ -642,16 +821,25 @@ class Media3PlayerEngine @Inject constructor(
     override fun createRenderView(context: Context, resizeMode: PlayerSurfaceResizeMode): View {
         return PlayerView(context).apply {
             useController = false
+            setShutterBackgroundColor(AndroidColor.TRANSPARENT)
+            setKeepContentOnPlayerReset(true)
             setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-            player = exoPlayer
+            enableComposeSurfaceSyncWorkaroundIfAvailable()
             applyResizeMode(resizeMode)
         }
     }
 
     override fun bindRenderView(renderView: View, resizeMode: PlayerSurfaceResizeMode) {
         val playerView = renderView as? PlayerView ?: return
-        if (playerView.player !== exoPlayer) {
-            playerView.player = exoPlayer
+        val player = getOrCreatePlayer()
+        playerView.enableComposeSurfaceSyncWorkaroundIfAvailable()
+        if (playerView.player !== player) {
+            playerView.player = player
+        } else {
+            // Compose can keep the same PlayerView instance while its underlying surface is recreated.
+            // Reattaching the player forces Media3 to reconnect video output to the fresh surface.
+            playerView.player = null
+            playerView.player = player
         }
         playerView.applyResizeMode(resizeMode)
     }
@@ -664,11 +852,25 @@ class Media3PlayerEngine @Inject constructor(
         }
     }
 
+    private fun PlayerView.enableComposeSurfaceSyncWorkaroundIfAvailable() {
+        runCatching {
+            javaClass.getMethod("setEnableComposeSurfaceSyncWorkaround", Boolean::class.javaPrimitiveType)
+                .invoke(this, true)
+        }
+    }
+
     private fun requestAudioFocusIfNeeded(): Boolean {
+        if (bypassAudioFocus) {
+            if (isDucked) {
+                isDucked = false
+                applyPlayerVolume()
+            }
+            return true
+        }
         if (hasAudioFocus) {
             if (isDucked) {
                 isDucked = false
-                exoPlayer?.volume = currentVolume
+                applyPlayerVolume()
             }
             return true
         }
@@ -680,7 +882,7 @@ class Media3PlayerEngine @Inject constructor(
             return false
         }
         isDucked = false
-        exoPlayer?.volume = currentVolume
+        applyPlayerVolume()
         return true
     }
 

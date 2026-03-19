@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -35,6 +36,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.MaterialTheme
@@ -42,6 +46,7 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
 import com.streamvault.app.R
+import com.streamvault.app.ui.components.ChannelLogoBadge
 import com.streamvault.app.ui.components.rememberCrossfadeImageModel
 import com.streamvault.app.ui.design.AppColors
 import com.streamvault.app.ui.design.AppMotion
@@ -92,25 +97,16 @@ fun LiveChannelRowCard(
                     .width(logoWidth)
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(AppColors.SurfaceEmphasis),
-                contentAlignment = Alignment.Center
             ) {
-                // Fallback initials always visible; covered by AsyncImage on successful load
-                Text(
-                    text = channel.name.take(2).uppercase(),
-                    style = MaterialTheme.typography.titleLarge,
-                    color = AppColors.TextSecondary
+                ChannelLogoBadge(
+                    channelName = channel.name,
+                    logoUrl = channel.logoUrl,
+                    backgroundColor = AppColors.SurfaceEmphasis,
+                    contentPadding = PaddingValues(logoPadding),
+                    textStyle = MaterialTheme.typography.titleLarge,
+                    textColor = AppColors.TextSecondary,
+                    modifier = Modifier.fillMaxSize()
                 )
-                if (!channel.logoUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = rememberCrossfadeImageModel(channel.logoUrl),
-                        contentDescription = channel.name,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(logoPadding),
-                        contentScale = ContentScale.Fit
-                    )
-                }
             }
             Column(
                 modifier = Modifier.weight(1f),
@@ -188,6 +184,28 @@ fun LiveChannelRowSurface(
     rowHeight: Dp = 68.dp
 ) {
     var isFocused by remember { mutableStateOf(false) }
+    val favoriteLabel = stringResource(R.string.a11y_favorite)
+    val catchUpLabel = stringResource(R.string.a11y_catch_up_available)
+    val lockedLabel = stringResource(R.string.a11y_locked)
+    val channelDescription = buildString {
+        append(
+            channel.number.takeIf { it > 0 }?.let {
+                stringResource(R.string.a11y_channel_with_number, it, channel.name)
+            } ?: channel.name
+        )
+        channel.currentProgram?.title?.takeIf { it.isNotBlank() }?.let {
+            append(". ")
+            append(stringResource(R.string.a11y_now_playing, it))
+        }
+        if (channel.isFavorite) {
+            append(". ")
+            append(favoriteLabel)
+        }
+        if (channel.catchUpSupported) {
+            append(". ")
+            append(catchUpLabel)
+        }
+    }
     val scale by animateFloatAsState(
         targetValue = if (isDragging) FocusSpec.FocusedScale else 1f,
         animationSpec = AppMotion.FocusSpec,
@@ -202,6 +220,12 @@ fun LiveChannelRowSurface(
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
+            }
+            .semantics(mergeDescendants = true) {
+                contentDescription = channelDescription
+                if (isLocked) {
+                    stateDescription = lockedLabel
+                }
             }
             .onFocusChanged { isFocused = it.isFocused },
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(16.dp)),

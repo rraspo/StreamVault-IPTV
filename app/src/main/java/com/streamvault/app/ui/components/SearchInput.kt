@@ -24,11 +24,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.foundation.focusable
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.tv.material3.Icon
@@ -54,7 +58,8 @@ fun SearchInput(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester = remember { FocusRequester() },
     imeAction: ImeAction = ImeAction.Search,
-    onSearch: () -> Unit = {}
+    onSearch: () -> Unit = {},
+    enabled: Boolean = true
 ) {
     var isFocused by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -69,19 +74,29 @@ fun SearchInput(
             .height(40.dp)
             .background(backgroundColor, RoundedCornerShape(8.dp))
             .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
-            .onFocusChanged { isFocused = it.hasFocus }
-            .focusProperties { enter = { focusRequester } }
-            .clickable {
+            .semantics(mergeDescendants = true) {
+                contentDescription = placeholder
+                stateDescription = value.ifBlank { placeholder }
+            }
+            .onFocusChanged {
+                isFocused = enabled && it.hasFocus
+            }
+            .focusProperties {
+                canFocus = enabled
+                onEnter = { focusRequester }
+            }
+            .clickable(enabled = enabled) {
                 focusRequester.requestFocus()
                 keyboardController?.show()
             }
+            .focusable(enabled = enabled)
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Default.Search,
-                contentDescription = placeholder,
+                contentDescription = null,
                 tint = if (isFocused) Primary else OnSurfaceDim,
                 modifier = Modifier.padding(end = 6.dp)
             )
@@ -104,6 +119,7 @@ fun SearchInput(
                     textStyle = MaterialTheme.typography.bodySmall.copy(color = OnSurface),
                     singleLine = true,
                     cursorBrush = SolidColor(Primary),
+                    enabled = enabled,
                     keyboardOptions = KeyboardOptions(imeAction = imeAction),
                     keyboardActions = KeyboardActions(onSearch = { onSearch() })
                 )

@@ -21,13 +21,21 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,7 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.res.stringResource
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.media3.common.util.UnstableApi
 import androidx.tv.material3.Border
 import androidx.tv.material3.ClickableSurfaceDefaults
@@ -63,7 +71,7 @@ fun MultiViewScreen(
     onBack: () -> Unit,
     viewModel: MultiViewViewModel = hiltViewModel()
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val firstSlotFocusRequester = remember { FocusRequester() }
     val firstControlFocusRequester = remember { FocusRequester() }
     var showReplacementPicker by remember { mutableStateOf(false) }
@@ -290,6 +298,18 @@ private fun PlayerCell(
                             fontSize = 11.sp,
                             textAlign = TextAlign.Center
                         )
+                        if (!slot.errorMessage.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = slot.errorMessage,
+                                color = Color(0xFFFFB3B3),
+                                fontSize = 10.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
 
@@ -337,7 +357,7 @@ private fun PlayerCell(
                     }
 
                     // Buffering indicator for active streams
-                    val playbackState = slot.playerEngine?.playbackState?.collectAsState()
+                    val playbackState = slot.playerEngine?.playbackState?.collectAsStateWithLifecycle()
                     if (playbackState?.value == com.streamvault.player.PlaybackState.BUFFERING) {
                         CircularProgressIndicator(
                             color = Color.White.copy(alpha = 0.7f),

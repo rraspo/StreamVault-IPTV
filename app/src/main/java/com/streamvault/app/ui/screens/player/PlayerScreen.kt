@@ -6,6 +6,9 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -26,7 +29,6 @@ import androidx.compose.ui.text.font.FontWeight
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.focusable
@@ -60,10 +62,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import com.streamvault.app.ui.components.dialogs.ProgramHistoryDialog
 import androidx.compose.ui.res.stringResource
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.streamvault.app.R
 import com.streamvault.app.MainActivity
+import com.streamvault.app.cast.CastConnectionState
+import com.streamvault.app.ui.design.requestFocusSafely
 import com.streamvault.app.ui.screens.player.overlay.ChannelInfoOverlay
 import com.streamvault.app.ui.screens.player.overlay.CategoryListOverlay
 import com.streamvault.app.ui.screens.player.overlay.ChannelListOverlay
@@ -89,6 +91,7 @@ import com.streamvault.app.navigation.Routes
 fun PlayerScreen(
     streamUrl: String,
     title: String,
+    artworkUrl: String? = null,
     epgChannelId: String? = null,
     internalChannelId: Long = -1L,
     categoryId: Long? = null,
@@ -110,40 +113,43 @@ fun PlayerScreen(
         ?.collectAsState(initial = mainActivity.isInPictureInPictureMode)
         ?.value
         ?: false
-    val playbackState by viewModel.playerEngine.playbackState.collectAsState()
-    val isPlaying by viewModel.playerEngine.isPlaying.collectAsState()
-    val showControls by viewModel.showControls.collectAsState()
-    val videoFormat by viewModel.videoFormat.collectAsState()
-    val playerError by viewModel.playerError.collectAsState()
-    val currentProgram by viewModel.currentProgram.collectAsState()
-    val nextProgram by viewModel.nextProgram.collectAsState()
-    val programHistory by viewModel.programHistory.collectAsState()
-    val currentChannel by viewModel.currentChannel.collectAsState()
-    val resumePrompt by viewModel.resumePrompt.collectAsState()
+    val playbackState by viewModel.playerEngine.playbackState.collectAsStateWithLifecycle()
+    val isPlaying by viewModel.playerEngine.isPlaying.collectAsStateWithLifecycle()
+    val showControls by viewModel.showControls.collectAsStateWithLifecycle()
+    val videoFormat by viewModel.videoFormat.collectAsStateWithLifecycle()
+    val playerError by viewModel.playerError.collectAsStateWithLifecycle()
+    val currentProgram by viewModel.currentProgram.collectAsStateWithLifecycle()
+    val nextProgram by viewModel.nextProgram.collectAsStateWithLifecycle()
+    val programHistory by viewModel.programHistory.collectAsStateWithLifecycle()
+    val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
+    val resumePrompt by viewModel.resumePrompt.collectAsStateWithLifecycle()
     
-    val showChannelListOverlay by viewModel.showChannelListOverlay.collectAsState()
-    val showCategoryListOverlay by viewModel.showCategoryListOverlay.collectAsState()
-    val availableCategories by viewModel.availableCategories.collectAsState()
-    val activeCategoryId by viewModel.activeCategoryId.collectAsState()
-    val showEpgOverlay by viewModel.showEpgOverlay.collectAsState()
-    val currentChannelList by viewModel.currentChannelList.collectAsState()
-    val recentChannels by viewModel.recentChannels.collectAsState()
-    val lastVisitedCategory by viewModel.lastVisitedCategory.collectAsState()
-    val displayChannelNumber by viewModel.displayChannelNumber.collectAsState()
-    val upcomingPrograms by viewModel.upcomingPrograms.collectAsState()
-    val showChannelInfoOverlay by viewModel.showChannelInfoOverlay.collectAsState()
-    val numericChannelInput by viewModel.numericChannelInput.collectAsState()
+    val showChannelListOverlay by viewModel.showChannelListOverlay.collectAsStateWithLifecycle()
+    val showCategoryListOverlay by viewModel.showCategoryListOverlay.collectAsStateWithLifecycle()
+    val availableCategories by viewModel.availableCategories.collectAsStateWithLifecycle()
+    val activeCategoryId by viewModel.activeCategoryId.collectAsStateWithLifecycle()
+    val showEpgOverlay by viewModel.showEpgOverlay.collectAsStateWithLifecycle()
+    val currentChannelList by viewModel.currentChannelList.collectAsStateWithLifecycle()
+    val recentChannels by viewModel.recentChannels.collectAsStateWithLifecycle()
+    val lastVisitedCategory by viewModel.lastVisitedCategory.collectAsStateWithLifecycle()
+    val displayChannelNumber by viewModel.displayChannelNumber.collectAsStateWithLifecycle()
+    val upcomingPrograms by viewModel.upcomingPrograms.collectAsStateWithLifecycle()
+    val showChannelInfoOverlay by viewModel.showChannelInfoOverlay.collectAsStateWithLifecycle()
+    val numericChannelInput by viewModel.numericChannelInput.collectAsStateWithLifecycle()
     
-    val availableAudioTracks by viewModel.availableAudioTracks.collectAsState()
-    val availableSubtitleTracks by viewModel.availableSubtitleTracks.collectAsState()
-    val availableVideoQualities by viewModel.availableVideoQualities.collectAsState()
-    val aspectRatio by viewModel.aspectRatio.collectAsState()
-    val showDiagnostics by viewModel.showDiagnostics.collectAsState()
-    val playerDiagnostics by viewModel.playerDiagnostics.collectAsState()
-    val currentPosition by viewModel.playerEngine.currentPosition.collectAsState()
-    val duration by viewModel.playerEngine.duration.collectAsState()
-    val playerNotice by viewModel.playerNotice.collectAsState()
-    val currentChannelRecording by viewModel.currentChannelRecording.collectAsState()
+    val availableAudioTracks by viewModel.availableAudioTracks.collectAsStateWithLifecycle()
+    val availableSubtitleTracks by viewModel.availableSubtitleTracks.collectAsStateWithLifecycle()
+    val availableVideoQualities by viewModel.availableVideoQualities.collectAsStateWithLifecycle()
+    val aspectRatio by viewModel.aspectRatio.collectAsStateWithLifecycle()
+    val showDiagnostics by viewModel.showDiagnostics.collectAsStateWithLifecycle()
+    val playerDiagnostics by viewModel.playerDiagnostics.collectAsStateWithLifecycle()
+    val currentPosition by viewModel.playerEngine.currentPosition.collectAsStateWithLifecycle()
+    val duration by viewModel.playerEngine.duration.collectAsStateWithLifecycle()
+    val playerNotice by viewModel.playerNotice.collectAsStateWithLifecycle()
+    val currentChannelRecording by viewModel.currentChannelRecording.collectAsStateWithLifecycle()
+    val isMuted by viewModel.isMuted.collectAsStateWithLifecycle()
+    val mediaTitle by viewModel.mediaTitle.collectAsStateWithLifecycle()
+    val castConnectionState by viewModel.castConnectionState.collectAsStateWithLifecycle()
 
     var showTrackSelection by remember { mutableStateOf<TrackType?>(null) }
     var showProgramHistory by remember { mutableStateOf(false) }
@@ -154,13 +160,19 @@ fun PlayerScreen(
     val categoryListFocusRequester = remember { FocusRequester() }
     val epgFocusRequester = remember { FocusRequester() }
     val playButtonFocusRequester = remember { FocusRequester() }
+    val quickActionsFocusRequester = remember { FocusRequester() }
     val channelInfoFocusRequester = remember { FocusRequester() } // NEW
     var lastFocusedChannelListItemId by rememberSaveable { mutableStateOf<Long?>(null) }
     var lastFocusedEpgProgramToken by rememberSaveable { mutableStateOf<Long?>(null) }
     val layoutDirection = LocalLayoutDirection.current
     val isRtl = layoutDirection == LayoutDirection.Rtl
-    val lifecycleOwner = LocalLifecycleOwner.current
     val currentPictureInPictureMode by rememberUpdatedState(isInPictureInPictureMode)
+    val enterPictureInPicture = remember(mainActivity) {
+        {
+            mainActivity?.enterPlayerPictureInPictureModeFromPlayer()
+            Unit
+        }
+    }
 
     LaunchedEffect(Unit) {
         focusRequester.requestFocus()
@@ -184,46 +196,42 @@ fun PlayerScreen(
         }
     }
 
-    DisposableEffect(lifecycleOwner, mainActivity) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> viewModel.onAppForegrounded()
-                Lifecycle.Event.ON_STOP -> {
-                    if (currentPictureInPictureMode) {
-                        viewModel.closeOverlays()
-                    } else {
-                        viewModel.onAppBackgrounded()
-                    }
-                }
-                else -> Unit
-            }
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        viewModel.onAppForegrounded()
+    }
+
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (currentPictureInPictureMode) {
+            viewModel.closeOverlays()
+        } else {
+            viewModel.onAppBackgrounded()
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
+    }
+
+    DisposableEffect(mainActivity) {
         onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
             mainActivity?.clearPlayerPictureInPictureState()
             viewModel.onPlayerScreenDisposed()
         }
     }
 
     // Consolidated focus management for all overlays
-    val anyOverlayVisible = showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay || showTrackSelection != null || showProgramHistory || showSplitDialog || showDiagnostics
+    val liveOverlayVisible = contentType == "LIVE" && (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay)
+    val anyOverlayVisible = liveOverlayVisible || showTrackSelection != null || showProgramHistory || showSplitDialog || showDiagnostics
     
     LaunchedEffect(anyOverlayVisible) {
         if (anyOverlayVisible) {
             // Give overlays a moment to animate in before requesting focus
             delay(150)
-            try {
-                when {
-                    showCategoryListOverlay -> categoryListFocusRequester.requestFocus()
-                    showChannelListOverlay -> channelListFocusRequester.requestFocus()
-                    showEpgOverlay -> epgFocusRequester.requestFocus()
-                    showChannelInfoOverlay -> channelInfoFocusRequester.requestFocus()
-                }
-            } catch (_: Exception) {}
+            when {
+                showCategoryListOverlay -> categoryListFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Category list overlay")
+                showChannelListOverlay -> channelListFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Channel list overlay")
+                showEpgOverlay -> epgFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "EPG overlay")
+                showChannelInfoOverlay -> channelInfoFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Channel info overlay")
+            }
         } else {
             // Restore focus to main player when all overlays are gone
-            try { focusRequester.requestFocus() } catch (_: Exception) {}
+            focusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player root")
         }
     }
     
@@ -256,13 +264,14 @@ fun PlayerScreen(
             onDismiss = { showSplitDialog = false },
             onLaunch = {
                 showSplitDialog = false
+                viewModel.handOffPlaybackToMultiView()
                 onNavigate?.invoke(Routes.MULTI_VIEW)
             },
             viewModel = multiViewViewModel
         )
     }
 
-    LaunchedEffect(streamUrl, epgChannelId, title, internalChannelId, categoryId, providerId, isVirtual, contentType, archiveStartMs, archiveEndMs, archiveTitle) {
+    LaunchedEffect(streamUrl, epgChannelId, title, artworkUrl, internalChannelId, categoryId, providerId, isVirtual, contentType, archiveStartMs, archiveEndMs, archiveTitle) {
         viewModel.prepare(
             streamUrl = streamUrl,
             epgChannelId = epgChannelId,
@@ -272,6 +281,7 @@ fun PlayerScreen(
             isVirtual = isVirtual,
             contentType = contentType,
             title = title,
+            artworkUrl = artworkUrl,
             archiveStartMs = archiveStartMs,
             archiveEndMs = archiveEndMs,
             archiveTitle = archiveTitle
@@ -281,10 +291,14 @@ fun PlayerScreen(
     LaunchedEffect(showControls) {
         if (showControls) {
             delay(100)
-            try { playButtonFocusRequester.requestFocus() } catch (_: Exception) {}
+            if (contentType == "LIVE") {
+                quickActionsFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player quick actions")
+            } else {
+                playButtonFocusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player transport")
+            }
             viewModel.hideControlsAfterDelay()
         } else {
-            try { focusRequester.requestFocus() } catch (_: Exception) {}
+            focusRequester.requestFocusSafely(tag = "PlayerScreen", target = "Player root")
         }
     }
 
@@ -306,12 +320,28 @@ fun PlayerScreen(
             .focusRequester(focusRequester)
             .focusProperties {
                 // Only allow focus on the main background when no overlays are active
-                canFocus = !anyOverlayVisible
+                canFocus = !anyOverlayVisible && !showControls
             }
             .focusable()
             .onKeyEvent { event ->
                 // Only handle KeyDown to avoid double actions
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
+                    if (showTrackSelection != null) {
+                        return@onKeyEvent when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_BACK -> {
+                                showTrackSelection = null
+                                true
+                            }
+                            KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_DPAD_DOWN,
+                            KeyEvent.KEYCODE_DPAD_LEFT,
+                            KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_CENTER,
+                            KeyEvent.KEYCODE_ENTER,
+                            KeyEvent.KEYCODE_NUMPAD_ENTER -> false
+                            else -> true
+                        }
+                    }
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
@@ -319,18 +349,23 @@ fun PlayerScreen(
                             }
                             if (contentType == "LIVE" && viewModel.hasPendingNumericChannelInput()) {
                                 viewModel.commitNumericChannelInput()
+                                   true
                             } else if (contentType == "LIVE") {
-                                if (showChannelInfoOverlay) viewModel.closeChannelInfoOverlay()
-                                else viewModel.openChannelInfoOverlay()
+                                    if (showChannelInfoOverlay) viewModel.closeChannelInfoOverlay()
+                                    else viewModel.openChannelInfoOverlay()
+                                   true
+                            } else if (showControls) {
+                                false
                             } else {
                                 viewModel.toggleControls()
+                                true
                             }
-                            true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT -> {
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
+                            if (showControls && contentType != "LIVE") return@onKeyEvent false
                             if (showChannelListOverlay && contentType == "LIVE") {
                                 // Second left press while channel list is open → open category list
                                 viewModel.openCategoryListOverlay()
@@ -349,6 +384,7 @@ fun PlayerScreen(
                             if (showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay || showDiagnostics) {
                                 viewModel.onLiveOverlayInteraction()
                             }
+                            if (showControls && contentType != "LIVE") return@onKeyEvent false
                             if (contentType == "LIVE" && !showChannelListOverlay && !showEpgOverlay && !showChannelInfoOverlay) {
                                 if (isRtl) viewModel.openChannelListOverlay() else viewModel.openEpgOverlay()
                                 true
@@ -364,6 +400,7 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay) return@onKeyEvent false
+                            if (showControls && contentType != "LIVE") return@onKeyEvent false
 
                             if (contentType == "LIVE") {
                                 viewModel.playNext()
@@ -377,6 +414,7 @@ fun PlayerScreen(
                                 viewModel.onLiveOverlayInteraction()
                             }
                             if (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay) return@onKeyEvent false
+                            if (showControls && contentType != "LIVE") return@onKeyEvent false
 
                             if (contentType == "LIVE") {
                                 viewModel.playPrevious()
@@ -420,6 +458,10 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                             if (isPlaying) viewModel.pause() else viewModel.play()
+                            true
+                        }
+                        KeyEvent.KEYCODE_MUTE, KeyEvent.KEYCODE_VOLUME_MUTE -> {
+                            viewModel.toggleMute()
                             true
                         }
                         KeyEvent.KEYCODE_CHANNEL_UP, KeyEvent.KEYCODE_DPAD_UP_RIGHT -> {
@@ -582,7 +624,10 @@ fun PlayerScreen(
             audioTrackCount = availableAudioTracks.size,
             videoQualityCount = availableVideoQualities.size,
             currentRecordingStatus = currentChannelRecording?.status,
+            isMuted = isMuted,
+            mediaTitle = mediaTitle,
             playButtonFocusRequester = playButtonFocusRequester,
+            quickActionsFocusRequester = quickActionsFocusRequester,
             modifier = Modifier.fillMaxSize(),
             onClose = onBack,
             onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
@@ -597,7 +642,14 @@ fun PlayerScreen(
             onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
             onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
             onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
-            onOpenSplitScreen = { showSplitDialog = true }
+            onOpenSplitScreen = { showSplitDialog = true },
+            onEnterPictureInPicture = enterPictureInPicture,
+            onToggleMute = viewModel::toggleMute,
+            isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
+            onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
+            onStopCasting = viewModel::stopCasting,
+            onSeekToPosition = viewModel::seekTo,
+            onSetScrubbingMode = viewModel::setScrubbingMode
         )
 
         PlayerNumericInputOverlay(
@@ -649,7 +701,7 @@ fun PlayerScreen(
 
         // --- Overlays ---
         if (!isInPictureInPictureMode && showDiagnostics) {
-            val playerStats by viewModel.playerStats.collectAsState()
+            val playerStats by viewModel.playerStats.collectAsStateWithLifecycle()
             DiagnosticsOverlay(
                 stats = playerStats,
                 diagnostics = playerDiagnostics,
@@ -657,120 +709,134 @@ fun PlayerScreen(
             )
         }
 
-        AnimatedVisibility(
-            visible = showChannelListOverlay,
-            enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-            exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
-            modifier = Modifier
-                .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
-                .fillMaxHeight()
-                .width(350.dp)
-                .focusGroup()
-        ) {
-            ChannelListOverlay(
-                channels = currentChannelList,
-                recentChannels = recentChannels,
-                currentChannelId = currentChannel?.id ?: internalChannelId,
-                overlayFocusRequester = channelListFocusRequester,
-                preferredFocusedChannelId = lastFocusedChannelListItemId,
-                onFocusedChannelChange = { channelId -> lastFocusedChannelListItemId = channelId },
-                lastVisitedCategoryName = lastVisitedCategory?.name,
-                onOpenLastGroup = { viewModel.openLastVisitedCategory() },
-                onSelectChannel = { channelId -> viewModel.zapToChannel(channelId) },
-                onOpenCategories = { viewModel.openCategoryListOverlay() },
-                onDismiss = { viewModel.closeOverlays() },
-                onOverlayInteracted = viewModel::onLiveOverlayInteraction
-            )
-        }
+        if (contentType == "LIVE") {
+            AnimatedVisibility(
+                visible = showChannelListOverlay,
+                enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
+                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                modifier = Modifier
+                    .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
+                    .fillMaxHeight()
+                    .width(350.dp)
+                    .focusGroup()
+            ) {
+                ChannelListOverlay(
+                    channels = currentChannelList,
+                    recentChannels = recentChannels,
+                    currentChannelId = currentChannel?.id ?: internalChannelId,
+                    overlayFocusRequester = channelListFocusRequester,
+                    preferredFocusedChannelId = lastFocusedChannelListItemId,
+                    onFocusedChannelChange = { channelId -> lastFocusedChannelListItemId = channelId },
+                    lastVisitedCategoryName = lastVisitedCategory?.name,
+                    onOpenLastGroup = { viewModel.openLastVisitedCategory() },
+                    onSelectChannel = { channelId -> viewModel.zapToChannel(channelId) },
+                    onOpenCategories = { viewModel.openCategoryListOverlay() },
+                    onDismiss = { viewModel.closeOverlays() },
+                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                )
+            }
 
-        AnimatedVisibility(
-            visible = showCategoryListOverlay,
-            enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
-            exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
-            modifier = Modifier
-                .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
-                .fillMaxHeight()
-                .width(350.dp)
-                .focusGroup()
-        ) {
-            CategoryListOverlay(
-                categories = availableCategories,
-                currentCategoryId = activeCategoryId,
-                overlayFocusRequester = categoryListFocusRequester,
-                onSelectCategory = { category ->
-                    viewModel.selectCategoryFromOverlay(category)
-                },
-                onDismiss = { viewModel.closeOverlays() },
-                onOverlayInteracted = viewModel::onLiveOverlayInteraction
-            )
-        }
+            AnimatedVisibility(
+                visible = showCategoryListOverlay,
+                enter = slideInHorizontally(initialOffsetX = { if (isRtl) it else -it }),
+                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) it else -it }),
+                modifier = Modifier
+                    .align(if (isRtl) Alignment.TopEnd else Alignment.TopStart)
+                    .fillMaxHeight()
+                    .width(350.dp)
+                    .focusGroup()
+            ) {
+                CategoryListOverlay(
+                    categories = availableCategories,
+                    currentCategoryId = activeCategoryId,
+                    overlayFocusRequester = categoryListFocusRequester,
+                    onSelectCategory = { category ->
+                        viewModel.selectCategoryFromOverlay(category)
+                    },
+                    onDismiss = { viewModel.closeOverlays() },
+                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                )
+            }
 
-        AnimatedVisibility(
-            visible = showEpgOverlay,
-            enter = slideInHorizontally(initialOffsetX = { if (isRtl) -it else it }),
-            exit = slideOutHorizontally(targetOffsetX = { if (isRtl) -it else it }),
-            modifier = Modifier
-                .align(if (isRtl) Alignment.TopStart else Alignment.TopEnd)
-                .fillMaxHeight()
-                .width(400.dp)
-                .focusGroup()
-        ) {
-            EpgOverlay(
-                currentChannel = currentChannel,
-                displayChannelNumber = displayChannelNumber,
-                currentProgram = currentProgram,
-                nextProgram = nextProgram,
-                upcomingPrograms = upcomingPrograms,
-                overlayFocusRequester = epgFocusRequester,
-                preferredFocusedProgramToken = lastFocusedEpgProgramToken,
-                onFocusedProgramChange = { token -> lastFocusedEpgProgramToken = token },
-                onDismiss = { viewModel.closeOverlays() },
-                onPlayCatchUp = { program -> 
-                    viewModel.playCatchUp(program)
-                    viewModel.closeOverlays()
-                },
-                onOverlayInteracted = viewModel::onLiveOverlayInteraction
-            )
-        }
+            AnimatedVisibility(
+                visible = showEpgOverlay,
+                enter = slideInHorizontally(initialOffsetX = { if (isRtl) -it else it }),
+                exit = slideOutHorizontally(targetOffsetX = { if (isRtl) -it else it }),
+                modifier = Modifier
+                    .align(if (isRtl) Alignment.TopStart else Alignment.TopEnd)
+                    .fillMaxHeight()
+                    .width(400.dp)
+                    .focusGroup()
+            ) {
+                EpgOverlay(
+                    currentChannel = currentChannel,
+                    displayChannelNumber = displayChannelNumber,
+                    currentProgram = currentProgram,
+                    nextProgram = nextProgram,
+                    upcomingPrograms = upcomingPrograms,
+                    overlayFocusRequester = epgFocusRequester,
+                    preferredFocusedProgramToken = lastFocusedEpgProgramToken,
+                    onFocusedProgramChange = { token -> lastFocusedEpgProgramToken = token },
+                    onDismiss = { viewModel.closeOverlays() },
+                    onPlayCatchUp = { program -> 
+                        viewModel.playCatchUp(program)
+                        viewModel.closeOverlays()
+                    },
+                    onOverlayInteracted = viewModel::onLiveOverlayInteraction
+                )
+            }
 
-        AnimatedVisibility(
-            visible = showChannelInfoOverlay,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .focusGroup()
-        ) {
-            ChannelInfoOverlay(
-                currentChannel = currentChannel,
-                displayChannelNumber = displayChannelNumber,
-                currentProgram = currentProgram,
-                nextProgram = nextProgram,
-                focusRequester = channelInfoFocusRequester,
-                lastVisitedCategoryName = lastVisitedCategory?.name,
-                onDismiss = { viewModel.closeChannelInfoOverlay() },
-                onOverlayInteracted = viewModel::onLiveOverlayInteraction,
-                onOpenFullEpg = {
-                    viewModel.closeChannelInfoOverlay()
-                    viewModel.openEpgOverlay()
-                },
-                onOpenLastGroup = {
-                    viewModel.closeChannelInfoOverlay()
-                    viewModel.openLastVisitedCategory()
-                },
-                currentRecordingStatus = currentChannelRecording?.status,
-                onStartRecording = viewModel::startManualRecording,
-                onStopRecording = viewModel::stopCurrentRecording,
-                onRestartProgram = { viewModel.restartCurrentProgram() },
-                onToggleAspectRatio = { viewModel.toggleAspectRatio() },
-                onToggleDiagnostics = { viewModel.toggleDiagnostics() },
-                onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
-                isPlaying = isPlaying,
-                currentAspectRatio = aspectRatio.modeName,
-                isDiagnosticsEnabled = showDiagnostics,
-                onOpenSplitScreen = { showSplitDialog = true }
-            )
+            AnimatedVisibility(
+                visible = showChannelInfoOverlay,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .focusGroup()
+            ) {
+                ChannelInfoOverlay(
+                    currentChannel = currentChannel,
+                    displayChannelNumber = displayChannelNumber,
+                    currentProgram = currentProgram,
+                    nextProgram = nextProgram,
+                    focusRequester = channelInfoFocusRequester,
+                    lastVisitedCategoryName = lastVisitedCategory?.name,
+                    onDismiss = { viewModel.closeChannelInfoOverlay() },
+                    onOverlayInteracted = viewModel::onLiveOverlayInteraction,
+                    onOpenFullEpg = {
+                        viewModel.closeChannelInfoOverlay()
+                        viewModel.openEpgOverlay()
+                    },
+                    onOpenLastGroup = {
+                        viewModel.closeChannelInfoOverlay()
+                        viewModel.openLastVisitedCategory()
+                    },
+                    currentRecordingStatus = currentChannelRecording?.status,
+                    onStartRecording = viewModel::startManualRecording,
+                    onStopRecording = viewModel::stopCurrentRecording,
+                    onRestartProgram = { viewModel.restartCurrentProgram() },
+                    onToggleAspectRatio = { viewModel.toggleAspectRatio() },
+                    onToggleDiagnostics = { viewModel.toggleDiagnostics() },
+                    onTogglePlayPause = { if (isPlaying) viewModel.pause() else viewModel.play() },
+                    isPlaying = isPlaying,
+                    currentAspectRatio = aspectRatio.modeName,
+                    isDiagnosticsEnabled = showDiagnostics,
+                    onOpenSplitScreen = { showSplitDialog = true },
+                    subtitleTrackCount = availableSubtitleTracks.size,
+                    audioTrackCount = availableAudioTracks.size,
+                    videoQualityCount = availableVideoQualities.size,
+                    isMuted = isMuted,
+                    onToggleMute = viewModel::toggleMute,
+                    onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
+                    onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
+                    onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
+                    onEnterPictureInPicture = enterPictureInPicture,
+                    isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
+                    onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
+                    onStopCasting = viewModel::stopCasting
+                )
+            }
         }
     }
 }
