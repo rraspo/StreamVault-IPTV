@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.Flow
 interface PlaybackHistoryRepository {
     fun getRecentlyWatched(limit: Int = 100): Flow<List<PlaybackHistory>>
     fun getRecentlyWatchedByProvider(providerId: Long, limit: Int = 100): Flow<List<PlaybackHistory>>
+    fun getUnwatchedCount(providerId: Long, seriesId: Long): Flow<Int>
     suspend fun getPlaybackHistory(contentId: Long, contentType: ContentType, providerId: Long): PlaybackHistory?
 
+    suspend fun markAsWatched(history: PlaybackHistory): Result<Unit>
     suspend fun recordPlayback(history: PlaybackHistory): Result<Unit>
     suspend fun updateResumePosition(history: PlaybackHistory): Result<Unit>
     suspend fun removeFromHistory(contentId: Long, contentType: ContentType, providerId: Long): Result<Unit>

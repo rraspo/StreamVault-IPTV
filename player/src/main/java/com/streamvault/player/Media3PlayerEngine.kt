@@ -4,10 +4,13 @@ import android.content.Context
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.view.View
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -25,7 +28,9 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.SubtitleView
 import androidx.media3.common.Format
 import androidx.media3.session.MediaSession
 import com.streamvault.domain.model.DecoderMode
@@ -39,6 +44,8 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.graphics.Color as AndroidColor
+import com.streamvault.domain.model.DrmInfo
+import com.streamvault.domain.model.DrmScheme
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -47,10 +54,11 @@ import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
 import java.util.Locale
+import java.util.UUID
 
 @OptIn(UnstableApi::class)
 class Media3PlayerEngine @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val okHttpClient: OkHttpClient
 ) : PlayerEngine {
 
@@ -84,6 +92,12 @@ class Media3PlayerEngine @Inject constructor(
     private var shouldResumeOnAudioFocusGain = false
     private var currentVolume = 1f
     private var isDucked = false
+    private var preferredAudioLanguageTag: String? = null
+    private var subtitleStyle: PlayerSubtitleStyle = PlayerSubtitleStyle()
+    private var selectedVideoTrackId: String = PLAYER_TRACK_AUTO_ID
+    private var preferredWifiMaxVideoHeight: Int? = null
+    private var preferredEthernetMaxVideoHeight: Int? = null
+    private var boundPlayerView: PlayerView? = null
     /** Remembers the volume before mute so unmute restores it. */
     private var volumeBeforeMute = 1f
     /** Pre-warmed media source for rapid next-channel start. */
@@ -157,6 +171,12 @@ class Media3PlayerEngine @Inject constructor(
     private val _availableSubtitleTracks = MutableStateFlow<List<PlayerTrack>>(emptyList())
     override val availableSubtitleTracks: StateFlow<List<PlayerTrack>> = _availableSubtitleTracks.asStateFlow()
 
+    private val _availableVideoTracks = MutableStateFlow<List<PlayerTrack>>(emptyList())
+    override val availableVideoTracks: StateFlow<List<PlayerTrack>> = _availableVideoTracks.asStateFlow()
+
+    private val _playbackSpeed = MutableStateFlow(1f)
+    override val playbackSpeed: StateFlow<Float> = _playbackSpeed.asStateFlow()
+
     private val _playerStats = MutableStateFlow(PlayerStats())
     override val playerStats: StateFlow<PlayerStats> = _playerStats.asStateFlow()
 
@@ -174,8 +194,41 @@ class Media3PlayerEngine @Inject constructor(
         }
     }
 
+    private fun resolvedMaxVideoHeightForCurrentNetwork(): Int? {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val network = connectivityManager?.activeNetwork ?: return null
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return null
+        val networkPreference = when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> preferredEthernetMaxVideoHeight
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> preferredWifiMaxVideoHeight
+            else -> null
+        }
+        return when {
+            constrainResolutionForMultiView && networkPreference != null -> minOf(720, networkPreference)
+            constrainResolutionForMultiView -> 720
+            else -> networkPreference
+        }
+    }
+
     private fun applyPlayerVolume() {
         exoPlayer?.volume = effectiveVolume()
+    }
+
+    private fun applySubtitleStyle(playerView: PlayerView?) {
+        val subtitleView = playerView?.subtitleView ?: return
+        subtitleView.setStyle(
+            CaptionStyleCompat(
+                subtitleStyle.foregroundColorArgb,
+                subtitleStyle.backgroundColorArgb,
+                AndroidColor.TRANSPARENT,
+                CaptionStyleCompat.EDGE_TYPE_NONE,
+                AndroidColor.TRANSPARENT,
+                null
+            )
+        )
+        subtitleView.setFractionalTextSize(
+            SubtitleView.DEFAULT_TEXT_SIZE_FRACTION * subtitleStyle.textScale.coerceIn(0.75f, 1.75f)
+        )
     }
 
     private fun getOrCreatePlayer(): ExoPlayer {
@@ -232,6 +285,11 @@ class Media3PlayerEngine @Inject constructor(
             )
             .build()
             .apply {
+                playbackParameters = PlaybackParameters(_playbackSpeed.value)
+                trackSelectionParameters = trackSelectionParameters
+                    .buildUpon()
+                    .setPreferredAudioLanguage(preferredAudioLanguageTag)
+                    .build()
                 addAnalyticsListener(object : AnalyticsListener {
                     override fun onVideoInputFormatChanged(
                         eventTime: AnalyticsListener.EventTime,
@@ -369,24 +427,33 @@ class Media3PlayerEngine @Inject constructor(
                     override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
                         val audioTracks = mutableListOf<PlayerTrack>()
                         val subtitleTracks = mutableListOf<PlayerTrack>()
+                        val videoTracks = mutableListOf<PlayerTrack>()
 
                         for (group in tracks.groups) {
                             val type = group.mediaTrackGroup.type
                             val isAudio = type == C.TRACK_TYPE_AUDIO
                             val isText = type == C.TRACK_TYPE_TEXT
+                            val isVideo = type == C.TRACK_TYPE_VIDEO
 
-                            if (isAudio || isText) {
+                            if (isAudio || isText || isVideo) {
                                 for (i in 0 until group.length) {
                                     val format = group.mediaTrackGroup.getFormat(i)
                                     val id = format.id ?: "${group.mediaTrackGroup.hashCode()}_$i"
                                     val name = buildTrackName(format = format, trackType = type, index = i)
-                                    val isSelected = group.isTrackSelected(i)
+                                    val isSelected = when {
+                                        isVideo -> selectedVideoTrackId == id
+                                        else -> group.isTrackSelected(i)
+                                    }
 
                                     val track = PlayerTrack(
                                         id = id,
                                         name = name,
                                         language = format.language,
-                                        type = if (isAudio) TrackType.AUDIO else TrackType.TEXT,
+                                        type = when {
+                                            isAudio -> TrackType.AUDIO
+                                            isText -> TrackType.TEXT
+                                            else -> TrackType.VIDEO
+                                        },
                                         isSelected = isSelected
                                     )
 
@@ -394,6 +461,8 @@ class Media3PlayerEngine @Inject constructor(
                                         audioTracks.add(track)
                                     } else if (isText && group.isTrackSupported(i, false)) {
                                         subtitleTracks.add(track)
+                                    } else if (isVideo && group.isTrackSupported(i, false)) {
+                                        videoTracks.add(track)
                                     }
                                 }
                             }
@@ -401,6 +470,19 @@ class Media3PlayerEngine @Inject constructor(
 
                         _availableAudioTracks.value = audioTracks
                         _availableSubtitleTracks.value = subtitleTracks
+                        _availableVideoTracks.value = when {
+                            videoTracks.size > 1 -> listOf(
+                                PlayerTrack(
+                                    id = PLAYER_TRACK_AUTO_ID,
+                                    name = "Auto",
+                                    language = null,
+                                    type = TrackType.VIDEO,
+                                    isSelected = selectedVideoTrackId == PLAYER_TRACK_AUTO_ID
+                                )
+                            ) + videoTracks
+                            videoTracks.size == 1 -> listOf(videoTracks.first().copy(isSelected = true))
+                            else -> emptyList()
+                        }
                     }
                 })
             }
@@ -418,6 +500,8 @@ class Media3PlayerEngine @Inject constructor(
         _mediaTitle.value = null
         _availableAudioTracks.value = emptyList()
         _availableSubtitleTracks.value = emptyList()
+        _availableVideoTracks.value = emptyList()
+        selectedVideoTrackId = PLAYER_TRACK_AUTO_ID
         applyPlayerVolume()
         player.trackSelectionParameters = player.trackSelectionParameters
             .buildUpon()
@@ -427,7 +511,14 @@ class Media3PlayerEngine @Inject constructor(
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+            .setPreferredAudioLanguage(preferredAudioLanguageTag)
+            .apply {
+                resolvedMaxVideoHeightForCurrentNetwork()?.let { maxHeight ->
+                    setMaxVideoSize(Int.MAX_VALUE, maxHeight)
+                } ?: clearVideoSizeConstraints()
+            }
             .build()
+        player.playbackParameters = PlaybackParameters(_playbackSpeed.value)
 
         // If we already preloaded this exact stream, use the cached source
         val mediaSource = if (preloadedStreamInfo?.url == streamInfo.url && preloadedSource != null) {
@@ -441,7 +532,7 @@ class Media3PlayerEngine @Inject constructor(
             val dataSourceFactory = createDataSourceFactory(streamInfo)
             val streamType = streamInfo.streamType.takeIf { it != StreamType.UNKNOWN }
                 ?: StreamTypeDetector.detect(streamInfo.url)
-            createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title)
+            createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title, streamInfo.drmInfo)
         }
 
         player.setMediaSource(mediaSource)
@@ -474,7 +565,8 @@ class Media3PlayerEngine @Inject constructor(
         url: String,
         streamType: StreamType,
         dataSourceFactory: DataSource.Factory,
-        title: String? = null
+        title: String? = null,
+        drmInfo: DrmInfo? = null
     ): MediaSource {
         val uri = Uri.parse(url)
         val mediaItem = MediaItem.Builder()
@@ -484,6 +576,19 @@ class Media3PlayerEngine @Inject constructor(
                     .setTitle(title)
                     .build()
             )
+            .apply {
+                drmInfo?.let { info ->
+                    setDrmConfiguration(
+                        MediaItem.DrmConfiguration.Builder(info.scheme.toUuid())
+                            .setLicenseUri(info.licenseUrl)
+                            .setLicenseRequestHeaders(info.headers)
+                            .setMultiSession(info.multiSession)
+                            .setForceDefaultLicenseUri(info.forceDefaultLicenseUrl)
+                            .setPlayClearContentWithoutKey(info.playClearContentWithoutKey)
+                            .build()
+                    )
+                }
+            }
             .build()
 
         return when (streamType) {
@@ -598,6 +703,27 @@ class Media3PlayerEngine @Inject constructor(
         applyPlayerVolume()
     }
 
+    override fun setPlaybackSpeed(speed: Float) {
+        val clampedSpeed = speed.coerceIn(0.5f, 2f)
+        _playbackSpeed.value = clampedSpeed
+        exoPlayer?.playbackParameters = PlaybackParameters(clampedSpeed)
+    }
+
+    override fun setPreferredAudioLanguage(languageTag: String?) {
+        preferredAudioLanguageTag = languageTag?.trim()?.takeIf { it.isNotBlank() }
+        exoPlayer?.let { player ->
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .setPreferredAudioLanguage(preferredAudioLanguageTag)
+                .build()
+        }
+    }
+
+    override fun setNetworkQualityPreferences(wifiMaxHeight: Int?, ethernetMaxHeight: Int?) {
+        preferredWifiMaxVideoHeight = wifiMaxHeight?.takeIf { it > 0 }
+        preferredEthernetMaxVideoHeight = ethernetMaxHeight?.takeIf { it > 0 }
+    }
+
     override fun toggleMute() {
         setMuted(!_isMuted.value)
     }
@@ -623,8 +749,14 @@ class Media3PlayerEngine @Inject constructor(
         val dataSourceFactory = createDataSourceFactory(streamInfo)
         val streamType = streamInfo.streamType.takeIf { it != StreamType.UNKNOWN }
             ?: StreamTypeDetector.detect(streamInfo.url)
-        preloadedSource = createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title)
+        preloadedSource = createMediaSource(streamInfo.url, streamType, dataSourceFactory, streamInfo.title, streamInfo.drmInfo)
         preloadedStreamInfo = streamInfo
+    }
+
+    private fun DrmScheme.toUuid(): UUID = when (this) {
+        DrmScheme.WIDEVINE -> C.WIDEVINE_UUID
+        DrmScheme.PLAYREADY -> C.PLAYREADY_UUID
+        DrmScheme.CLEARKEY -> C.CLEARKEY_UUID
     }
 
     override fun selectAudioTrack(trackId: String) {
@@ -651,6 +783,54 @@ class Media3PlayerEngine @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    override fun selectVideoTrack(trackId: String) {
+        exoPlayer?.let { player ->
+            selectedVideoTrackId = trackId
+            if (trackId == PLAYER_TRACK_AUTO_ID) {
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                    .build()
+                _availableVideoTracks.update { existing ->
+                    existing.map { track ->
+                        track.copy(isSelected = track.id == PLAYER_TRACK_AUTO_ID)
+                    }
+                }
+                return
+            }
+
+            val tracks = player.currentTracks
+            for (group in tracks.groups) {
+                if (group.mediaTrackGroup.type == C.TRACK_TYPE_VIDEO) {
+                    for (i in 0 until group.length) {
+                        val format = group.mediaTrackGroup.getFormat(i)
+                        val id = format.id ?: "${group.mediaTrackGroup.hashCode()}_$i"
+                        if (id == trackId) {
+                            player.trackSelectionParameters = player.trackSelectionParameters
+                                .buildUpon()
+                                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
+                                .setOverrideForType(
+                                    androidx.media3.common.TrackSelectionOverride(
+                                        group.mediaTrackGroup,
+                                        listOf(i)
+                                    )
+                                )
+                                .build()
+                            _availableVideoTracks.update { existing ->
+                                existing.map { track ->
+                                    track.copy(isSelected = track.id == trackId)
+                                }
+                            }
+                            return
+                        }
+                    }
+                }
+            }
+            selectedVideoTrackId = PLAYER_TRACK_AUTO_ID
         }
     }
 
@@ -711,6 +891,10 @@ class Media3PlayerEngine @Inject constructor(
     }
 
     private fun buildTrackName(format: Format, trackType: Int, index: Int): String {
+        if (trackType == C.TRACK_TYPE_VIDEO) {
+            return buildVideoTrackName(format, index)
+        }
+
         val explicitLabel = format.label
             ?.trim()
             ?.takeIf { it.isNotBlank() && !it.matches(Regex("(?i)^track\\s*\\d+$")) }
@@ -758,6 +942,33 @@ class Media3PlayerEngine @Inject constructor(
         }
     }
 
+    private fun buildVideoTrackName(format: Format, index: Int): String {
+        val parts = mutableListOf<String>()
+        val explicitLabel = format.label
+            ?.trim()
+            ?.takeIf { it.isNotBlank() && !it.matches(Regex("(?i)^track\\s*\\d+$")) }
+        val resolutionLabel = when {
+            format.height > 0 -> "${format.height}p"
+            format.width > 0 && format.height > 0 -> "${format.width}x${format.height}"
+            else -> null
+        }
+        val bitrateLabel = format.bitrate
+            .takeIf { it > 0 }
+            ?.let { bitrate -> String.format(Locale.US, "%.1f Mbps", bitrate / 1_000_000f) }
+
+        explicitLabel?.let { label ->
+            parts += label
+        }
+        if (!resolutionLabel.isNullOrBlank() && parts.none { it.contains(resolutionLabel, ignoreCase = true) }) {
+            parts += resolutionLabel
+        }
+        if (!bitrateLabel.isNullOrBlank()) {
+            parts += bitrateLabel
+        }
+
+        return parts.firstOrNull()?.takeIf { parts.size == 1 }
+            ?: parts.joinToString(separator = " · ").ifBlank { "Quality ${index + 1}" }
+    }
     private fun isRecoverableError(error: PlaybackException): Boolean {
         return when (error.errorCode) {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
@@ -822,7 +1033,7 @@ class Media3PlayerEngine @Inject constructor(
         return PlayerView(context).apply {
             useController = false
             setShutterBackgroundColor(AndroidColor.TRANSPARENT)
-            setKeepContentOnPlayerReset(true)
+            setKeepContentOnPlayerReset(false)
             setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             enableComposeSurfaceSyncWorkaroundIfAvailable()
             applyResizeMode(resizeMode)
@@ -831,17 +1042,22 @@ class Media3PlayerEngine @Inject constructor(
 
     override fun bindRenderView(renderView: View, resizeMode: PlayerSurfaceResizeMode) {
         val playerView = renderView as? PlayerView ?: return
+        val previousBoundView = boundPlayerView
+        boundPlayerView = playerView
         val player = getOrCreatePlayer()
         playerView.enableComposeSurfaceSyncWorkaroundIfAvailable()
-        if (playerView.player !== player) {
-            playerView.player = player
-        } else {
-            // Compose can keep the same PlayerView instance while its underlying surface is recreated.
-            // Reattaching the player forces Media3 to reconnect video output to the fresh surface.
-            playerView.player = null
+        if (playerView.player !== player || previousBoundView !== playerView) {
             playerView.player = player
         }
         playerView.applyResizeMode(resizeMode)
+        playerView.requestLayout()
+        playerView.invalidate()
+        applySubtitleStyle(playerView)
+    }
+
+    override fun setSubtitleStyle(style: PlayerSubtitleStyle) {
+        subtitleStyle = style.copy(textScale = style.textScale.coerceIn(0.75f, 1.75f))
+        applySubtitleStyle(boundPlayerView)
     }
 
     private fun PlayerView.applyResizeMode(surfaceResizeMode: PlayerSurfaceResizeMode) {

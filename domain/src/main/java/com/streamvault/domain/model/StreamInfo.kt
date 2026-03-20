@@ -7,11 +7,33 @@ data class StreamInfo(
     val userAgent: String? = null,
     val streamType: StreamType = StreamType.UNKNOWN,
     val containerExtension: String? = null,
-    val catchUpUrl: String? = null
+    val catchUpUrl: String? = null,
+    val expirationTime: Long? = null,
+    val drmInfo: DrmInfo? = null
 ) {
     init {
         require(url.isNotBlank()) { "StreamInfo url must not be blank" }
+        expirationTime?.let { require(it >= 0) { "StreamInfo expirationTime must be non-negative" } }
     }
+}
+
+data class DrmInfo(
+    val scheme: DrmScheme,
+    val licenseUrl: String,
+    val headers: Map<String, String> = emptyMap(),
+    val multiSession: Boolean = false,
+    val forceDefaultLicenseUrl: Boolean = false,
+    val playClearContentWithoutKey: Boolean = false
+) {
+    init {
+        require(licenseUrl.isNotBlank()) { "DrmInfo licenseUrl must not be blank" }
+    }
+}
+
+enum class DrmScheme {
+    WIDEVINE,
+    PLAYREADY,
+    CLEARKEY
 }
 
 enum class StreamType {

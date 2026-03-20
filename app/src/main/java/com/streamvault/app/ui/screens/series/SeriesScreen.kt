@@ -46,6 +46,8 @@ import com.streamvault.app.ui.components.SelectionChip
 import com.streamvault.app.ui.components.SelectionChipRow
 import com.streamvault.app.ui.components.SeriesCard
 import com.streamvault.app.ui.theme.*
+import com.streamvault.domain.model.LibraryFilterType
+import com.streamvault.domain.model.LibrarySortBy
 import com.streamvault.domain.model.Series
 import kotlinx.coroutines.launch
 import androidx.compose.ui.res.stringResource
@@ -55,7 +57,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.runtime.saveable.rememberSaveable
 import com.streamvault.app.ui.components.ReorderTopBar
 import com.streamvault.app.ui.components.dialogs.DeleteGroupDialog
 import com.streamvault.app.ui.components.dialogs.RenameGroupDialog
@@ -71,6 +72,9 @@ import com.streamvault.app.ui.components.shell.VodCategoryOption
 import com.streamvault.app.ui.components.shell.VodCategoryPickerDialog
 import com.streamvault.app.ui.components.shell.VodHeroStrip
 import com.streamvault.app.ui.components.shell.VodSectionHeader
+import com.streamvault.app.ui.screens.vod.HandleVodUserMessage
+import com.streamvault.app.ui.screens.vod.ProtectedVodPinDialog
+import com.streamvault.app.ui.screens.vod.VodBrowseDefaults
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -85,44 +89,36 @@ fun SeriesScreen(
     var showPinDialog by remember { mutableStateOf(false) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var pendingSeriesId by remember { mutableStateOf<Long?>(null) }
-    var selectedFacet by rememberSaveable { mutableStateOf(SeriesLibraryFacet.ALL.name) }
-    var selectedSort by rememberSaveable { mutableStateOf(SeriesLibrarySort.LIBRARY.name) }
-    val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    LaunchedEffect(uiState.userMessage) {
-        uiState.userMessage?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.userMessageShown()
-        }
-    }
+    HandleVodUserMessage(
+        userMessage = uiState.userMessage,
+        snackbarHostState = snackbarHostState,
+        onShown = viewModel::userMessageShown
+    )
 
     BackHandler(enabled = uiState.selectedCategory != null && !uiState.isReorderMode) {
         viewModel.selectCategory(null)
     }
 
-    if (showPinDialog) {
-        com.streamvault.app.ui.components.dialogs.PinDialog(
-            onDismissRequest = {
-                showPinDialog = false
-                pinError = null
-                pendingSeriesId = null
-            },
-            onPinEntered = { pin ->
-                scope.launch {
-                    if (viewModel.verifyPin(pin)) {
-                        showPinDialog = false
-                        pinError = null
-                        pendingSeriesId?.let { onSeriesClick(it) }
-                        pendingSeriesId = null
-                    } else {
-                        pinError = context.getString(R.string.series_incorrect_pin)
-                    }
-                }
-            },
-            error = pinError
-        )
-    }
+    ProtectedVodPinDialog(
+        visible = showPinDialog,
+        error = pinError,
+        incorrectPinMessage = context.getString(R.string.series_incorrect_pin),
+        onDismissRequest = {
+            showPinDialog = false
+            pinError = null
+            pendingSeriesId = null
+        },
+        onVerified = {
+            showPinDialog = false
+            pinError = null
+            pendingSeriesId?.let(onSeriesClick)
+            pendingSeriesId = null
+        },
+        onErrorChange = { pinError = it },
+        verifyPin = viewModel::verifyPin
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         AppScreenScaffold(
@@ -173,10 +169,12 @@ fun SeriesScreen(
         } else {
             SeriesVodContent(
                 uiState = uiState,
-                selectedFacet = selectedFacet,
-                onSelectedFacetChange = { selectedFacet = it },
-                selectedSort = selectedSort,
-                onSelectedSortChange = { selectedSort = it },
+                selectedFilterType = uiState.selectedLibraryFilterType,
+                onSelectedFilterTypeChange = viewModel::setSelectedLibraryFilterType,
+                selectedSortBy = uiState.selectedLibrarySortBy,
+                onSelectedSortByChange = viewModel::setSelectedLibrarySortBy,
+                searchQuery = uiState.searchQuery,
+                onSearchQueryChange = viewModel::setSearchQuery,
                 onSeriesClick = onSeriesClick,
                 onProtectedSeriesClick = { seriesId ->
                     pendingSeriesId = seriesId
@@ -186,18 +184,18 @@ fun SeriesScreen(
                 onSelectCategory = viewModel::selectCategory,
                 onSelectFullLibraryBrowse = viewModel::selectFullLibraryBrowse,
                 onOpenContinueWatching = {
-                    selectedFacet = SeriesLibraryFacet.RESUME.name
-                    selectedSort = SeriesLibrarySort.LIBRARY.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.IN_PROGRESS)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.LIBRARY)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onOpenTopRated = {
-                    selectedFacet = SeriesLibraryFacet.TOP_RATED.name
-                    selectedSort = SeriesLibrarySort.RATING.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.TOP_RATED)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.RATING)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onOpenFresh = {
-                    selectedFacet = SeriesLibraryFacet.RECENTLY_UPDATED.name
-                    selectedSort = SeriesLibrarySort.UPDATED.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.RECENTLY_UPDATED)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.UPDATED)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onLoadMore = viewModel::loadMoreSelectedCategory,
@@ -217,7 +215,7 @@ fun SeriesScreen(
         val series = uiState.selectedSeriesForDialog!!
         com.streamvault.app.ui.components.dialogs.AddToGroupDialog(
             contentTitle = series.name,
-            groups = uiState.categories.filter { it.isVirtual && it.id != -999L },
+            groups = uiState.categories.filter { it.isVirtual && it.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID },
             isFavorite = series.isFavorite,
             memberOfGroups = uiState.dialogGroupMemberships,
             onDismiss = { viewModel.onDismissDialog() },
@@ -243,10 +241,10 @@ fun SeriesScreen(
         com.streamvault.app.ui.components.dialogs.CategoryOptionsDialog(
             category = category,
             onDismissRequest = { viewModel.dismissCategoryOptions() },
-            onRename = if (category.isVirtual && category.id != -999L) {
+            onRename = if (category.isVirtual && category.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID) {
                 { viewModel.requestRenameGroup(category) }
             } else null,
-            onDelete = if (category.isVirtual && category.id != -999L) {
+            onDelete = if (category.isVirtual && category.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID) {
                 { viewModel.requestDeleteGroup(category) }
             } else null,
             onReorderChannels = if (category.isVirtual) {
@@ -265,21 +263,15 @@ fun SeriesScreen(
     }
 }
 
-private enum class SeriesLibraryFacet {
-    ALL,
-    FAVORITES,
-    RESUME,
-    RECENTLY_UPDATED,
-    TOP_RATED
-}
-
 @Composable
 private fun SeriesVodContent(
     uiState: SeriesUiState,
-    selectedFacet: String,
-    onSelectedFacetChange: (String) -> Unit,
-    selectedSort: String,
-    onSelectedSortChange: (String) -> Unit,
+    selectedFilterType: LibraryFilterType,
+    onSelectedFilterTypeChange: (LibraryFilterType) -> Unit,
+    selectedSortBy: LibrarySortBy,
+    onSelectedSortByChange: (LibrarySortBy) -> Unit,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     onSeriesClick: (Long) -> Unit,
     onProtectedSeriesClick: (Long) -> Unit,
     onShowDialog: (Series) -> Unit,
@@ -511,23 +503,8 @@ private fun SeriesVodContent(
     }
 
     val baseSeries = uiState.selectedCategoryItems
-    val resumeSeriesIds = remember(uiState.continueWatching) {
-        uiState.continueWatching.mapNotNull { it.seriesId ?: it.contentId }.toSet()
-    }
-    val activeFacet = remember(selectedFacet) {
-        SeriesLibraryFacet.entries.firstOrNull { it.name == selectedFacet } ?: SeriesLibraryFacet.ALL
-    }
-    val activeSort = remember(selectedSort) {
-        SeriesLibrarySort.entries.firstOrNull { it.name == selectedSort } ?: SeriesLibrarySort.LIBRARY
-    }
-    val filteredGridSeries = remember(baseSeries, activeFacet, activeSort, resumeSeriesIds, uiState.isReorderMode, uiState.filteredSeries) {
-        val source = if (uiState.isReorderMode) uiState.filteredSeries else baseSeries
-        if (uiState.isReorderMode) source else applySeriesFacetAndSort(
-            items = source,
-            facet = activeFacet,
-            sort = activeSort,
-            resumeSeriesIds = resumeSeriesIds
-        )
+    val filteredGridSeries = remember(baseSeries, uiState.isReorderMode, uiState.filteredSeries) {
+        if (uiState.isReorderMode) uiState.filteredSeries else baseSeries
     }
     var draggingSeries by remember { mutableStateOf<Series?>(null) }
 
@@ -574,29 +551,42 @@ private fun SeriesVodContent(
         )
 
         if (!uiState.isReorderMode) {
+            SearchInput(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = stringResource(R.string.series_search_placeholder),
+                onSearch = {},
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            )
             SelectionChipRow(
                 title = stringResource(R.string.library_filter_title),
-                chips = buildSeriesFacetChips(baseSeries, resumeSeriesIds),
-                selectedKey = activeFacet.name,
-                onChipSelected = onSelectedFacetChange,
+                chips = seriesFilterChips(),
+                selectedKey = selectedFilterType.name,
+                onChipSelected = { key ->
+                    LibraryFilterType.entries.firstOrNull { it.name == key }?.let(onSelectedFilterTypeChange)
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp)
             )
             SelectionChipRow(
                 title = stringResource(R.string.library_sort_title),
-                chips = SeriesLibrarySort.entries.map { sort ->
+                chips = LibrarySortBy.entries.map { sort ->
                     SelectionChip(
                         key = sort.name,
                         label = when (sort) {
-                            SeriesLibrarySort.LIBRARY -> stringResource(R.string.library_sort_library)
-                            SeriesLibrarySort.TITLE -> stringResource(R.string.library_sort_az)
-                            SeriesLibrarySort.UPDATED -> stringResource(R.string.library_sort_updated)
-                            SeriesLibrarySort.RATING -> stringResource(R.string.library_sort_rating)
+                            LibrarySortBy.LIBRARY -> stringResource(R.string.library_sort_library)
+                            LibrarySortBy.TITLE -> stringResource(R.string.library_sort_az)
+                            LibrarySortBy.RELEASE -> stringResource(R.string.library_sort_release)
+                            LibrarySortBy.UPDATED -> stringResource(R.string.library_sort_updated)
+                            LibrarySortBy.RATING -> stringResource(R.string.library_sort_rating)
+                            LibrarySortBy.WATCH_COUNT -> "Recent Activity"
                         }
                     )
                 },
-                selectedKey = activeSort.name,
-                onChipSelected = onSelectedSortChange,
+                selectedKey = selectedSortBy.name,
+                onChipSelected = { key ->
+                    LibrarySortBy.entries.firstOrNull { it.name == key }?.let(onSelectedSortByChange)
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp)
             )
@@ -690,13 +680,6 @@ private fun SeriesVodContent(
     }
 }
 
-private enum class SeriesLibrarySort {
-    LIBRARY,
-    TITLE,
-    UPDATED,
-    RATING
-}
-
 @Composable
 private fun seriesLibraryLensLabel(lens: SeriesLibraryLens): String =
     when (lens) {
@@ -706,52 +689,14 @@ private fun seriesLibraryLensLabel(lens: SeriesLibraryLens): String =
         SeriesLibraryLens.FRESH -> stringResource(R.string.library_lens_fresh_series)
     }
 
-private fun buildSeriesFacetChips(
-    items: List<com.streamvault.domain.model.Series>,
-    resumeSeriesIds: Set<Long>
-): List<SelectionChip> {
-    val favoriteCount = items.count { it.isFavorite }
-    val resumeCount = items.count { it.id in resumeSeriesIds }
-    val updatedCount = items.count { seriesFreshnessScore(it) > 0L }
-    val topRatedCount = items.count { it.rating > 0f }
+private fun seriesFilterChips(): List<SelectionChip> {
     return listOf(
-        SelectionChip(SeriesLibraryFacet.ALL.name, "All", "${items.size} visible"),
-        SelectionChip(SeriesLibraryFacet.FAVORITES.name, "Favorites", "$favoriteCount saved"),
-        SelectionChip(SeriesLibraryFacet.RESUME.name, "Resume", "$resumeCount in progress"),
-        SelectionChip(SeriesLibraryFacet.RECENTLY_UPDATED.name, "Updated", "$updatedCount tracked"),
-        SelectionChip(SeriesLibraryFacet.TOP_RATED.name, "Top Rated", "$topRatedCount rated")
+        SelectionChip(LibraryFilterType.ALL.name, "All"),
+        SelectionChip(LibraryFilterType.FAVORITES.name, "Favorites"),
+        SelectionChip(LibraryFilterType.IN_PROGRESS.name, "Resume"),
+        SelectionChip(LibraryFilterType.UNWATCHED.name, "Unwatched"),
+        SelectionChip(LibraryFilterType.RECENTLY_UPDATED.name, "Updated"),
+        SelectionChip(LibraryFilterType.TOP_RATED.name, "Top Rated")
     )
-}
-
-private fun applySeriesFacetAndSort(
-    items: List<com.streamvault.domain.model.Series>,
-    facet: SeriesLibraryFacet,
-    sort: SeriesLibrarySort,
-    resumeSeriesIds: Set<Long>
-): List<com.streamvault.domain.model.Series> {
-    val filtered = when (facet) {
-        SeriesLibraryFacet.ALL -> items
-        SeriesLibraryFacet.FAVORITES -> items.filter { it.isFavorite }
-        SeriesLibraryFacet.RESUME -> items.filter { it.id in resumeSeriesIds }
-        SeriesLibraryFacet.RECENTLY_UPDATED -> items.filter { seriesFreshnessScore(it) > 0L }
-        SeriesLibraryFacet.TOP_RATED -> items.filter { it.rating > 0f }
-    }
-
-    return when (sort) {
-        SeriesLibrarySort.LIBRARY -> filtered
-        SeriesLibrarySort.TITLE -> filtered.sortedBy { it.name.lowercase() }
-        SeriesLibrarySort.UPDATED -> filtered.sortedByDescending(::seriesFreshnessScore)
-        SeriesLibrarySort.RATING -> filtered.sortedByDescending { it.rating }
-    }
-}
-
-private fun seriesFreshnessScore(series: com.streamvault.domain.model.Series): Long {
-    return series.lastModified
-        .takeIf { it > 0L }
-        ?: series.releaseDate
-            ?.filter { it.isDigit() }
-            ?.take(8)
-            ?.toLongOrNull()
-        ?: 0L
 }
 

@@ -1,7 +1,11 @@
 package com.streamvault.data.remote.xtream
 
-import android.net.Uri
 import com.streamvault.domain.model.ContentType
+import java.net.URI
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+import java.util.Locale
 
 enum class XtreamStreamKind(val pathSegment: String) {
     LIVE("live"),
@@ -13,7 +17,8 @@ data class XtreamStreamToken(
     val providerId: Long,
     val kind: XtreamStreamKind,
     val streamId: Long,
-    val containerExtension: String? = null
+    val containerExtension: String? = null,
+    val directSource: String? = null
 )
 
 object XtreamUrlFactory {
@@ -35,25 +40,27 @@ object XtreamUrlFactory {
         action: String? = null,
         extraQueryParams: Map<String, String?> = emptyMap()
     ): String {
-        return baseBuilder(serverUrl)
-            .appendPath("player_api.php")
-            .appendQueryParameter("username", username)
-            .appendQueryParameter("password", password)
-            .apply {
-                action?.let { appendQueryParameter("action", it) }
-                extraQueryParams.forEach { (key, value) -> value?.let { appendQueryParameter(key, it) } }
+        return buildUrl(
+            serverUrl = serverUrl,
+            path = "player_api.php",
+            queryParams = buildList {
+                add("username" to username)
+                add("password" to password)
+                action?.let { add("action" to it) }
+                extraQueryParams.forEach { (key, value) -> value?.let { add(key to it) } }
             }
-            .build()
-            .toString()
+        )
     }
 
     fun buildXmltvUrl(serverUrl: String, username: String, password: String): String {
-        return baseBuilder(serverUrl)
-            .appendPath("xmltv.php")
-            .appendQueryParameter("username", username)
-            .appendQueryParameter("password", password)
-            .build()
-            .toString()
+        return buildUrl(
+            serverUrl = serverUrl,
+            path = "xmltv.php",
+            queryParams = listOf(
+                "username" to username,
+                "password" to password
+            )
+        )
     }
 
     fun buildPlaybackUrl(
@@ -64,14 +71,15 @@ object XtreamUrlFactory {
         streamId: Long,
         containerExtension: String? = null
     ): String {
+        val normalizedExtension = normalizeContainerExtension(containerExtension)
         val ext = when (kind) {
-            XtreamStreamKind.LIVE -> "ts"
-            XtreamStreamKind.MOVIE, XtreamStreamKind.SERIES -> containerExtension ?: "mp4"
+            XtreamStreamKind.LIVE -> normalizedExtension ?: "ts"
+            XtreamStreamKind.MOVIE, XtreamStreamKind.SERIES -> normalizedExtension ?: "mp4"
         }
         return serverUrl.trimEnd('/') + "/${kind.pathSegment}/" +
-            Uri.encode(username) + "/" +
-            Uri.encode(password) + "/" +
-            Uri.encode(streamId.toString()) + "." + Uri.encode(ext)
+            encodePathSegment(username) + "/" +
+            encodePathSegment(password) + "/" +
+            encodePathSegment(streamId.toString()) + "." + encodePathSegment(ext)
     }
 
     fun buildCatchUpUrl(
@@ -83,39 +91,48 @@ object XtreamUrlFactory {
         streamId: Long
     ): String {
         return serverUrl.trimEnd('/') + "/timeshift/" +
-            Uri.encode(username) + "/" +
-            Uri.encode(password) + "/" +
-            Uri.encode(durationMinutes.toString()) + "/" +
-            Uri.encode(formattedStart) + "/" +
-            Uri.encode(streamId.toString()) + ".ts"
+            encodePathSegment(username) + "/" +
+            encodePathSegment(password) + "/" +
+            encodePathSegment(durationMinutes.toString()) + "/" +
+            encodePathSegment(formattedStart) + "/" +
+            encodePathSegment(streamId.toString()) + ".ts"
     }
 
     fun buildInternalStreamUrl(
         providerId: Long,
         kind: XtreamStreamKind,
         streamId: Long,
-        containerExtension: String? = null
+        containerExtension: String? = null,
+        directSource: String? = null
     ): String {
-        return Uri.Builder()
-            .scheme(INTERNAL_SCHEME)
-            .authority(providerId.toString())
-            .appendPath(kind.pathSegment)
-            .appendPath(streamId.toString())
-            .apply {
-                containerExtension?.takeIf { it.isNotBlank() }?.let { appendQueryParameter("ext", it) }
-            }
-            .build()
-            .toString()
+        val normalizedExtension = normalizeContainerExtension(containerExtension)
+        val normalizedDirectSource = normalizeDirectSource(directSource)
+        val queryParameters = buildList {
+            normalizedExtension?.let { add("ext=${encodeQueryComponent(it)}") }
+            normalizedDirectSource?.let { add("src=${encodeQueryComponent(it)}") }
+        }
+        val query = queryParameters.takeIf { it.isNotEmpty() }
+            ?.joinToString(prefix = "?", separator = "&")
+            .orEmpty()
+        return "$INTERNAL_SCHEME://$providerId/${kind.pathSegment}/$streamId$query"
     }
 
     fun parseInternalStreamUrl(url: String?): XtreamStreamToken? {
         if (url.isNullOrBlank()) return null
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
         if (!uri.scheme.equals(INTERNAL_SCHEME, ignoreCase = true)) return null
         val providerId = uri.authority?.toLongOrNull() ?: return null
-        val kind = uri.pathSegments.getOrNull(0)?.let(::kindFromPathSegment) ?: return null
-        val streamId = uri.pathSegments.getOrNull(1)?.toLongOrNull() ?: return null
-        return XtreamStreamToken(providerId, kind, streamId, uri.getQueryParameter("ext"))
+        val pathSegments = uri.path
+            ?.trim('/')
+            ?.split('/')
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        val kind = pathSegments.getOrNull(0)?.let(::kindFromPathSegment) ?: return null
+        val streamId = pathSegments.getOrNull(1)?.toLongOrNull() ?: return null
+        val query = parseQuery(uri.rawQuery)
+        val ext = query["ext"]?.let(::normalizeContainerExtension)
+        val directSource = query["src"]?.let(::normalizeDirectSource)
+        return XtreamStreamToken(providerId, kind, streamId, ext, directSource)
     }
 
     fun kindForContentType(contentType: ContentType): XtreamStreamKind? = when (contentType) {
@@ -127,7 +144,13 @@ object XtreamUrlFactory {
 
     fun sanitizePersistedStreamUrl(url: String, providerId: Long): String {
         val parsed = parseCredentialedStreamUrl(url, providerId) ?: return url
-        return buildInternalStreamUrl(parsed.providerId, parsed.kind, parsed.streamId, parsed.containerExtension)
+        return buildInternalStreamUrl(
+            providerId = parsed.providerId,
+            kind = parsed.kind,
+            streamId = parsed.streamId,
+            containerExtension = parsed.containerExtension,
+            directSource = parsed.directSource
+        )
     }
 
     fun isInternalStreamUrl(url: String?): Boolean = parseInternalStreamUrl(url) != null
@@ -150,19 +173,23 @@ object XtreamUrlFactory {
     }
 
     private fun parseCredentialedStreamUrl(url: String, providerId: Long): XtreamStreamToken? {
-        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return null
-        val kind = uri.pathSegments.getOrNull(0)?.let(::kindFromPathSegment) ?: return null
-        if (uri.pathSegments.size < 4) return null
-        val fileSegment = uri.pathSegments[3]
+        val uri = runCatching { URI(url) }.getOrNull() ?: return null
+        val pathSegments = uri.path
+            ?.trim('/')
+            ?.split('/')
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+        val kind = pathSegments.getOrNull(0)?.let(::kindFromPathSegment) ?: return null
+        if (pathSegments.size < 4) return null
+        val fileSegment = pathSegments[3]
         val dotIndex = fileSegment.lastIndexOf('.')
         val streamId = fileSegment.substring(0, dotIndex.takeIf { it > 0 } ?: fileSegment.length).toLongOrNull() ?: return null
-        val ext = if (dotIndex > 0 && dotIndex < fileSegment.lastIndex) fileSegment.substring(dotIndex + 1) else null
-        return XtreamStreamToken(providerId, kind, streamId, ext)
-    }
-
-    private fun baseBuilder(serverUrl: String): Uri.Builder {
-        val normalized = serverUrl.trimEnd('/') + "/"
-        return Uri.parse(normalized).buildUpon().path("")
+        val ext = if (dotIndex > 0 && dotIndex < fileSegment.lastIndex) {
+            normalizeContainerExtension(fileSegment.substring(dotIndex + 1))
+        } else {
+            null
+        }
+        return XtreamStreamToken(providerId, kind, streamId, ext, directSource = null)
     }
 
     private fun kindFromPathSegment(segment: String): XtreamStreamKind? = when (segment.lowercase()) {
@@ -170,5 +197,53 @@ object XtreamUrlFactory {
         XtreamStreamKind.MOVIE.pathSegment -> XtreamStreamKind.MOVIE
         XtreamStreamKind.SERIES.pathSegment -> XtreamStreamKind.SERIES
         else -> null
+    }
+
+    private fun buildUrl(
+        serverUrl: String,
+        path: String,
+        queryParams: List<Pair<String, String>>
+    ): String {
+        val query = queryParams.joinToString("&") { (key, value) ->
+            "${encodeQueryComponent(key)}=${encodeQueryComponent(value)}"
+        }
+        return serverUrl.trimEnd('/') + "/$path?$query"
+    }
+
+    private fun parseQuery(rawQuery: String?): Map<String, String> {
+        if (rawQuery.isNullOrBlank()) return emptyMap()
+        return rawQuery.split('&')
+            .mapNotNull { pair ->
+                val key = pair.substringBefore('=', missingDelimiterValue = "")
+                    .takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val value = pair.substringAfter('=', missingDelimiterValue = "")
+                decodeQueryComponent(key) to decodeQueryComponent(value)
+            }
+            .toMap()
+    }
+
+    private fun encodePathSegment(value: String): String = encodeQueryComponent(value)
+
+    private fun encodeQueryComponent(value: String): String {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
+    }
+
+    private fun decodeQueryComponent(value: String): String {
+        return URLDecoder.decode(value, StandardCharsets.UTF_8)
+    }
+
+    private fun normalizeContainerExtension(containerExtension: String?): String? {
+        return containerExtension
+            ?.trim()
+            ?.removePrefix(".")
+            ?.lowercase(Locale.ROOT)
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun normalizeDirectSource(directSource: String?): String? {
+        return directSource
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
     }
 }

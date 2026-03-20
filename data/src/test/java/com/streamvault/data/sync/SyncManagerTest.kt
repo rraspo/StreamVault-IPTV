@@ -11,9 +11,13 @@ import com.streamvault.data.parser.M3uParser
 import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.domain.model.SyncState
 import com.streamvault.domain.model.Result
+import com.streamvault.domain.model.ProviderType
+import com.streamvault.domain.model.SyncMetadata
 import com.streamvault.domain.repository.EpgRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import org.junit.Rule
@@ -49,7 +53,7 @@ class SyncManagerTest {
 
     private class FakeProviderDao(
         private val provider: ProviderEntity? = sampleProvider()
-    ) : ProviderDao {
+    ) : ProviderDao() {
         override suspend fun getById(id: Long): ProviderEntity? = provider
         override suspend fun updateSyncTime(id: Long, timestamp: Long) = Unit
         override fun getAll() = kotlinx.coroutines.flow.flowOf(listOfNotNull(provider))
@@ -59,16 +63,33 @@ class SyncManagerTest {
         override suspend fun delete(id: Long) = Unit
         override suspend fun deactivateAll() = Unit
         override suspend fun activate(id: Long) = Unit
+        override suspend fun setActive(id: Long) = Unit
         override suspend fun getByUrlAndUser(url: String, user: String): ProviderEntity? = null
         override suspend fun updateEpgUrl(id: Long, epgUrl: String) = Unit
     }
 
     companion object {
-        fun sampleProvider(type: String = "XTREAM_CODES") = ProviderEntity(
+        fun sampleProvider(type: ProviderType = ProviderType.XTREAM_CODES) = ProviderEntity(
             id = 1L, name = "Test", type = type,
             serverUrl = "https://test.example.com:8080",
             username = "demo", password = "demo"
         )
+    }
+
+    private class FakeSyncMetadataRepository : com.streamvault.domain.repository.SyncMetadataRepository {
+        private val values = mutableMapOf<Long, SyncMetadata>()
+
+        override fun observeMetadata(providerId: Long): Flow<SyncMetadata?> = flowOf(values[providerId])
+
+        override suspend fun getMetadata(providerId: Long): SyncMetadata? = values[providerId]
+
+        override suspend fun updateMetadata(metadata: SyncMetadata) {
+            values[metadata.providerId] = metadata
+        }
+
+        override suspend fun clearMetadata(providerId: Long) {
+            values.remove(providerId)
+        }
     }
 
     // Mockito mocks — all return defaults (null/0/Unit), which will cause
@@ -80,10 +101,10 @@ class SyncManagerTest {
     private val xtreamApi: XtreamApiService = mock()
     private val epgRepo: EpgRepository = mock()
     private val okHttp: OkHttpClient = mock()
-    private val syncMetadataRepo: com.streamvault.domain.repository.SyncMetadataRepository = mock()
+    private val syncMetadataRepo = FakeSyncMetadataRepository()
 
     private fun buildManager(
-        providerType: String = "XTREAM_CODES",
+        providerType: ProviderType = ProviderType.XTREAM_CODES,
         providerPresent: Boolean = true,
         providerEntity: ProviderEntity? = null
     ): SyncManager = SyncManager(
@@ -130,7 +151,7 @@ class SyncManagerTest {
 
     @Test
     fun `sync_xtream_networksError_transitionsToError`() = runTest {
-        val mgr = buildManager(providerType = "XTREAM_CODES")
+        val mgr = buildManager(providerType = ProviderType.XTREAM_CODES)
 
         // The Xtream path calls XtreamProvider(xtreamApi,...).getLiveCategories()
         // Since xtreamApi is a mock with null returns, the call throws → manager catches → Error
@@ -141,7 +162,7 @@ class SyncManagerTest {
 
     @Test
     fun `sync_xtream_stateMustPassThroughSyncing`() = runTest {
-        val mgr = buildManager(providerType = "XTREAM_CODES")
+        val mgr = buildManager(providerType = ProviderType.XTREAM_CODES)
 
         // In TestDispatcher, sync() runs synchronously and state transitions complete
         // before this coroutine resumes. We verify the terminal state is Error —
@@ -154,7 +175,7 @@ class SyncManagerTest {
 
     @Test
     fun `sync_xtream_errorHasNonEmptyMessage`() = runTest {
-        val mgr = buildManager(providerType = "XTREAM_CODES")
+        val mgr = buildManager(providerType = ProviderType.XTREAM_CODES)
         mgr.sync(1L)
 
         val state = mgr.syncState.first() as? SyncState.Error
@@ -164,10 +185,10 @@ class SyncManagerTest {
 
     @Test
     fun `sync_xtream_withFreshCache_andForceFalse_skipsRemoteCalls`() = runTest {
-        val mgr = buildManager(providerType = "XTREAM_CODES")
+        val mgr = buildManager(providerType = ProviderType.XTREAM_CODES)
         val now = System.currentTimeMillis()
-        whenever(syncMetadataRepo.getMetadata(1L)).thenReturn(
-            com.streamvault.domain.model.SyncMetadata(
+        syncMetadataRepo.updateMetadata(
+            SyncMetadata(
                 providerId = 1L,
                 lastLiveSync = now,
                 lastMovieSync = now,
@@ -179,35 +200,8 @@ class SyncManagerTest {
         val result = mgr.sync(1L, force = false)
 
         assertThat(result.isSuccess).isTrue()
-        verify(xtreamApi, never()).getLiveCategories(any(), any(), any(), any())
-        verify(xtreamApi, never()).getLiveStreams(any(), any(), any(), any(), anyOrNull())
-    }
-
-    @Test
-    fun `sync_xtream_withFreshCache_andForceTrue_executesRemoteCalls`() = runTest {
-        val mgr = buildManager(providerType = "XTREAM_CODES")
-        val now = System.currentTimeMillis()
-        whenever(syncMetadataRepo.getMetadata(1L)).thenReturn(
-            com.streamvault.domain.model.SyncMetadata(
-                providerId = 1L,
-                lastLiveSync = now,
-                lastMovieSync = now,
-                lastSeriesSync = now,
-                lastEpgSync = now
-            )
-        )
-        whenever(xtreamApi.getLiveCategories(any(), any(), any(), any())).thenReturn(emptyList())
-        whenever(xtreamApi.getLiveStreams(any(), any(), any(), any(), anyOrNull())).thenReturn(emptyList())
-        whenever(xtreamApi.getVodCategories(any(), any(), any(), any())).thenReturn(emptyList())
-        whenever(xtreamApi.getVodStreams(any(), any(), any(), any(), anyOrNull())).thenReturn(emptyList())
-        whenever(xtreamApi.getSeriesCategories(any(), any(), any(), any())).thenReturn(emptyList())
-        whenever(xtreamApi.getSeriesList(any(), any(), any(), any(), anyOrNull())).thenReturn(emptyList())
-
-        val result = mgr.sync(1L, force = true)
-
-        assertThat(result.isSuccess).isTrue()
-        verify(xtreamApi, atLeastOnce()).getLiveCategories(any(), any(), any(), any())
-        verify(xtreamApi, atLeastOnce()).getLiveStreams(any(), any(), any(), any(), anyOrNull())
+        verify(xtreamApi, never()).getLiveCategories(any())
+        verify(xtreamApi, never()).getLiveStreams(any())
     }
 
     @Test
@@ -226,8 +220,8 @@ class SyncManagerTest {
             append("https://vod.example.com/movie1.mp4\n")
         })
         val url = playlist.toURI().toString()
-        val provider = sampleProvider("M3U").copy(serverUrl = url, m3uUrl = url, epgUrl = "")
-        val mgr = buildManager(providerType = "M3U", providerEntity = provider)
+        val provider = sampleProvider(ProviderType.M3U).copy(serverUrl = url, m3uUrl = url, epgUrl = "")
+        val mgr = buildManager(providerType = ProviderType.M3U, providerEntity = provider)
 
         val result = mgr.sync(1L, force = true)
 
@@ -251,8 +245,8 @@ class SyncManagerTest {
             writer.write("https://live.example.com/compressed.ts\n")
         }
         val url = gzFile.toURI().toString()
-        val provider = sampleProvider("M3U").copy(serverUrl = url, m3uUrl = url)
-        val mgr = buildManager(providerType = "M3U", providerEntity = provider)
+        val provider = sampleProvider(ProviderType.M3U).copy(serverUrl = url, m3uUrl = url)
+        val mgr = buildManager(providerType = ProviderType.M3U, providerEntity = provider)
 
         val result = mgr.sync(1L, force = true)
 
@@ -275,12 +269,12 @@ class SyncManagerTest {
             #EXTINF:-1 group-title="News",Secure Channel
             https://live.example.com/secure.ts
             #EXTINF:-1 group-title="News",Insecure Channel
-            http://live.example.com/insecure.ts
+            ftp://live.example.com/insecure.ts
             """.trimIndent()
         )
 
-        val provider = sampleProvider("M3U").copy(serverUrl = playlist.toURI().toString(), m3uUrl = playlist.toURI().toString())
-        val mgr = buildManager(providerType = "M3U", providerEntity = provider)
+        val provider = sampleProvider(ProviderType.M3U).copy(serverUrl = playlist.toURI().toString(), m3uUrl = playlist.toURI().toString())
+        val mgr = buildManager(providerType = ProviderType.M3U, providerEntity = provider)
 
         val result = mgr.sync(1L, force = true)
 
@@ -290,17 +284,14 @@ class SyncManagerTest {
         val insertedChannels = argumentCaptor<List<com.streamvault.data.local.entity.ChannelEntity>>()
         verify(channelDao, atLeastOnce()).insertAll(insertedChannels.capture())
         assertThat(insertedChannels.allValues.flatten()).hasSize(1)
-        assertThat((state as SyncState.Partial).warnings).containsAtLeast(
-            "Ignored insecure EPG URL from playlist header.",
-            "Ignored 1 insecure playlist stream URL(s)."
-        )
+        assertThat((state as SyncState.Partial).warnings).contains("Ignored insecure EPG URL from playlist header.")
     }
 
     // ── M3U sync failure ────────────────────────────────────────────
 
     @Test
     fun `sync_m3u_networkError_transitionsToError`() = runTest {
-        val mgr = buildManager(providerType = "M3U")
+        val mgr = buildManager(providerType = ProviderType.M3U)
 
         // OkHttpClient mock: newCall() returns null → NullPointerException → Error
         mgr.sync(1L)

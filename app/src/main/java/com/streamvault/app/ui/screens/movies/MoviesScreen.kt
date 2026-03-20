@@ -45,13 +45,14 @@ import com.streamvault.app.ui.components.SavedCategoryContextCard
 import com.streamvault.app.ui.components.SavedCategoryShortcut
 import com.streamvault.app.ui.components.SavedCategoryShortcutsRow
 import com.streamvault.app.ui.theme.*
+import com.streamvault.domain.model.LibraryFilterType
+import com.streamvault.domain.model.LibrarySortBy
 import com.streamvault.domain.model.Movie
 import kotlinx.coroutines.launch
 import androidx.compose.ui.res.stringResource
 import com.streamvault.app.R
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.border
-import androidx.compose.runtime.saveable.rememberSaveable
 import com.streamvault.app.ui.components.ReorderTopBar
 import com.streamvault.app.ui.components.dialogs.DeleteGroupDialog
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -71,6 +72,9 @@ import com.streamvault.app.ui.components.shell.VodCategoryOption
 import com.streamvault.app.ui.components.shell.VodCategoryPickerDialog
 import com.streamvault.app.ui.components.shell.VodHeroStrip
 import com.streamvault.app.ui.components.shell.VodSectionHeader
+import com.streamvault.app.ui.screens.vod.HandleVodUserMessage
+import com.streamvault.app.ui.screens.vod.ProtectedVodPinDialog
+import com.streamvault.app.ui.screens.vod.VodBrowseDefaults
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -85,44 +89,36 @@ fun MoviesScreen(
     var showPinDialog by remember { mutableStateOf(false) }
     var pinError by remember { mutableStateOf<String?>(null) }
     var pendingMovie by remember { mutableStateOf<Movie?>(null) }
-    var selectedFacet by rememberSaveable { mutableStateOf(MovieLibraryFacet.ALL.name) }
-    var selectedSort by rememberSaveable { mutableStateOf(MovieLibrarySort.LIBRARY.name) }
-    val scope = rememberCoroutineScope()
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    LaunchedEffect(uiState.userMessage) {
-        uiState.userMessage?.let { message ->
-            snackbarHostState.showSnackbar(message)
-            viewModel.userMessageShown()
-        }
-    }
+    HandleVodUserMessage(
+        userMessage = uiState.userMessage,
+        snackbarHostState = snackbarHostState,
+        onShown = viewModel::userMessageShown
+    )
 
     BackHandler(enabled = uiState.selectedCategory != null && !uiState.isReorderMode) {
         viewModel.selectCategory(null)
     }
 
-    if (showPinDialog) {
-        com.streamvault.app.ui.components.dialogs.PinDialog(
-            onDismissRequest = {
-                showPinDialog = false
-                pinError = null
-                pendingMovie = null
-            },
-            onPinEntered = { pin ->
-                scope.launch {
-                    if (viewModel.verifyPin(pin)) {
-                        showPinDialog = false
-                        pinError = null
-                        pendingMovie?.let { onMovieClick(it) }
-                        pendingMovie = null
-                    } else {
-                        pinError = context.getString(R.string.movies_incorrect_pin)
-                    }
-                }
-            },
-            error = pinError
-        )
-    }
+    ProtectedVodPinDialog(
+        visible = showPinDialog,
+        error = pinError,
+        incorrectPinMessage = context.getString(R.string.movies_incorrect_pin),
+        onDismissRequest = {
+            showPinDialog = false
+            pinError = null
+            pendingMovie = null
+        },
+        onVerified = {
+            showPinDialog = false
+            pinError = null
+            pendingMovie?.let(onMovieClick)
+            pendingMovie = null
+        },
+        onErrorChange = { pinError = it },
+        verifyPin = viewModel::verifyPin
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
         AppScreenScaffold(
@@ -173,10 +169,12 @@ fun MoviesScreen(
         } else {
             MoviesVodContent(
                 uiState = uiState,
-                selectedFacet = selectedFacet,
-                onSelectedFacetChange = { selectedFacet = it },
-                selectedSort = selectedSort,
-                onSelectedSortChange = { selectedSort = it },
+                selectedFilterType = uiState.selectedLibraryFilterType,
+                onSelectedFilterTypeChange = viewModel::setSelectedLibraryFilterType,
+                selectedSortBy = uiState.selectedLibrarySortBy,
+                onSelectedSortByChange = viewModel::setSelectedLibrarySortBy,
+                searchQuery = uiState.searchQuery,
+                onSearchQueryChange = viewModel::setSearchQuery,
                 onMovieClick = onMovieClick,
                 onProtectedMovieClick = { movie ->
                     pendingMovie = movie
@@ -186,18 +184,18 @@ fun MoviesScreen(
                 onSelectCategory = viewModel::selectCategory,
                 onSelectFullLibraryBrowse = viewModel::selectFullLibraryBrowse,
                 onOpenContinueWatching = {
-                    selectedFacet = MovieLibraryFacet.RESUME.name
-                    selectedSort = MovieLibrarySort.LIBRARY.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.IN_PROGRESS)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.LIBRARY)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onOpenTopRated = {
-                    selectedFacet = MovieLibraryFacet.TOP_RATED.name
-                    selectedSort = MovieLibrarySort.RATING.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.TOP_RATED)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.RATING)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onOpenFresh = {
-                    selectedFacet = MovieLibraryFacet.ALL.name
-                    selectedSort = MovieLibrarySort.RELEASE.name
+                    viewModel.setSelectedLibraryFilterType(LibraryFilterType.RECENTLY_UPDATED)
+                    viewModel.setSelectedLibrarySortBy(LibrarySortBy.RELEASE)
                     viewModel.selectFullLibraryBrowse()
                 },
                 onLoadMore = viewModel::loadMoreSelectedCategory,
@@ -217,7 +215,7 @@ fun MoviesScreen(
         val movie = uiState.selectedMovieForDialog!!
         com.streamvault.app.ui.components.dialogs.AddToGroupDialog(
             contentTitle = movie.name,
-            groups = uiState.categories.filter { it.isVirtual && it.id != -999L },
+            groups = uiState.categories.filter { it.isVirtual && it.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID },
             isFavorite = movie.isFavorite,
             memberOfGroups = uiState.dialogGroupMemberships,
             onDismiss = { viewModel.onDismissDialog() },
@@ -235,10 +233,10 @@ fun MoviesScreen(
         com.streamvault.app.ui.components.dialogs.CategoryOptionsDialog(
             category = category,
             onDismissRequest = { viewModel.dismissCategoryOptions() },
-            onRename = if (category.isVirtual && category.id != -999L) {
+            onRename = if (category.isVirtual && category.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID) {
                 { viewModel.requestRenameGroup(category) }
             } else null,
-            onDelete = if (category.isVirtual && category.id != -999L) {
+            onDelete = if (category.isVirtual && category.id != VodBrowseDefaults.FAVORITES_SENTINEL_ID) {
                 {
                     viewModel.requestDeleteGroup(category)
                 }
@@ -267,21 +265,15 @@ fun MoviesScreen(
     }
 }
 
-private enum class MovieLibraryFacet {
-    ALL,
-    FAVORITES,
-    RESUME,
-    UNWATCHED,
-    TOP_RATED
-}
-
 @Composable
 private fun MoviesVodContent(
     uiState: MoviesUiState,
-    selectedFacet: String,
-    onSelectedFacetChange: (String) -> Unit,
-    selectedSort: String,
-    onSelectedSortChange: (String) -> Unit,
+    selectedFilterType: LibraryFilterType,
+    onSelectedFilterTypeChange: (LibraryFilterType) -> Unit,
+    selectedSortBy: LibrarySortBy,
+    onSelectedSortByChange: (LibrarySortBy) -> Unit,
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
     onMovieClick: (Movie) -> Unit,
     onProtectedMovieClick: (Movie) -> Unit,
     onShowDialog: (Movie) -> Unit,
@@ -525,21 +517,8 @@ private fun MoviesVodContent(
     }
 
     val baseMovies = uiState.selectedCategoryItems
-    val resumeMovieIds = remember(uiState.continueWatching) { uiState.continueWatching.map { it.contentId }.toSet() }
-    val activeFacet = remember(selectedFacet) {
-        MovieLibraryFacet.entries.firstOrNull { it.name == selectedFacet } ?: MovieLibraryFacet.ALL
-    }
-    val activeSort = remember(selectedSort) {
-        MovieLibrarySort.entries.firstOrNull { it.name == selectedSort } ?: MovieLibrarySort.LIBRARY
-    }
-    val filteredGridMovies = remember(baseMovies, activeFacet, activeSort, resumeMovieIds, uiState.isReorderMode, uiState.filteredMovies) {
-        val source = if (uiState.isReorderMode) uiState.filteredMovies else baseMovies
-        if (uiState.isReorderMode) source else applyMovieFacetAndSort(
-            items = source,
-            facet = activeFacet,
-            sort = activeSort,
-            resumeMovieIds = resumeMovieIds
-        )
+    val filteredGridMovies = remember(baseMovies, uiState.isReorderMode, uiState.filteredMovies) {
+        if (uiState.isReorderMode) uiState.filteredMovies else baseMovies
     }
     var draggingMovie by remember { mutableStateOf<Movie?>(null) }
 
@@ -586,29 +565,42 @@ private fun MoviesVodContent(
         )
 
         if (!uiState.isReorderMode) {
+            SearchInput(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = stringResource(R.string.movies_search_placeholder),
+                onSearch = {},
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            )
             SelectionChipRow(
                 title = stringResource(R.string.library_filter_title),
-                chips = buildMovieFacetChips(baseMovies, resumeMovieIds),
-                selectedKey = activeFacet.name,
-                onChipSelected = onSelectedFacetChange,
+                chips = movieFilterChips(),
+                selectedKey = selectedFilterType.name,
+                onChipSelected = { key ->
+                    LibraryFilterType.entries.firstOrNull { it.name == key }?.let(onSelectedFilterTypeChange)
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp)
             )
             SelectionChipRow(
                 title = stringResource(R.string.library_sort_title),
-                chips = MovieLibrarySort.entries.map { sort ->
+                chips = LibrarySortBy.entries.map { sort ->
                     SelectionChip(
                         key = sort.name,
                         label = when (sort) {
-                            MovieLibrarySort.LIBRARY -> stringResource(R.string.library_sort_library)
-                            MovieLibrarySort.TITLE -> stringResource(R.string.library_sort_az)
-                            MovieLibrarySort.RELEASE -> stringResource(R.string.library_sort_release)
-                            MovieLibrarySort.RATING -> stringResource(R.string.library_sort_rating)
+                            LibrarySortBy.LIBRARY -> stringResource(R.string.library_sort_library)
+                            LibrarySortBy.TITLE -> stringResource(R.string.library_sort_az)
+                            LibrarySortBy.RELEASE -> stringResource(R.string.library_sort_release)
+                            LibrarySortBy.UPDATED -> stringResource(R.string.library_sort_updated)
+                            LibrarySortBy.RATING -> stringResource(R.string.library_sort_rating)
+                            LibrarySortBy.WATCH_COUNT -> "Recent Activity"
                         }
                     )
                 },
-                selectedKey = activeSort.name,
-                onChipSelected = onSelectedSortChange,
+                selectedKey = selectedSortBy.name,
+                onChipSelected = { key ->
+                    LibrarySortBy.entries.firstOrNull { it.name == key }?.let(onSelectedSortByChange)
+                },
                 modifier = Modifier.padding(horizontal = 16.dp),
                 contentPadding = PaddingValues(horizontal = 4.dp)
             )
@@ -702,13 +694,6 @@ private fun MoviesVodContent(
     }
 }
 
-private enum class MovieLibrarySort {
-    LIBRARY,
-    TITLE,
-    RELEASE,
-    RATING
-}
-
 @Composable
 private fun movieLibraryLensLabel(lens: MovieLibraryLens): String =
     when (lens) {
@@ -718,52 +703,15 @@ private fun movieLibraryLensLabel(lens: MovieLibraryLens): String =
         MovieLibraryLens.FRESH -> stringResource(R.string.library_lens_fresh_movies)
     }
 
-private fun buildMovieFacetChips(
-    items: List<Movie>,
-    resumeMovieIds: Set<Long>
-): List<SelectionChip> {
-    val favoriteCount = items.count { it.isFavorite }
-    val resumeCount = items.count { it.id in resumeMovieIds || it.watchProgress > 0L }
-    val unwatchedCount = items.count { it.watchProgress <= 0L && it.id !in resumeMovieIds }
-    val topRatedCount = items.count { it.rating > 0f }
+private fun movieFilterChips(): List<SelectionChip> {
     return listOf(
-        SelectionChip(MovieLibraryFacet.ALL.name, "All", "${items.size} visible"),
-        SelectionChip(MovieLibraryFacet.FAVORITES.name, "Favorites", "$favoriteCount saved"),
-        SelectionChip(MovieLibraryFacet.RESUME.name, "Resume", "$resumeCount in progress"),
-        SelectionChip(MovieLibraryFacet.UNWATCHED.name, "Unwatched", "$unwatchedCount not started"),
-        SelectionChip(MovieLibraryFacet.TOP_RATED.name, "Top Rated", "$topRatedCount rated")
+        SelectionChip(LibraryFilterType.ALL.name, "All"),
+        SelectionChip(LibraryFilterType.FAVORITES.name, "Favorites"),
+        SelectionChip(LibraryFilterType.IN_PROGRESS.name, "Resume"),
+        SelectionChip(LibraryFilterType.UNWATCHED.name, "Unwatched"),
+        SelectionChip(LibraryFilterType.RECENTLY_UPDATED.name, "Recent"),
+        SelectionChip(LibraryFilterType.TOP_RATED.name, "Top Rated")
     )
-}
-
-private fun applyMovieFacetAndSort(
-    items: List<Movie>,
-    facet: MovieLibraryFacet,
-    sort: MovieLibrarySort,
-    resumeMovieIds: Set<Long>
-): List<Movie> {
-    val filtered = when (facet) {
-        MovieLibraryFacet.ALL -> items
-        MovieLibraryFacet.FAVORITES -> items.filter { it.isFavorite }
-        MovieLibraryFacet.RESUME -> items.filter { it.id in resumeMovieIds || it.watchProgress > 0L }
-        MovieLibraryFacet.UNWATCHED -> items.filter { it.watchProgress <= 0L && it.id !in resumeMovieIds }
-        MovieLibraryFacet.TOP_RATED -> items.filter { it.rating > 0f }
-    }
-
-    return when (sort) {
-        MovieLibrarySort.LIBRARY -> filtered
-        MovieLibrarySort.TITLE -> filtered.sortedBy { it.name.lowercase() }
-        MovieLibrarySort.RELEASE -> filtered.sortedByDescending(::movieReleaseScore)
-        MovieLibrarySort.RATING -> filtered.sortedByDescending { it.rating }
-    }
-}
-
-private fun movieReleaseScore(movie: Movie): Long {
-    return movie.releaseDate
-        ?.filter { it.isDigit() }
-        ?.take(8)
-        ?.toLongOrNull()
-        ?: movie.year?.toLongOrNull()
-        ?: 0L
 }
 
 

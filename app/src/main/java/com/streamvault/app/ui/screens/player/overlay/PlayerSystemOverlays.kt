@@ -51,6 +51,7 @@ import com.streamvault.app.ui.theme.TextSecondary
 import com.streamvault.player.PlayerError
 import com.streamvault.player.PlayerTrack
 import com.streamvault.player.TrackType
+import java.util.Locale
 
 @Composable
 fun PlayerNoticeBanner(
@@ -114,6 +115,7 @@ fun PlayerErrorOverlay(
         is PlayerError.NetworkError -> stringResource(R.string.player_error_network)
         is PlayerError.SourceError -> stringResource(R.string.player_error_source)
         is PlayerError.DecoderError -> stringResource(R.string.player_error_decoder)
+        is PlayerError.DrmError -> stringResource(R.string.player_error_drm)
         is PlayerError.UnknownError -> playerError.message ?: stringResource(R.string.player_error_unknown)
         null -> stringResource(R.string.player_error_unknown)
     }
@@ -283,6 +285,93 @@ fun PlayerTrackSelectionDialog(
                 }
             }
         }
+    }
+}
+
+@Composable
+fun PlayerSpeedSelectionDialog(
+    visible: Boolean,
+    selectedSpeed: Float,
+    onDismiss: () -> Unit,
+    onSelectSpeed: (Float) -> Unit
+) {
+    if (!visible) return
+
+    val firstItemFocusRequester = remember { FocusRequester() }
+    val speedOptions = remember { listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f) }
+
+    LaunchedEffect(visible) {
+        firstItemFocusRequester.requestFocusSafely(
+            tag = "PlayerSpeedSelectionDialog",
+            target = "First speed option"
+        )
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.8f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .widthIn(min = 300.dp, max = 400.dp)
+                    .background(SurfaceElevated, RoundedCornerShape(12.dp))
+                    .padding(24.dp)
+                    .onPreviewKeyEvent { event ->
+                        if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                        when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_DPAD_DOWN,
+                            KeyEvent.KEYCODE_DPAD_LEFT,
+                            KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_CENTER,
+                            KeyEvent.KEYCODE_ENTER,
+                            KeyEvent.KEYCODE_NUMPAD_ENTER,
+                            KeyEvent.KEYCODE_BACK -> false
+                            else -> true
+                        }
+                    }
+            ) {
+                Text(
+                    text = stringResource(R.string.player_playback_speed_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    color = Color.White,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(speedOptions, key = { it }) { speed ->
+                        TrackSelectionItem(
+                            name = formatPlaybackSpeedLabel(speed),
+                            isSelected = speed == selectedSpeed,
+                            onClick = {
+                                onSelectSpeed(speed)
+                                onDismiss()
+                            },
+                            modifier = if (speed == speedOptions.first()) {
+                                Modifier.focusRequester(firstItemFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatPlaybackSpeedLabel(speed: Float): String {
+    return if (speed % 1f == 0f) {
+        "${speed.toInt()}x"
+    } else {
+        "${("%.2f".format(Locale.US, speed)).trimEnd('0').trimEnd('.')}x"
     }
 }
 

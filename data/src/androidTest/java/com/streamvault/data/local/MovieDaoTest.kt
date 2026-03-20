@@ -8,6 +8,7 @@ import com.streamvault.data.local.dao.MovieDao
 import com.streamvault.data.local.dao.PlaybackHistoryDao
 import com.streamvault.data.local.entity.MovieEntity
 import com.streamvault.data.local.entity.PlaybackHistoryEntity
+import com.streamvault.domain.model.ContentType
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Before
@@ -43,7 +44,7 @@ class MovieDaoTest {
         // 1. Insert history for a movie. Use contentId = 1L
         val history = PlaybackHistoryEntity(
             contentId = 1L,
-            contentType = "MOVIE",
+            contentType = ContentType.MOVIE,
             providerId = 1L,
             resumePositionMs = 5000L,
             lastWatchedAt = 10000L
@@ -63,5 +64,27 @@ class MovieDaoTest {
         val restoredMovie = movieDao.getById(1L)
         assertThat(restoredMovie).isNotNull()
         assertThat(restoredMovie?.watchProgress).isEqualTo(5000L)
+    }
+
+    @Test
+    fun syncAllWatchProgressFromHistory_clearsStaleMovieProgressWithoutHistory() = runTest {
+        movieDao.insertAll(
+            listOf(
+                MovieEntity(
+                    id = 7L,
+                    name = "Stale Progress",
+                    providerId = 3L,
+                    watchProgress = 9_000L,
+                    lastWatchedAt = 12_000L
+                )
+            )
+        )
+
+        movieDao.syncAllWatchProgressFromHistory()
+
+        val movie = movieDao.getById(7L)
+        assertThat(movie).isNotNull()
+        assertThat(movie?.watchProgress).isEqualTo(0L)
+        assertThat(movie?.lastWatchedAt).isEqualTo(0L)
     }
 }

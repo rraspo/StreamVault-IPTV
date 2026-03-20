@@ -31,6 +31,8 @@ data class XtreamServerInfo(
     @SerialName("https_port") val httpsPort: String = "",
     @SerialName("server_protocol") val serverProtocol: String = "http",
     @SerialName("rtmp_port") val rtmpPort: String = "",
+    @SerialName("api_version") val apiVersion: String? = null,
+    @SerialName("version") val version: String? = null,
     @SerialName("timezone") val timezone: String = "",
     @SerialName("timestamp_now") @Serializable(with = LenientLongSerializer::class) val timestampNow: Long = 0,
     @SerialName("time_now") val timeNow: String = ""

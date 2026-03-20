@@ -45,6 +45,7 @@ import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.RecordingItem
+import com.streamvault.domain.model.RecordingRecurrence
 import com.streamvault.domain.model.RecordingStatus
 import com.streamvault.app.ui.screens.settings.ProviderDiagnosticsUiModel
 import kotlinx.coroutines.launch
@@ -73,6 +74,41 @@ fun SettingsScreen(
     val appLanguageLabel = remember(uiState.appLanguage, context) {
         displayLanguageLabel(uiState.appLanguage, context.getString(R.string.settings_system_default))
     }
+    val preferredAudioLanguageLabel = remember(uiState.preferredAudioLanguage, context) {
+        displayLanguageLabel(uiState.preferredAudioLanguage, context.getString(R.string.settings_audio_language_auto))
+    }
+    val playbackSpeedLabel = remember(uiState.playerPlaybackSpeed) {
+        formatPlaybackSpeedLabel(uiState.playerPlaybackSpeed)
+    }
+    val subtitleSizeLabel = remember(uiState.subtitleTextScale, context) {
+        formatSubtitleSizeLabel(uiState.subtitleTextScale, context)
+    }
+    val subtitleTextColorLabel = remember(uiState.subtitleTextColor, context) {
+        formatSubtitleColorLabel(uiState.subtitleTextColor, subtitleTextColorOptions(context))
+    }
+    val subtitleBackgroundLabel = remember(uiState.subtitleBackgroundColor, context) {
+        formatSubtitleColorLabel(uiState.subtitleBackgroundColor, subtitleBackgroundColorOptions(context))
+    }
+    val wifiQualityLabel = remember(uiState.wifiMaxVideoHeight, context) {
+        formatQualityCapLabel(uiState.wifiMaxVideoHeight, context.getString(R.string.settings_quality_cap_auto))
+    }
+    val ethernetQualityLabel = remember(uiState.ethernetMaxVideoHeight, context) {
+        formatQualityCapLabel(uiState.ethernetMaxVideoHeight, context.getString(R.string.settings_quality_cap_auto))
+    }
+    val lastSpeedTestLabel = remember(uiState.lastSpeedTest) {
+        uiState.lastSpeedTest?.let(::formatSpeedTestValueLabel)
+            ?: context.getString(R.string.settings_speed_test_not_run)
+    }
+    val lastSpeedTestSummary = remember(uiState.lastSpeedTest, context) {
+        uiState.lastSpeedTest?.let { formatSpeedTestSummary(it, context) }
+            ?: context.getString(R.string.settings_speed_test_summary_default)
+    }
+    val speedTestRecommendationLabel = remember(uiState.lastSpeedTest, context) {
+        formatQualityCapLabel(
+            uiState.lastSpeedTest?.recommendedMaxVideoHeight,
+            context.getString(R.string.settings_quality_cap_auto)
+        )
+    }
     val protectionSummary = remember(uiState.parentalControlLevel, context) {
         when (uiState.parentalControlLevel) {
             0 -> context.getString(R.string.settings_level_off)
@@ -87,6 +123,13 @@ fun SettingsScreen(
     var showLevelDialog by rememberSaveable { mutableStateOf(false) }
     var showLanguageDialog by rememberSaveable { mutableStateOf(false) }
     var showLiveTvModeDialog by rememberSaveable { mutableStateOf(false) }
+    var showPlaybackSpeedDialog by rememberSaveable { mutableStateOf(false) }
+    var showAudioLanguageDialog by rememberSaveable { mutableStateOf(false) }
+    var showSubtitleSizeDialog by rememberSaveable { mutableStateOf(false) }
+    var showSubtitleTextColorDialog by rememberSaveable { mutableStateOf(false) }
+    var showSubtitleBackgroundDialog by rememberSaveable { mutableStateOf(false) }
+    var showWifiQualityDialog by rememberSaveable { mutableStateOf(false) }
+    var showEthernetQualityDialog by rememberSaveable { mutableStateOf(false) }
     var showClearHistoryDialog by rememberSaveable { mutableStateOf(false) }
     var pinError by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingAction by remember { mutableStateOf<ParentalAction?>(null) }
@@ -408,8 +451,51 @@ fun SettingsScreen(
                     value = stringResource(uiState.liveTvChannelMode.labelResId()),
                     onClick = { showLiveTvModeDialog = true }
                 )
-                SettingsRow(label = stringResource(R.string.settings_decoder_mode), value = stringResource(R.string.settings_decoder_auto))
-                SettingsRow(label = stringResource(R.string.settings_buffer_duration), value = stringResource(R.string.settings_buffer_5s))
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_default_playback_speed),
+                    value = playbackSpeedLabel,
+                    onClick = { showPlaybackSpeedDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_preferred_audio_language),
+                    value = preferredAudioLanguageLabel,
+                    onClick = { showAudioLanguageDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_subtitle_size),
+                    value = subtitleSizeLabel,
+                    onClick = { showSubtitleSizeDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_subtitle_text_color),
+                    value = subtitleTextColorLabel,
+                    onClick = { showSubtitleTextColorDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_subtitle_background),
+                    value = subtitleBackgroundLabel,
+                    onClick = { showSubtitleBackgroundDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_wifi_quality_cap),
+                    value = wifiQualityLabel,
+                    onClick = { showWifiQualityDialog = true }
+                )
+                ClickableSettingsRow(
+                    label = stringResource(R.string.settings_ethernet_quality_cap),
+                    value = ethernetQualityLabel,
+                    onClick = { showEthernetQualityDialog = true }
+                )
+                InternetSpeedTestCard(
+                    valueLabel = lastSpeedTestLabel,
+                    summary = lastSpeedTestSummary,
+                    recommendationLabel = speedTestRecommendationLabel,
+                    isRunning = uiState.isRunningInternetSpeedTest,
+                    canApplyRecommendation = uiState.lastSpeedTest != null,
+                    onRunTest = viewModel::runInternetSpeedTest,
+                    onApplyWifi = viewModel::applySpeedTestRecommendationToWifi,
+                    onApplyEthernet = viewModel::applySpeedTestRecommendationToEthernet
+                )
             }
 
             // Privacy section
@@ -574,6 +660,131 @@ fun SettingsScreen(
             )
         }
 
+        if (showPlaybackSpeedDialog) {
+            val speedOptions = remember { listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f) }
+            PremiumSelectionDialog(
+                title = stringResource(R.string.settings_select_playback_speed),
+                onDismiss = { showPlaybackSpeedDialog = false }
+            ) {
+                speedOptions.forEachIndexed { index, speed ->
+                    LevelOption(
+                        level = index,
+                        text = formatPlaybackSpeedLabel(speed),
+                        currentLevel = if (speed == uiState.playerPlaybackSpeed) index else -1,
+                        onSelect = {
+                            viewModel.setDefaultPlaybackSpeed(speed)
+                            showPlaybackSpeedDialog = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showAudioLanguageDialog) {
+            val autoLabel = stringResource(R.string.settings_audio_language_auto)
+            val audioLanguageOptions = remember(autoLabel) { supportedAudioLanguages(autoLabel) }
+            PremiumSelectionDialog(
+                title = stringResource(R.string.settings_select_audio_language),
+                onDismiss = { showAudioLanguageDialog = false }
+            ) {
+                audioLanguageOptions.forEachIndexed { index, option ->
+                    LevelOption(
+                        level = index,
+                        text = option.label,
+                        currentLevel = if (uiState.preferredAudioLanguage == option.tag) index else -1,
+                        onSelect = {
+                            viewModel.setPreferredAudioLanguage(option.tag)
+                            showAudioLanguageDialog = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showSubtitleSizeDialog) {
+            val subtitleSizeOptions = remember { subtitleSizeOptions() }
+            PremiumSelectionDialog(
+                title = stringResource(R.string.settings_select_subtitle_size),
+                onDismiss = { showSubtitleSizeDialog = false }
+            ) {
+                subtitleSizeOptions.forEachIndexed { index, option ->
+                    LevelOption(
+                        level = index,
+                        text = option.label(context),
+                        currentLevel = if (uiState.subtitleTextScale == option.scale) index else -1,
+                        onSelect = {
+                            viewModel.setSubtitleTextScale(option.scale)
+                            showSubtitleSizeDialog = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showSubtitleTextColorDialog) {
+            val options = remember(context) { subtitleTextColorOptions(context) }
+            PremiumSelectionDialog(
+                title = stringResource(R.string.settings_select_subtitle_text_color),
+                onDismiss = { showSubtitleTextColorDialog = false }
+            ) {
+                options.forEachIndexed { index, option ->
+                    LevelOption(
+                        level = index,
+                        text = option.label,
+                        currentLevel = if (uiState.subtitleTextColor == option.colorArgb) index else -1,
+                        onSelect = {
+                            viewModel.setSubtitleTextColor(option.colorArgb)
+                            showSubtitleTextColorDialog = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showSubtitleBackgroundDialog) {
+            val options = remember(context) { subtitleBackgroundColorOptions(context) }
+            PremiumSelectionDialog(
+                title = stringResource(R.string.settings_select_subtitle_background),
+                onDismiss = { showSubtitleBackgroundDialog = false }
+            ) {
+                options.forEachIndexed { index, option ->
+                    LevelOption(
+                        level = index,
+                        text = option.label,
+                        currentLevel = if (uiState.subtitleBackgroundColor == option.colorArgb) index else -1,
+                        onSelect = {
+                            viewModel.setSubtitleBackgroundColor(option.colorArgb)
+                            showSubtitleBackgroundDialog = false
+                        }
+                    )
+                }
+            }
+        }
+
+        if (showWifiQualityDialog) {
+            QualityCapSelectionDialog(
+                title = stringResource(R.string.settings_select_wifi_quality_cap),
+                currentValue = uiState.wifiMaxVideoHeight,
+                onDismiss = { showWifiQualityDialog = false },
+                onSelect = {
+                    viewModel.setWifiQualityCap(it)
+                    showWifiQualityDialog = false
+                }
+            )
+        }
+
+        if (showEthernetQualityDialog) {
+            QualityCapSelectionDialog(
+                title = stringResource(R.string.settings_select_ethernet_quality_cap),
+                currentValue = uiState.ethernetMaxVideoHeight,
+                onDismiss = { showEthernetQualityDialog = false },
+                onSelect = {
+                    viewModel.setEthernetQualityCap(it)
+                    showEthernetQualityDialog = false
+                }
+            )
+        }
+
         if (showPinDialog) {
             PinDialog(
                 onDismissRequest = { 
@@ -680,6 +891,7 @@ fun SettingsScreen(
                 onImportSavedLibraryChanged = { viewModel.setImportSavedLibrary(it) },
                 onImportPlaybackHistoryChanged = { viewModel.setImportPlaybackHistory(it) },
                 onImportMultiViewChanged = { viewModel.setImportMultiViewPresets(it) },
+                onImportRecordingSchedulesChanged = { viewModel.setImportRecordingSchedules(it) },
                 onConfirm = { viewModel.confirmBackupImport() }
             )
         }
@@ -786,6 +998,32 @@ private fun LevelOption(level: Int, text: String, currentLevel: Int, onSelect: (
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(text, style = MaterialTheme.typography.bodyMedium, color = OnBackground)
+    }
+}
+
+@Composable
+private fun QualityCapSelectionDialog(
+    title: String,
+    currentValue: Int?,
+    onDismiss: () -> Unit,
+    onSelect: (Int?) -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val options = remember(context) {
+        listOf<Int?>(null, 2160, 1080, 720, 480)
+    }
+    PremiumSelectionDialog(
+        title = title,
+        onDismiss = onDismiss
+    ) {
+        options.forEachIndexed { index, option ->
+            LevelOption(
+                level = index,
+                text = formatQualityCapLabel(option, context.getString(R.string.settings_quality_cap_auto)),
+                currentLevel = if (option == currentValue) index else -1,
+                onSelect = { onSelect(option) }
+            )
+        }
     }
 }
 
@@ -1562,6 +1800,132 @@ private fun ClickableSettingsRow(label: String, value: String, onClick: () -> Un
 }
 
 @Composable
+private fun InternetSpeedTestCard(
+    valueLabel: String,
+    summary: String,
+    recommendationLabel: String,
+    isRunning: Boolean,
+    canApplyRecommendation: Boolean,
+    onRunTest: () -> Unit,
+    onApplyWifi: () -> Unit,
+    onApplyEthernet: () -> Unit
+) {
+    Surface(
+        onClick = onRunTest,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = SurfaceElevated,
+            focusedContainerColor = Primary.copy(alpha = 0.18f)
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = stringResource(R.string.settings_speed_test_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = OnBackground
+                    )
+                    Text(
+                        text = valueLabel,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                if (isRunning) {
+                    CircularProgressIndicator(
+                        color = Primary,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(20.dp)
+                    )
+                } else {
+                    Text(
+                        text = stringResource(R.string.settings_speed_test_run_action),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Primary
+                    )
+                }
+            }
+
+            Text(
+                text = summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurfaceDim
+            )
+
+            Text(
+                text = stringResource(R.string.settings_speed_test_recommendation, recommendationLabel),
+                style = MaterialTheme.typography.bodySmall,
+                color = OnSurface
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Surface(
+                    onClick = onRunTest,
+                    enabled = !isRunning,
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Primary.copy(alpha = 0.18f),
+                        focusedContainerColor = Primary.copy(alpha = 0.32f)
+                    )
+                ) {
+                    Text(
+                        text = stringResource(if (isRunning) R.string.settings_speed_test_running_action else R.string.settings_speed_test_run_action),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Primary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
+                }
+                Surface(
+                    onClick = onApplyWifi,
+                    enabled = canApplyRecommendation && !isRunning,
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Secondary.copy(alpha = 0.16f),
+                        focusedContainerColor = Secondary.copy(alpha = 0.28f)
+                    )
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_speed_test_apply_wifi),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Secondary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
+                }
+                Surface(
+                    onClick = onApplyEthernet,
+                    enabled = canApplyRecommendation && !isRunning,
+                    shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+                    colors = ClickableSurfaceDefaults.colors(
+                        containerColor = Secondary.copy(alpha = 0.16f),
+                        focusedContainerColor = Secondary.copy(alpha = 0.28f)
+                    )
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_speed_test_apply_ethernet),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Secondary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun BackupImportPreviewDialog(
     preview: com.streamvault.domain.manager.BackupPreview,
     plan: com.streamvault.domain.manager.BackupImportPlan,
@@ -1572,6 +1936,7 @@ private fun BackupImportPreviewDialog(
     onImportSavedLibraryChanged: (Boolean) -> Unit,
     onImportPlaybackHistoryChanged: (Boolean) -> Unit,
     onImportMultiViewChanged: (Boolean) -> Unit,
+    onImportRecordingSchedulesChanged: (Boolean) -> Unit,
     onConfirm: () -> Unit
 ) {
     PremiumDialog(
@@ -1582,9 +1947,10 @@ private fun BackupImportPreviewDialog(
         content = {
             BackupPreviewRow(stringResource(R.string.settings_backup_section_preferences), preview.preferenceCount, 0)
             BackupPreviewRow(stringResource(R.string.settings_backup_section_providers), preview.providerCount, preview.providerConflicts)
-            BackupPreviewRow(stringResource(R.string.settings_backup_section_saved), preview.favoriteCount + preview.groupCount, preview.favoriteConflicts + preview.groupConflicts)
+            BackupPreviewRow(stringResource(R.string.settings_backup_section_saved), preview.favoriteCount + preview.groupCount + preview.protectedCategoryCount, preview.favoriteConflicts + preview.groupConflicts + preview.protectedCategoryConflicts)
             BackupPreviewRow(stringResource(R.string.settings_backup_section_history), preview.playbackHistoryCount, preview.historyConflicts)
             BackupPreviewRow(stringResource(R.string.settings_backup_section_multiview), preview.multiViewPresetCount, 0)
+            BackupPreviewRow(stringResource(R.string.settings_backup_section_recordings), preview.scheduledRecordingCount, preview.recordingConflicts)
             Text(
                 text = stringResource(R.string.settings_backup_conflict_strategy),
                 style = MaterialTheme.typography.titleSmall,
@@ -1612,6 +1978,7 @@ private fun BackupImportPreviewDialog(
             BackupToggleRow(stringResource(R.string.settings_backup_section_saved), plan.importSavedLibrary, onImportSavedLibraryChanged)
             BackupToggleRow(stringResource(R.string.settings_backup_section_history), plan.importPlaybackHistory, onImportPlaybackHistoryChanged)
             BackupToggleRow(stringResource(R.string.settings_backup_section_multiview), plan.importMultiViewPresets, onImportMultiViewChanged)
+            BackupToggleRow(stringResource(R.string.settings_backup_section_recordings), plan.importRecordingSchedules, onImportRecordingSchedulesChanged)
         },
         footer = {
             PremiumDialogFooterButton(
@@ -1808,6 +2175,17 @@ private fun RecordingItemCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurface
             )
+            if (item.recurrence != RecordingRecurrence.NONE) {
+                Text(
+                    text = when (item.recurrence) {
+                        RecordingRecurrence.DAILY -> stringResource(R.string.settings_recording_recurrence_daily)
+                        RecordingRecurrence.WEEKLY -> stringResource(R.string.settings_recording_recurrence_weekly)
+                        RecordingRecurrence.NONE -> stringResource(R.string.settings_recording_recurrence_none)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Secondary
+                )
+            }
             item.failureReason?.takeIf { it.isNotBlank() }?.let { reason ->
                 Text(reason, style = MaterialTheme.typography.bodySmall, color = ErrorColor)
             }
@@ -1939,8 +2317,52 @@ private fun supportedAppLanguages(systemDefaultLabel: String): List<AppLanguageO
     }
 }
 
+private fun supportedAudioLanguages(autoLabel: String): List<AppLanguageOption> {
+    return buildList {
+        add(AppLanguageOption(tag = "auto", label = autoLabel))
+        addAll(supportedAppLanguages(autoLabel).filterNot { it.tag == "system" })
+    }
+}
+
+private data class SubtitleScaleOption(
+    val scale: Float,
+    val label: (android.content.Context) -> String
+)
+
+private data class SubtitleColorOption(
+    val colorArgb: Int,
+    val label: String
+)
+
+private fun subtitleSizeOptions(): List<SubtitleScaleOption> {
+    return listOf(
+        SubtitleScaleOption(0.85f) { it.getString(R.string.settings_subtitle_size_small) },
+        SubtitleScaleOption(1f) { it.getString(R.string.settings_subtitle_size_default) },
+        SubtitleScaleOption(1.15f) { it.getString(R.string.settings_subtitle_size_large) },
+        SubtitleScaleOption(1.3f) { it.getString(R.string.settings_subtitle_size_extra_large) }
+    )
+}
+
+private fun subtitleTextColorOptions(context: android.content.Context): List<SubtitleColorOption> {
+    return listOf(
+        SubtitleColorOption(0xFFFFFFFF.toInt(), context.getString(R.string.settings_subtitle_color_white)),
+        SubtitleColorOption(0xFFFFEB3B.toInt(), context.getString(R.string.settings_subtitle_color_yellow)),
+        SubtitleColorOption(0xFF80DEEA.toInt(), context.getString(R.string.settings_subtitle_color_cyan)),
+        SubtitleColorOption(0xFFA5D6A7.toInt(), context.getString(R.string.settings_subtitle_color_green))
+    )
+}
+
+private fun subtitleBackgroundColorOptions(context: android.content.Context): List<SubtitleColorOption> {
+    return listOf(
+        SubtitleColorOption(0x00000000, context.getString(R.string.settings_subtitle_background_transparent)),
+        SubtitleColorOption(0x80000000.toInt(), context.getString(R.string.settings_subtitle_background_dim)),
+        SubtitleColorOption(0xCC000000.toInt(), context.getString(R.string.settings_subtitle_background_black)),
+        SubtitleColorOption(0xCC102A43.toInt(), context.getString(R.string.settings_subtitle_background_blue))
+    )
+}
+
 private fun displayLanguageLabel(languageTag: String, defaultLabel: String): String {
-    if (languageTag.isBlank()) return defaultLabel
+    if (languageTag.isBlank() || languageTag == "system" || languageTag == "auto") return defaultLabel
     val locale = Locale.forLanguageTag(languageTag)
     if (locale.language.isBlank()) return defaultLabel
     return locale.getDisplayLanguage(Locale.getDefault())
@@ -1951,6 +2373,50 @@ private fun displayLanguageLabel(languageTag: String, defaultLabel: String): Str
                 character.toString()
             }
         }
+}
+
+private fun formatPlaybackSpeedLabel(speed: Float): String {
+    return if (speed % 1f == 0f) {
+        "${speed.toInt()}x"
+    } else {
+        "${("%.2f".format(Locale.US, speed)).trimEnd('0').trimEnd('.')}x"
+    }
+}
+
+private fun formatSubtitleSizeLabel(scale: Float, context: android.content.Context): String {
+    return subtitleSizeOptions().firstOrNull { it.scale == scale }?.label?.invoke(context)
+        ?: context.getString(R.string.settings_subtitle_size_default)
+}
+
+private fun formatSubtitleColorLabel(colorArgb: Int, options: List<SubtitleColorOption>): String {
+    return options.firstOrNull { it.colorArgb == colorArgb }?.label ?: options.first().label
+}
+
+private fun formatQualityCapLabel(maxHeight: Int?, autoLabel: String): String {
+    return maxHeight?.let { "${it}p" } ?: autoLabel
+}
+
+private fun formatSpeedTestValueLabel(speedTest: InternetSpeedTestUiModel): String {
+    return String.format(Locale.getDefault(), "%.1f Mbps", speedTest.megabitsPerSecond)
+}
+
+private fun formatSpeedTestSummary(
+    speedTest: InternetSpeedTestUiModel,
+    context: android.content.Context
+): String {
+    val transportLabel = when (speedTest.transportLabel) {
+        InternetSpeedTestTransport.WIFI.name -> context.getString(R.string.settings_speed_test_transport_wifi)
+        InternetSpeedTestTransport.ETHERNET.name -> context.getString(R.string.settings_speed_test_transport_ethernet)
+        InternetSpeedTestTransport.CELLULAR.name -> context.getString(R.string.settings_speed_test_transport_cellular)
+        InternetSpeedTestTransport.OTHER.name -> context.getString(R.string.settings_speed_test_transport_other)
+        else -> context.getString(R.string.settings_speed_test_transport_unknown)
+    }
+    val measuredAtLabel = formatTimestamp(speedTest.measuredAtMs)
+    return if (speedTest.isEstimated) {
+        context.getString(R.string.settings_speed_test_summary_estimated, transportLabel, measuredAtLabel)
+    } else {
+        context.getString(R.string.settings_speed_test_summary_measured, transportLabel, measuredAtLabel)
+    }
 }
 
 private fun LiveTvChannelMode.labelResId(): Int = when (this) {

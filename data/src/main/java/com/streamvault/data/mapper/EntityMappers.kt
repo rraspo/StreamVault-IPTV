@@ -1,7 +1,12 @@
 package com.streamvault.data.mapper
 
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.streamvault.data.local.entity.*
 import com.streamvault.domain.model.*
+
+private val qualityOptionsGson = Gson()
+private val channelQualityOptionsType = object : TypeToken<List<ChannelQualityOption>>() {}.type
 
 // ── Provider ───────────────────────────────────────────────────────
 
@@ -17,6 +22,7 @@ fun ProviderEntity.toDomain() = Provider(
     isActive = isActive,
     maxConnections = maxConnections,
     expirationDate = expirationDate,
+    apiVersion = apiVersion,
     status = status,
     lastSyncedAt = lastSyncedAt,
     createdAt = createdAt
@@ -34,6 +40,7 @@ fun Provider.toEntity() = ProviderEntity(
     isActive = isActive,
     maxConnections = maxConnections,
     expirationDate = expirationDate,
+    apiVersion = apiVersion,
     status = status,
     lastSyncedAt = lastSyncedAt,
     createdAt = createdAt
@@ -59,6 +66,7 @@ fun ChannelEntity.toDomain() = Channel(
     isUserProtected = isUserProtected,
     logicalGroupId = logicalGroupId,
     errorCount = errorCount,
+    qualityOptions = decodeQualityOptions(qualityOptionsJson),
     streamId = streamId
 )
 
@@ -80,7 +88,8 @@ fun Channel.toEntity() = ChannelEntity(
     isAdult = isAdult,
     isUserProtected = isUserProtected,
     logicalGroupId = logicalGroupId,
-    errorCount = errorCount
+    errorCount = errorCount,
+    qualityOptionsJson = encodeQualityOptions(qualityOptions)
 )
 
 // ── Movie ──────────────────────────────────────────────────────────
@@ -267,6 +276,10 @@ fun ProgramEntity.toDomain() = Program(
     startTime = startTime,
     endTime = endTime,
     lang = lang,
+    rating = rating,
+    imageUrl = imageUrl,
+    genre = genre,
+    category = category,
     hasArchive = hasArchive,
     providerId = providerId
 )
@@ -279,6 +292,10 @@ fun Program.toEntity() = ProgramEntity(
     startTime = startTime,
     endTime = endTime,
     lang = lang,
+    rating = rating,
+    imageUrl = imageUrl,
+    genre = genre,
+    category = category,
     hasArchive = hasArchive,
     providerId = providerId
 )
@@ -337,6 +354,7 @@ fun PlaybackHistoryEntity.toDomain() = PlaybackHistory(
     totalDurationMs = totalDurationMs,
     lastWatchedAt = lastWatchedAt,
     watchCount = watchCount,
+    watchedStatus = watchedStatus.toPlaybackWatchedStatus(),
     seriesId = seriesId,
     seasonNumber = seasonNumber,
     episodeNumber = episodeNumber
@@ -354,6 +372,7 @@ fun PlaybackHistory.toEntity() = PlaybackHistoryEntity(
     totalDurationMs = totalDurationMs,
     lastWatchedAt = lastWatchedAt,
     watchCount = watchCount,
+    watchedStatus = watchedStatus.name,
     seriesId = seriesId,
     seasonNumber = seasonNumber,
     episodeNumber = episodeNumber
@@ -386,3 +405,24 @@ fun SyncMetadata.toEntity() = SyncMetadataEntity(
     epgCount = epgCount,
     lastSyncStatus = lastSyncStatus
 )
+
+private fun encodeQualityOptions(options: List<ChannelQualityOption>): String? {
+    if (options.isEmpty()) {
+        return null
+    }
+    return qualityOptionsGson.toJson(options, channelQualityOptionsType)
+}
+
+private fun decodeQualityOptions(encoded: String?): List<ChannelQualityOption> {
+    if (encoded.isNullOrBlank()) {
+        return emptyList()
+    }
+    return runCatching {
+        qualityOptionsGson.fromJson<List<ChannelQualityOption>>(encoded, channelQualityOptionsType).orEmpty()
+    }.getOrDefault(emptyList())
+}
+
+private fun String?.toPlaybackWatchedStatus(): PlaybackWatchedStatus =
+    runCatching {
+        this?.let(PlaybackWatchedStatus::valueOf)
+    }.getOrNull() ?: PlaybackWatchedStatus.IN_PROGRESS

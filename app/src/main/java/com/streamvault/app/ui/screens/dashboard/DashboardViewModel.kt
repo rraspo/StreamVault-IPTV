@@ -21,6 +21,8 @@ import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.ContinueWatchingScope
+import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.domain.usecase.GetCustomCategories
 import android.content.Context
 import com.streamvault.app.R
@@ -53,6 +55,7 @@ class DashboardViewModel @Inject constructor(
     private val movieRepository: MovieRepository,
     private val seriesRepository: SeriesRepository,
     private val preferencesRepository: PreferencesRepository,
+    private val getContinueWatching: GetContinueWatching,
     private val getCustomCategories: GetCustomCategories,
     private val syncManager: SyncManager
 ) : ViewModel() {
@@ -187,14 +190,11 @@ class DashboardViewModel @Inject constructor(
             .flatMapLatest(::loadChannelsByOrderedIds)
 
     private fun observeContinueWatching(providerId: Long): Flow<List<PlaybackHistory>> =
-        playbackHistoryRepository.getRecentlyWatchedByProvider(providerId, CONTINUE_WATCHING_LIMIT)
-            .map { history ->
-                history
-                    .filter { it.contentType != ContentType.LIVE }
-                    .distinctBy { "${it.contentType}:${it.contentId}:${it.seriesId}" }
-                    .sortedByDescending { it.lastWatchedAt }
-                    .take(CONTINUE_WATCHING_LIMIT)
-            }
+        getContinueWatching(
+            providerId = providerId,
+            limit = CONTINUE_WATCHING_LIMIT,
+            scope = ContinueWatchingScope.ALL_VOD
+        )
 
     private fun buildLiveContext(providerId: Long): Flow<DashboardLiveContext> =
         combine(

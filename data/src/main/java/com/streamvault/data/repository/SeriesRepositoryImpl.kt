@@ -9,22 +9,28 @@ import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.domain.model.*
 import com.streamvault.domain.repository.SeriesRepository
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import com.streamvault.data.util.toFtsPrefixQuery
+import com.streamvault.data.util.rankSearchResults
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
+import com.streamvault.domain.util.isPlaybackComplete
 import javax.inject.Singleton
 
 @Singleton
+@OptIn(ExperimentalCoroutinesApi::class)
 class SeriesRepositoryImpl @Inject constructor(
     private val seriesDao: SeriesDao,
     private val episodeDao: EpisodeDao,
     private val categoryDao: CategoryDao,
+    private val favoriteDao: FavoriteDao,
+    private val playbackHistoryDao: PlaybackHistoryDao,
     private val providerDao: ProviderDao,
     private val xtreamApiService: XtreamApiService,
     private val preferencesRepository: PreferencesRepository,
@@ -165,26 +171,39 @@ class SeriesRepositoryImpl @Inject constructor(
         seriesDao.getCount(providerId)
 
     override fun browseSeries(query: LibraryBrowseQuery): Flow<PagedResult<Series>> {
-        val categoryId = query.categoryId
-        val pageFlow = if (query.categoryId == null) {
-            seriesDao.getByProviderPage(query.providerId, query.limit, query.offset)
-        } else {
-            seriesDao.getByCategoryPage(query.providerId, categoryId!!, query.limit, query.offset)
-        }
-        val countFlow = if (query.categoryId == null) {
-            seriesDao.getCount(query.providerId)
-        } else {
-            seriesDao.getCountByCategory(query.providerId, categoryId!!)
-        }
-        return combine(pageFlow, countFlow, preferencesRepository.parentalControlLevel) { entities: List<SeriesEntity>, totalCount: Int, level: Int ->
-            val filtered = if (level == 2) {
-                entities.filter { !it.isUserProtected }
-            } else {
-                entities
-            }
+        return combine(
+            seriesBrowseSource(query.providerId, query.categoryId),
+            favoriteDao.getAllByType(ContentType.SERIES.name),
+            playbackHistoryDao.getByProvider(query.providerId)
+        ) { series, favorites, history ->
+            val favoriteIds = favorites
+                .asSequence()
+                .filter { it.groupId == null }
+                .map { it.contentId }
+                .toSet()
+            val inProgressIds = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES || it.contentType == ContentType.SERIES_EPISODE }
+                .filter { it.resumePositionMs > 0L && (it.totalDurationMs <= 0L || !isPlaybackComplete(it.resumePositionMs, it.totalDurationMs)) }
+                .mapNotNull { it.seriesId ?: it.contentId }
+                .toSet()
+            val watchCounts = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES || it.contentType == ContentType.SERIES_EPISODE }
+                .groupBy { it.seriesId ?: it.contentId }
+                .mapValues { (_, entries) -> entries.maxOf { it.watchCount } }
+
+            val browsed = applySeriesBrowseQuery(
+                series = series,
+                query = query,
+                favoriteIds = favoriteIds,
+                inProgressIds = inProgressIds,
+                watchCounts = watchCounts
+            )
+
             PagedResult(
-                items = filtered.map { it.toDomain() },
-                totalCount = totalCount,
+                items = browsed.drop(query.offset).take(query.limit),
+                totalCount = browsed.size,
                 offset = query.offset,
                 limit = query.limit
             )
@@ -204,7 +223,10 @@ class SeriesRepositoryImpl @Inject constructor(
                 } else {
                     entities
                 }
-            }.map { list: List<SeriesEntity> -> list.map { it.toDomain() } }
+            }.map { list: List<SeriesEntity> ->
+                list.map { it.toDomain() }
+                    .rankSearchResults(query) { it.name }
+            }
         }
 
     override suspend fun getSeriesById(seriesId: Long): Series? =
@@ -328,14 +350,20 @@ class SeriesRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getEpisodeStreamInfo(episode: Episode): Result<StreamInfo> = try {
-        xtreamStreamUrlResolver.resolve(
+        xtreamStreamUrlResolver.resolveWithMetadata(
             url = episode.streamUrl,
             fallbackProviderId = episode.providerId,
             fallbackStreamId = episode.episodeId.takeIf { it > 0 } ?: episode.id,
             fallbackContentType = ContentType.SERIES_EPISODE,
             fallbackContainerExtension = episode.containerExtension
-        )?.let { resolvedUrl ->
-            Result.success(StreamInfo(url = resolvedUrl, title = episode.title))
+        )?.let { resolvedStream ->
+            Result.success(
+                StreamInfo(
+                    url = resolvedStream.url,
+                    title = episode.title,
+                    expirationTime = resolvedStream.expirationTime
+                )
+            )
         } ?: Result.error("No stream URL available for episode: ${episode.title}")
     } catch (e: Exception) {
         Result.error(e.message ?: "Failed to resolve stream URL for episode: ${episode.title}", e)
@@ -366,6 +394,66 @@ class SeriesRepositoryImpl @Inject constructor(
             }
         return seriesEntity.toDomain().copy(seasons = seasons)
     }
+
+    private fun seriesBrowseSource(providerId: Long, categoryId: Long?): Flow<List<Series>> =
+        if (categoryId == null) {
+            getSeries(providerId)
+        } else {
+            getSeriesByCategory(providerId, categoryId)
+        }
+
+    private fun applySeriesBrowseQuery(
+        series: List<Series>,
+        query: LibraryBrowseQuery,
+        favoriteIds: Set<Long>,
+        inProgressIds: Set<Long>,
+        watchCounts: Map<Long, Int>
+    ): List<Series> {
+        val withFavoriteState = series.map { item -> item.copy(isFavorite = item.id in favoriteIds) }
+        val filtered = withFavoriteState.filter { item ->
+            seriesMatchesFilter(item, query.filterBy.type, inProgressIds) && seriesMatchesSearch(item, query.searchQuery)
+        }
+
+        val sorted = when (query.sortBy) {
+            LibrarySortBy.LIBRARY -> filtered
+            LibrarySortBy.TITLE -> filtered.sortedBy { it.name.lowercase() }
+            LibrarySortBy.RELEASE, LibrarySortBy.UPDATED -> filtered.sortedByDescending(::seriesFreshnessScore)
+            LibrarySortBy.RATING -> filtered.sortedByDescending { it.rating }
+            LibrarySortBy.WATCH_COUNT -> filtered.sortedByDescending { watchCounts[it.id] ?: 0 }
+        }
+
+        return if (query.searchQuery.isBlank() || query.sortBy != LibrarySortBy.LIBRARY) {
+            sorted
+        } else {
+            sorted.rankSearchResults(query.searchQuery) { it.name }
+        }
+    }
+
+    private fun seriesMatchesFilter(series: Series, filterType: LibraryFilterType, inProgressIds: Set<Long>): Boolean = when (filterType) {
+        LibraryFilterType.ALL -> true
+        LibraryFilterType.FAVORITES -> series.isFavorite
+        LibraryFilterType.IN_PROGRESS -> series.id in inProgressIds
+        LibraryFilterType.UNWATCHED -> series.id !in inProgressIds
+        LibraryFilterType.TOP_RATED -> series.rating > 0f
+        LibraryFilterType.RECENTLY_UPDATED -> seriesFreshnessScore(series) > 0L
+    }
+
+    private fun seriesMatchesSearch(series: Series, searchQuery: String): Boolean {
+        val normalizedQuery = searchQuery.trim().lowercase()
+        if (normalizedQuery.isBlank()) return true
+        return sequenceOf(series.name, series.plot, series.genre, series.cast, series.director, series.categoryName)
+            .filterNotNull()
+            .any { value -> value.lowercase().contains(normalizedQuery) }
+    }
+
+    private fun seriesFreshnessScore(series: Series): Long =
+        series.lastModified
+            .takeIf { it > 0L }
+            ?: series.releaseDate
+                ?.filter { it.isDigit() }
+                ?.take(8)
+                ?.toLongOrNull()
+            ?: 0L
 
     private fun getOrCreateXtreamProvider(providerId: Long, provider: ProviderEntity): XtreamProvider {
         val signature = listOf(provider.serverUrl, provider.username, provider.password).joinToString("\u0000")

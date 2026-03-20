@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
 import com.streamvault.data.util.toFtsPrefixQuery
+import com.streamvault.data.util.rankSearchResults
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
@@ -36,50 +37,25 @@ class ChannelRepositoryImpl @Inject constructor(
     )
 
     private val channelPriorityComparator = compareBy<ChannelEntity>({ it.errorCount }, { it.name.length })
+    private val channelNumberComparator = compareBy<Channel>(
+        { it.number <= 0 },
+        { it.number.takeIf { number -> number > 0 } ?: Int.MAX_VALUE },
+        { it.name.lowercase() }
+    )
 
     override fun getChannels(providerId: Long): Flow<List<Channel>> =
-        combine(
-            channelDao.getByProvider(providerId),
-            preferencesRepository.parentalControlLevel,
-            parentalControlManager.unlockedCategoriesForProvider(providerId)
-        ) { entities, level, unlockedCats ->
-            // Level 2 = HIDDEN. 
-            // If hidden, filter out adult/protected UNLESS they are in unlockedCats.
-            val filtered = if (level == 2) {
-                entities.filter { entity ->
-                    val isUnlocked = entity.categoryId != null && unlockedCats.contains(entity.categoryId)
-                    (!entity.isAdult && !entity.isUserProtected) || isUnlocked
-                }
-            } else {
-                entities
-            }
-            
-            groupAndMapChannels(filtered, unlockedCats)
-        }
+        observeChannels(channelDao.getByProvider(providerId), providerId)
 
     override fun getChannelsByCategory(providerId: Long, categoryId: Long): Flow<List<Channel>> =
-        combine(
-            if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
-                channelDao.getByProvider(providerId)
-            } else {
-                channelDao.getByCategory(providerId, categoryId)
-            },
-            preferencesRepository.parentalControlLevel,
-            parentalControlManager.unlockedCategoriesForProvider(providerId)
-        ) { entities, level, unlockedCats ->
-             // Level 2 = HIDDEN. 
-            // If hidden, filter out adult/protected UNLESS they are in unlockedCats.
-            val filtered = if (level == 2) {
-                entities.filter { entity ->
-                    val isUnlocked = entity.categoryId != null && unlockedCats.contains(entity.categoryId)
-                    (!entity.isAdult && !entity.isUserProtected) || isUnlocked
-                }
-            } else {
-                entities
-            }
-            
-            groupAndMapChannels(filtered, unlockedCats)
-        }
+        observeChannels(channelFlow(providerId, categoryId), providerId)
+
+    override fun getChannelsByNumber(providerId: Long, categoryId: Long): Flow<List<Channel>> =
+        observeChannels(channelFlow(providerId, categoryId), providerId)
+            .map(::sortChannelsByNumber)
+
+    override fun getChannelsWithoutErrors(providerId: Long, categoryId: Long): Flow<List<Channel>> =
+        observeChannels(channelFlowWithoutErrors(providerId, categoryId), providerId)
+            .map(::sortChannelsByNumber)
 
     override fun searchChannelsByCategory(providerId: Long, categoryId: Long, query: String): Flow<List<Channel>> =
         query.toFtsPrefixQuery().let { ftsQuery ->
@@ -172,6 +148,7 @@ class ChannelRepositoryImpl @Inject constructor(
                 }
 
                 groupAndMapChannels(filtered, unlockedCats)
+                    .rankSearchResults(query) { it.name }
             }
         }
 
@@ -179,13 +156,19 @@ class ChannelRepositoryImpl @Inject constructor(
         channelDao.getById(channelId)?.toDomain()
 
     override suspend fun getStreamInfo(channel: Channel): Result<StreamInfo> = try {
-        xtreamStreamUrlResolver.resolve(
+        xtreamStreamUrlResolver.resolveWithMetadata(
             url = channel.streamUrl,
             fallbackProviderId = channel.providerId,
             fallbackStreamId = channel.streamId,
             fallbackContentType = ContentType.LIVE
-        )?.let { resolvedUrl ->
-            Result.success(StreamInfo(url = resolvedUrl, title = channel.name))
+        )?.let { resolvedStream ->
+            Result.success(
+                StreamInfo(
+                    url = resolvedStream.url,
+                    title = channel.name,
+                    expirationTime = resolvedStream.expirationTime
+                )
+            )
         } ?: Result.error("No stream URL available for channel: ${channel.name}")
     } catch (e: Exception) {
         Result.error(e.message ?: "Failed to resolve stream URL for channel: ${channel.name}", e)
@@ -213,6 +196,17 @@ class ChannelRepositoryImpl @Inject constructor(
         Result.error("Failed to reset channel error count", e)
     }
 
+    private fun observeChannels(
+        source: Flow<List<ChannelEntity>>,
+        providerId: Long
+    ): Flow<List<Channel>> = combine(
+        source,
+        preferencesRepository.parentalControlLevel,
+        parentalControlManager.unlockedCategoriesForProvider(providerId)
+    ) { entities, level, unlockedCats ->
+        groupAndMapChannels(applyVisibilityFilter(entities, level, unlockedCats), unlockedCats)
+    }
+
     private fun groupAndMapChannels(entities: List<ChannelEntity>, unlockedCats: Set<Long>): List<Channel> {
         val grouped = LinkedHashMap<String, ChannelGroupAccumulator>()
         entities.forEach { entity ->
@@ -234,7 +228,11 @@ class ChannelRepositoryImpl @Inject constructor(
                 .sortedWith(channelPriorityComparator)
                 .map { it.streamUrl }
 
-            val domain = primaryEntity.toDomain().copy(alternativeStreams = alternativeStreams)
+            val mergedQualityOptions = buildMergedQualityOptions(primaryEntity, alternativeStreams)
+            val domain = primaryEntity.toDomain().copy(
+                qualityOptions = mergedQualityOptions,
+                alternativeStreams = alternativeStreams
+            )
 
             if (primaryEntity.categoryId != null && unlockedCats.contains(primaryEntity.categoryId)) {
                 domain.copy(isUserProtected = false, isAdult = false)
@@ -259,6 +257,23 @@ class ChannelRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun sortChannelsByNumber(channels: List<Channel>): List<Channel> =
+        channels.sortedWith(channelNumberComparator)
+
+    private fun channelFlow(providerId: Long, categoryId: Long): Flow<List<ChannelEntity>> =
+        if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
+            channelDao.getByProvider(providerId)
+        } else {
+            channelDao.getByCategory(providerId, categoryId)
+        }
+
+    private fun channelFlowWithoutErrors(providerId: Long, categoryId: Long): Flow<List<ChannelEntity>> =
+        if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
+            channelDao.getByProviderWithoutErrors(providerId)
+        } else {
+            channelDao.getByCategoryWithoutErrors(providerId, categoryId)
+        }
+
     private fun groupPrimaryChannelEntities(entities: List<ChannelEntity>): List<ChannelEntity> {
         val primaries = LinkedHashMap<String, ChannelEntity>()
         entities.forEach { entity ->
@@ -269,6 +284,32 @@ class ChannelRepositoryImpl @Inject constructor(
             }
         }
         return primaries.values.toList()
+    }
+
+    private fun buildMergedQualityOptions(
+        primaryEntity: ChannelEntity,
+        alternativeStreams: List<String>
+    ): List<com.streamvault.domain.model.ChannelQualityOption> {
+        val baseOptions = primaryEntity.toDomain().qualityOptions
+        val derivedOptions = (listOf(primaryEntity.streamUrl) + alternativeStreams)
+            .mapNotNull(::deriveQualityOption)
+        return (baseOptions + derivedOptions)
+            .distinctBy { option -> option.height to option.label }
+            .sortedWith(compareByDescending<com.streamvault.domain.model.ChannelQualityOption> { it.height ?: -1 }.thenBy { it.label })
+    }
+
+    private fun deriveQualityOption(url: String): com.streamvault.domain.model.ChannelQualityOption? {
+        val match = QUALITY_HEIGHT_REGEX.find(url) ?: return null
+        val height = match.groupValues[1].toIntOrNull() ?: return null
+        return com.streamvault.domain.model.ChannelQualityOption(
+            label = "${height}p",
+            height = height,
+            url = url
+        )
+    }
+
+    private companion object {
+        val QUALITY_HEIGHT_REGEX = Regex("(?<!\\d)(2160|1440|1080|720|576|480|360|240)p?(?!\\d)", RegexOption.IGNORE_CASE)
     }
 
     private fun channelGroupKey(entity: ChannelEntity): String =

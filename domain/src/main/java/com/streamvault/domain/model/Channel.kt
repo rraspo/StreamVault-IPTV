@@ -21,6 +21,7 @@ data class Channel(
     val isUserProtected: Boolean = false,
     val logicalGroupId: String = "",
     val errorCount: Int = 0,
+    val qualityOptions: List<ChannelQualityOption> = emptyList(),
     val alternativeStreams: List<String> = emptyList(),
     val streamId: Long = 0L
 ) {
@@ -30,3 +31,9 @@ data class Channel(
         require(errorCount >= 0) { "errorCount must be non-negative" }
     }
 }
+
+data class ChannelQualityOption(
+    val label: String,
+    val height: Int? = null,
+    val url: String? = null
+)

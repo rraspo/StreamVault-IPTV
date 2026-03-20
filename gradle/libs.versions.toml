@@ -2,6 +2,7 @@
 agp = "8.9.2"
 kotlin = "2.2.0"
 ksp = "2.2.0-2.0.2"
+kover = "0.9.7"
 compose-bom = "2025.06.01"
 compose-tv-foundation = "1.0.0-beta01"
 # Pinned intentionally; stable as of 2026-03-18, update only after TV regression testing.
@@ -125,3 +126,4 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 room = { id = "androidx.room", version.ref = "room" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }

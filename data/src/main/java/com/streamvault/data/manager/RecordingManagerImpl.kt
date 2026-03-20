@@ -8,6 +8,7 @@ import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.domain.manager.RecordingManager
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.RecordingItem
+import com.streamvault.domain.model.RecordingRecurrence
 import com.streamvault.domain.model.RecordingRequest
 import com.streamvault.domain.model.RecordingStatus
 import com.streamvault.domain.model.RecordingStorageState
@@ -101,9 +102,14 @@ class RecordingManagerImpl @Inject constructor(
             scheduledEndMs = request.scheduledEndMs,
             programTitle = request.programTitle,
             outputPath = request.outputPath ?: buildOutputFile(request).absolutePath,
+            recurrence = RecordingRecurrence.NONE,
+            recurringRuleId = null,
             status = RecordingStatus.RECORDING
         )
-        appendItem(item)
+        val conflict = appendItemIfNoConflict(item)
+        if (conflict != null) {
+            return@withContext Result.error(recordingConflictMessage(conflict))
+        }
         startCapture(item)
         storageState.value = readStorageState()
         Result.success(item)
@@ -120,9 +126,14 @@ class RecordingManagerImpl @Inject constructor(
             scheduledEndMs = request.scheduledEndMs,
             programTitle = request.programTitle,
             outputPath = request.outputPath ?: buildOutputFile(request).absolutePath,
+            recurrence = request.recurrence,
+            recurringRuleId = request.recurringRuleId ?: request.recurrence.takeIf { it != RecordingRecurrence.NONE }?.let { UUID.randomUUID().toString() },
             status = RecordingStatus.SCHEDULED
         )
-        appendItem(item)
+        val conflict = appendItemIfNoConflict(item)
+        if (conflict != null) {
+            return@withContext Result.error(recordingConflictMessage(conflict))
+        }
         Result.success(item)
     }
 
@@ -173,11 +184,31 @@ class RecordingManagerImpl @Inject constructor(
 
         snapshot
             .filter { it.status == RecordingStatus.SCHEDULED && it.scheduledStartMs <= now }
+            .sortedBy(RecordingItem::scheduledStartMs)
             .forEach { scheduled ->
+                val startDecision = promoteScheduledItemToRecordingIfNoConflict(scheduled.id)
+                if (startDecision == null) {
+                    return@forEach
+                }
+                if (startDecision.conflict != null) {
+                    scheduleNextRecurringOccurrence(startDecision.recording)
+                    val failureTime = System.currentTimeMillis()
+                    updateItemIf(scheduled.id, expectedStatus = RecordingStatus.SCHEDULED) {
+                        it.copy(
+                            status = RecordingStatus.FAILED,
+                            failureReason = recordingConflictMessage(startDecision.conflict),
+                            terminalAtMs = failureTime
+                        )
+                    }
+                    return@forEach
+                }
+
+                scheduleNextRecurringOccurrence(startDecision.recording)
+
                 val effectiveStreamUrl = resolveRecordingStreamUrl(scheduled.providerId, scheduled.channelId, scheduled.streamUrl)
                 if (effectiveStreamUrl == null) {
                     val failureTime = System.currentTimeMillis()
-                    updateItemIf(scheduled.id, expectedStatus = RecordingStatus.SCHEDULED) {
+                    updateItemIf(scheduled.id, expectedStatus = RecordingStatus.RECORDING) {
                         it.copy(
                             status = RecordingStatus.FAILED,
                             failureReason = "Recording stream URL could not be resolved.",
@@ -186,7 +217,7 @@ class RecordingManagerImpl @Inject constructor(
                     }
                 } else if (isAdaptiveStream(effectiveStreamUrl)) {
                     val failureTime = System.currentTimeMillis()
-                    updateItemIf(scheduled.id, expectedStatus = RecordingStatus.SCHEDULED) {
+                    updateItemIf(scheduled.id, expectedStatus = RecordingStatus.RECORDING) {
                         it.copy(
                             status = RecordingStatus.FAILED,
                             failureReason = "Scheduled recording supports direct stream URLs only.",
@@ -194,12 +225,7 @@ class RecordingManagerImpl @Inject constructor(
                         )
                     }
                 } else {
-                    val updated = updateItemIf(scheduled.id, expectedStatus = RecordingStatus.SCHEDULED) {
-                        it.copy(status = RecordingStatus.RECORDING)
-                    }
-                    if (updated != null) {
-                        startCapture(updated)
-                    }
+                    startCapture(startDecision.recording)
                 }
             }
 
@@ -283,8 +309,12 @@ class RecordingManagerImpl @Inject constructor(
     }
 
     private fun buildOutputFile(request: RecordingRequest): File {
-        val safeName = request.channelName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        return File(recordingsDir, "${safeName}_${request.scheduledStartMs}.ts")
+        return buildOutputFile(request.channelName, request.scheduledStartMs)
+    }
+
+    private fun buildOutputFile(channelName: String, scheduledStartMs: Long): File {
+        val safeName = channelName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        return File(recordingsDir, "${safeName}_${scheduledStartMs}.ts")
     }
 
     private fun readStorageState(): RecordingStorageState {
@@ -331,6 +361,20 @@ class RecordingManagerImpl @Inject constructor(
             itemsState.value = itemsState.value + item
             persistStateLocked()
         }
+    }
+
+    private suspend fun appendItemIfNoConflict(item: RecordingItem): RecordingItem? = stateMutex.withLock {
+        val conflict = itemsState.value.findRecordingConflict(
+            candidateStartMs = item.scheduledStartMs,
+            candidateEndMs = item.scheduledEndMs,
+            statuses = ACTIVE_RECORDING_STATUSES
+        )
+        if (conflict != null) {
+            return@withLock conflict
+        }
+        itemsState.value = itemsState.value + item
+        persistStateLocked()
+        null
     }
 
     private suspend fun removeItem(recordingId: String): RecordingItem? = stateMutex.withLock {
@@ -382,6 +426,56 @@ class RecordingManagerImpl @Inject constructor(
 
     private suspend fun removeActiveJob(recordingId: String): Job? =
         stateMutex.withLock { activeJobs.remove(recordingId) }
+
+    private suspend fun scheduleNextRecurringOccurrence(source: RecordingItem) {
+        if (source.recurrence == RecordingRecurrence.NONE || source.recurringRuleId.isNullOrBlank()) {
+            return
+        }
+        stateMutex.withLock {
+            val nextStartMs = source.scheduledStartMs + source.recurrence.intervalMs
+            val duplicateExists = itemsState.value.any { item ->
+                item.recurringRuleId == source.recurringRuleId &&
+                    item.scheduledStartMs == nextStartMs &&
+                    item.status == RecordingStatus.SCHEDULED
+            }
+            if (duplicateExists) {
+                return@withLock
+            }
+            val nextItem = source.copy(
+                id = UUID.randomUUID().toString(),
+                scheduledStartMs = nextStartMs,
+                scheduledEndMs = source.scheduledEndMs + source.recurrence.intervalMs,
+                outputPath = buildOutputFile(source.channelName, nextStartMs).absolutePath,
+                status = RecordingStatus.SCHEDULED,
+                failureReason = null,
+                terminalAtMs = null
+            )
+            itemsState.value = itemsState.value + nextItem
+            persistStateLocked()
+        }
+    }
+
+    private suspend fun promoteScheduledItemToRecordingIfNoConflict(recordingId: String): RecordingStartDecision? =
+        stateMutex.withLock {
+            val scheduled = itemsState.value.firstOrNull {
+                it.id == recordingId && it.status == RecordingStatus.SCHEDULED
+            } ?: return@withLock null
+            val conflict = itemsState.value.findRecordingConflict(
+                candidateStartMs = scheduled.scheduledStartMs,
+                candidateEndMs = scheduled.scheduledEndMs,
+                ignoreRecordingId = recordingId,
+                statuses = setOf(RecordingStatus.RECORDING)
+            )
+            if (conflict != null) {
+                return@withLock RecordingStartDecision(recording = scheduled, conflict = conflict)
+            }
+            val updated = scheduled.copy(status = RecordingStatus.RECORDING)
+            itemsState.value = itemsState.value.map { item ->
+                if (item.id == recordingId) updated else item
+            }
+            persistStateLocked()
+            RecordingStartDecision(recording = updated, conflict = null)
+        }
 
     private suspend fun runRetentionSweepIfDue() {
         val now = System.currentTimeMillis()
@@ -471,11 +565,49 @@ class RecordingManagerImpl @Inject constructor(
     }
 
     private companion object {
+        val ACTIVE_RECORDING_STATUSES = setOf(RecordingStatus.SCHEDULED, RecordingStatus.RECORDING)
         const val MAX_RECORDING_RETRIES = 3
         const val FINISHED_RECORDING_RETENTION_MS = 30L * 24L * 60L * 60L * 1000L
         const val RETENTION_SWEEP_INTERVAL_MS = 60L * 60L * 1000L
     }
 }
+
+private data class RecordingStartDecision(
+    val recording: RecordingItem,
+    val conflict: RecordingItem?
+)
+
+internal fun List<RecordingItem>.findRecordingConflict(
+    candidateStartMs: Long,
+    candidateEndMs: Long,
+    ignoreRecordingId: String? = null,
+    statuses: Set<RecordingStatus>
+): RecordingItem? = asSequence()
+    .filter { it.id != ignoreRecordingId }
+    .filter { it.status in statuses }
+    .sortedWith(compareBy<RecordingItem> { it.scheduledStartMs }.thenBy { it.id })
+    .firstOrNull { existing ->
+        candidateStartMs < existing.scheduledEndMs && existing.scheduledStartMs < candidateEndMs
+    }
+
+private fun recordingConflictMessage(conflict: RecordingItem): String {
+    val title = conflict.programTitle?.takeIf { it.isNotBlank() } ?: conflict.channelName
+    val stateLabel = when (conflict.status) {
+        RecordingStatus.SCHEDULED -> "scheduled"
+        RecordingStatus.RECORDING -> "active"
+        RecordingStatus.COMPLETED,
+        RecordingStatus.FAILED,
+        RecordingStatus.CANCELLED -> "finished"
+    }
+    return "Recording conflicts with an existing $stateLabel recording for $title on ${conflict.channelName}."
+}
+
+private val RecordingRecurrence.intervalMs: Long
+    get() = when (this) {
+        RecordingRecurrence.NONE -> 0L
+        RecordingRecurrence.DAILY -> 24L * 60L * 60L * 1000L
+        RecordingRecurrence.WEEKLY -> 7L * 24L * 60L * 60L * 1000L
+    }
 
 private fun RecordingStatus.isTerminal(): Boolean = when (this) {
     RecordingStatus.SCHEDULED,

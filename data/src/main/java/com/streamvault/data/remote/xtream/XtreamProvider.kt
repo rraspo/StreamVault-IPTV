@@ -6,7 +6,16 @@ import com.streamvault.data.util.AdultContentClassifier
 import com.streamvault.domain.model.*
 import com.streamvault.domain.provider.IptvProvider
 import com.streamvault.domain.util.ChannelNormalizer
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
+import java.time.format.ResolverStyle
 import java.util.Base64
+import java.util.Locale
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -37,35 +46,7 @@ class XtreamProvider(
         } else {
             // Parse expiration date
             val expDateStr = response.userInfo.expDate
-            val expDate = when {
-                expDateStr == null -> null
-                expDateStr.equals("Unlimited", ignoreCase = true) -> Long.MAX_VALUE
-                expDateStr.equals("null", ignoreCase = true) -> null
-                // Try as timestamp (seconds)
-                expDateStr.toLongOrNull() != null -> expDateStr.toLong() * 1000
-                // Try as Date String (yyyy-MM-dd, etc.) - simple fallback
-                else -> {
-                    try {
-                        // formats: yyyy-MM-dd HH:mm:ss, yyyy-MM-dd, etc.
-                        // For now, let's try a few common patterns or just use a generic parser if available.
-                        // Since we don't have a heavy date library, let's try basic java.text.SimpleDateFormat
-                        val formats = listOf(
-                            "yyyy-MM-dd HH:mm:ss",
-                            "yyyy-MM-dd"
-                        )
-                        var parsed: Long? = null
-                        for (fmt in formats) {
-                            try {
-                                parsed = java.text.SimpleDateFormat(fmt, java.util.Locale.ROOT).parse(expDateStr)?.time
-                                if (parsed != null) break
-                            } catch (_: Exception) {}
-                        }
-                        parsed
-                    } catch (e: Exception) {
-                        null
-                    }
-                }
-            }
+            val expDate = parseXtreamExpirationDate(expDateStr)
 
             Result.success(
                 Provider(
@@ -77,6 +58,8 @@ class XtreamProvider(
                     password = password,
                     maxConnections = response.userInfo.maxConnections.toIntOrNull() ?: 1,
                     expirationDate = expDate,
+                    apiVersion = response.serverInfo.apiVersion?.takeIf { it.isNotBlank() }
+                        ?: response.serverInfo.version?.takeIf { it.isNotBlank() },
                     status = when (response.userInfo.status) {
                         "Active" -> ProviderStatus.ACTIVE
                         "Expired" -> ProviderStatus.EXPIRED
@@ -168,15 +151,15 @@ class XtreamProvider(
             Result.success(
                 Movie(
                     id = movieData.streamId,
-                    name = movieData.name,
+                    name = decodeXtreamText(movieData.name),
                     posterUrl = info?.movieImage,
                     backdropUrl = info?.backdropPath?.firstOrNull(),
                     categoryId = movieData.categoryId?.toLongOrNull(),
                     containerExtension = movieData.containerExtension,
-                    plot = info?.plot,
-                    cast = info?.cast,
-                    director = info?.director,
-                    genre = info?.genre,
+                    plot = decodeXtreamNullableText(info?.plot),
+                    cast = decodeXtreamNullableText(info?.cast),
+                    director = decodeXtreamNullableText(info?.director),
+                    genre = decodeXtreamNullableText(info?.genre),
                     releaseDate = info?.releaseDate,
                     duration = info?.duration,
                     durationSeconds = info?.durationSecs ?: 0,
@@ -184,7 +167,13 @@ class XtreamProvider(
                     tmdbId = info?.tmdbId,
                     youtubeTrailer = info?.youtubeTrailer,
                     providerId = providerId,
-                    streamUrl = buildMovieStreamUrl(movieData.streamId, movieData.containerExtension),
+                    streamUrl = XtreamUrlFactory.buildInternalStreamUrl(
+                        providerId = providerId,
+                        kind = XtreamStreamKind.MOVIE,
+                        streamId = movieData.streamId,
+                        containerExtension = movieData.containerExtension,
+                        directSource = movieData.directSource
+                    ),
                     streamId = movieData.streamId,
                     isAdult = resolveAdultFlag(
                         categoryId = movieData.categoryId?.toLongOrNull(),
@@ -257,12 +246,14 @@ class XtreamProvider(
                     episodes = episodes.map { ep ->
                         Episode(
                             id = ep.id.toLongOrNull() ?: 0,
-                            title = ep.title.ifBlank { ep.info?.name ?: "Episode ${ep.episodeNum}" },
+                            title = decodeXtreamText(
+                                ep.title.ifBlank { decodeXtreamNullableText(ep.info?.name) ?: "Episode ${ep.episodeNum}" }
+                            ),
                             episodeNumber = ep.episodeNum,
                             seasonNumber = ep.season,
                             containerExtension = ep.containerExtension,
                             coverUrl = ep.info?.movieImage,
-                            plot = ep.info?.plot,
+                            plot = decodeXtreamNullableText(ep.info?.plot),
                             duration = ep.info?.duration,
                             durationSeconds = ep.info?.durationSecs ?: 0,
                             rating = ep.info?.rating?.toFloatOrNull() ?: 0f,
@@ -273,7 +264,8 @@ class XtreamProvider(
                                 providerId = providerId,
                                 kind = XtreamStreamKind.SERIES,
                                 streamId = ep.id.toLongOrNull() ?: 0,
-                                containerExtension = ep.containerExtension
+                                containerExtension = ep.containerExtension,
+                                directSource = ep.directSource
                             ),
                             isAdult = isAdult,
                             isUserProtected = false,
@@ -336,7 +328,14 @@ class XtreamProvider(
     // ── Stream URLs ────────────────────────────────────────────────
 
     override suspend fun buildStreamUrl(streamId: Long, containerExtension: String?): String {
-        return XtreamUrlFactory.buildPlaybackUrl(serverUrl, username, password, XtreamStreamKind.LIVE, streamId)
+        return XtreamUrlFactory.buildPlaybackUrl(
+            serverUrl = serverUrl,
+            username = username,
+            password = password,
+            kind = XtreamStreamKind.LIVE,
+            streamId = streamId,
+            containerExtension = containerExtension
+        )
     }
 
     private fun buildMovieStreamUrl(streamId: Long, containerExtension: String?): String {
@@ -431,10 +430,10 @@ class XtreamProvider(
     private fun XtreamStream.toChannel(adultCategoryIds: Set<Long>): Channel {
         return Channel(
             id = 0,
-            name = name,
+            name = decodeXtreamText(name),
             logoUrl = streamIcon,
             categoryId = categoryId?.toLongOrNull(),
-            categoryName = categoryName,
+            categoryName = decodeXtreamNullableText(categoryName),
             epgChannelId = epgChannelId,
             number = num,
             catchUpSupported = tvArchive == 1,
@@ -443,7 +442,9 @@ class XtreamProvider(
             streamUrl = XtreamUrlFactory.buildInternalStreamUrl(
                 providerId = providerId,
                 kind = XtreamStreamKind.LIVE,
-                streamId = streamId
+                streamId = streamId,
+                containerExtension = containerExtension,
+                directSource = directSource
             ),
             isAdult = resolveAdultFlag(
                 categoryId = categoryId?.toLongOrNull(),
@@ -458,18 +459,19 @@ class XtreamProvider(
 
     private fun XtreamStream.toMovie(adultCategoryIds: Set<Long>) = Movie(
         id = 0,
-        name = name,
+        name = decodeXtreamText(name),
         posterUrl = streamIcon,
         categoryId = categoryId?.toLongOrNull(),
-        categoryName = categoryName,
+        categoryName = decodeXtreamNullableText(categoryName),
         containerExtension = containerExtension,
-        rating = rating5based?.toFloatOrNull() ?: 0f,
+        rating = rating5based?.toFloatOrNull() ?: rating?.toFloatOrNull() ?: 0f,
         providerId = providerId,
         streamUrl = XtreamUrlFactory.buildInternalStreamUrl(
             providerId = providerId,
             kind = XtreamStreamKind.MOVIE,
             streamId = streamId,
-            containerExtension = containerExtension
+            containerExtension = containerExtension,
+            directSource = directSource
         ),
         isAdult = resolveAdultFlag(
             categoryId = categoryId?.toLongOrNull(),
@@ -482,14 +484,14 @@ class XtreamProvider(
 
     private fun XtreamSeriesItem.toDomain(adultCategoryIds: Set<Long>) = Series(
         id = 0,
-        name = name,
+        name = decodeXtreamText(name),
         posterUrl = cover,
         backdropUrl = backdropPath?.firstOrNull(),
         categoryId = categoryId?.toLongOrNull(),
-        plot = plot,
-        cast = cast,
-        director = director,
-        genre = genre,
+        plot = decodeXtreamNullableText(plot),
+        cast = decodeXtreamNullableText(cast),
+        director = decodeXtreamNullableText(director),
+        genre = decodeXtreamNullableText(genre),
         releaseDate = releaseDate,
         rating = rating5based?.toFloatOrNull() ?: rating?.toFloatOrNull() ?: 0f,
         youtubeTrailer = youtubeTrailer,
@@ -507,8 +509,8 @@ class XtreamProvider(
 
     private fun XtreamEpgListing.toDomain(): Program {
         // Xtream sometimes base64-encodes title and description
-        val decodedTitle = tryBase64Decode(title)
-        val decodedDescription = tryBase64Decode(description)
+        val decodedTitle = decodeXtreamText(title)
+        val decodedDescription = decodeXtreamText(description)
 
         return Program(
             id = id.toLongOrNull() ?: 0,
@@ -518,11 +520,18 @@ class XtreamProvider(
             startTime = startTimestamp * 1000L,
             endTime = stopTimestamp * 1000L,
             lang = lang,
+            category = null,
             hasArchive = hasArchive == 1,
             isNowPlaying = nowPlaying == 1,
             providerId = providerId
         )
     }
+
+    private fun decodeXtreamNullableText(value: String?): String? {
+        return value?.let(::decodeXtreamText)?.takeIf { it.isNotBlank() }
+    }
+
+    private fun decodeXtreamText(value: String): String = tryBase64Decode(value).trim()
 
     private fun tryBase64Decode(value: String): String = try {
         if (value.isBlank()) value
@@ -534,3 +543,64 @@ class XtreamProvider(
         value
     }
 }
+
+internal fun parseXtreamExpirationDate(rawValue: String?): Long? {
+    val value = rawValue?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    if (value.equals("Unlimited", ignoreCase = true)) return Long.MAX_VALUE
+    if (value.equals("null", ignoreCase = true) || value.equals("none", ignoreCase = true)) return null
+
+    value.toLongOrNull()?.let { numeric ->
+        return if (numeric >= 1_000_000_000_000L) numeric else numeric * 1000L
+    }
+
+    runCatching { Instant.parse(value).toEpochMilli() }.getOrNull()?.let { return it }
+    runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }.getOrNull()?.let { return it }
+
+    XTREAM_LOCAL_DATE_TIME_FORMATTERS.forEach { formatter ->
+        runCatching {
+            LocalDateTime.parse(value, formatter).toInstant(ZoneOffset.UTC).toEpochMilli()
+        }.getOrNull()?.let { return it }
+    }
+
+    XTREAM_LOCAL_DATE_FORMATTERS.forEach { formatter ->
+        runCatching {
+            LocalDate.parse(value, formatter).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
+        }.getOrNull()?.let { return it }
+    }
+
+    return null
+}
+
+private val XTREAM_LOCAL_DATE_TIME_FORMATTERS: List<DateTimeFormatter> = listOf(
+    "yyyy-MM-dd HH:mm:ss",
+    "yyyy/MM/dd HH:mm:ss",
+    "yyyy-MM-dd'T'HH:mm:ss",
+    "yyyy/MM/dd'T'HH:mm:ss",
+    "dd-MM-yyyy HH:mm:ss",
+    "dd/MM/yyyy HH:mm:ss"
+).map { pattern ->
+    DateTimeFormatterBuilder()
+        .parseCaseInsensitive()
+        .appendPattern(pattern)
+        .toFormatter(Locale.ROOT)
+        .withResolverStyle(ResolverStyle.SMART)
+}
+
+private val XTREAM_LOCAL_DATE_FORMATTERS: List<DateTimeFormatter> = listOf(
+    DateTimeFormatter.ISO_LOCAL_DATE,
+    DateTimeFormatterBuilder()
+        .parseCaseInsensitive()
+        .appendPattern("yyyy/MM/dd")
+        .toFormatter(Locale.ROOT)
+        .withResolverStyle(ResolverStyle.SMART),
+    DateTimeFormatterBuilder()
+        .parseCaseInsensitive()
+        .appendPattern("dd-MM-yyyy")
+        .toFormatter(Locale.ROOT)
+        .withResolverStyle(ResolverStyle.SMART),
+    DateTimeFormatterBuilder()
+        .parseCaseInsensitive()
+        .appendPattern("dd/MM/yyyy")
+        .toFormatter(Locale.ROOT)
+        .withResolverStyle(ResolverStyle.SMART)
+)

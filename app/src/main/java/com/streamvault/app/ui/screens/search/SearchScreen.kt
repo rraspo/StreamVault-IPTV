@@ -47,10 +47,9 @@ import com.streamvault.app.ui.theme.*
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.Series
-import com.streamvault.domain.repository.ChannelRepository
-import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.ProviderRepository
-import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.SearchContent
+import com.streamvault.domain.usecase.SearchContentScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
@@ -62,9 +61,7 @@ import javax.inject.Inject
 @OptIn(ExperimentalCoroutinesApi::class)
 class SearchViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
-    private val channelRepository: ChannelRepository,
-    private val movieRepository: MovieRepository,
-    private val seriesRepository: SeriesRepository,
+    private val searchContent: SearchContent,
     private val preferencesRepository: com.streamvault.data.preferences.PreferencesRepository
 ) : ViewModel() {
     private companion object {
@@ -86,6 +83,11 @@ class SearchViewModel @Inject constructor(
         viewModelScope.launch {
             preferencesRepository.parentalControlLevel.collect { level ->
                 _parentalControlLevel.value = level
+            }
+        }
+        viewModelScope.launch {
+            preferencesRepository.recentSearchQueries.collect { queries ->
+                _recentQueries.value = queries
             }
         }
     }
@@ -113,19 +115,16 @@ class SearchViewModel @Inject constructor(
                 )
             )
         } else {
-            val providerId = provider.id
-            combine(
-                if (tab == SearchTab.ALL || tab == SearchTab.LIVE) 
-                    channelRepository.searchChannels(providerId, query) else flowOf(emptyList()),
-                if (tab == SearchTab.ALL || tab == SearchTab.MOVIES) 
-                    movieRepository.searchMovies(providerId, query) else flowOf(emptyList()),
-                if (tab == SearchTab.ALL || tab == SearchTab.SERIES) 
-                    seriesRepository.searchSeries(providerId, query) else flowOf(emptyList())
-            ) { channels, movies, series ->
+            searchContent(
+                providerId = provider.id,
+                query = query,
+                scope = tab.toSearchScope(),
+                maxResultsPerSection = MAX_RESULTS_PER_SECTION
+            ).map { results ->
                 SearchUiState(
-                    channels = channels.take(MAX_RESULTS_PER_SECTION),
-                    movies = movies.take(MAX_RESULTS_PER_SECTION),
-                    series = series.take(MAX_RESULTS_PER_SECTION),
+                    channels = results.channels,
+                    movies = results.movies,
+                    series = results.series,
                     isLoading = false,
                     hasSearched = true,
                     parentalControlLevel = level,
@@ -145,9 +144,12 @@ class SearchViewModel @Inject constructor(
         if (normalizedQuery.length < 2) return
 
         _query.value = normalizedQuery
-        _recentQueries.update { existing ->
+        val updatedQueries = _recentQueries.updateAndGet { existing ->
             (listOf(normalizedQuery) + existing.filterNot { it.equals(normalizedQuery, ignoreCase = true) })
                 .take(MAX_RECENT_QUERIES)
+        }
+        viewModelScope.launch {
+            preferencesRepository.setRecentSearchQueries(updatedQueries)
         }
     }
 
@@ -166,6 +168,9 @@ class SearchViewModel @Inject constructor(
 
     fun clearRecentQueries() {
         _recentQueries.value = emptyList()
+        viewModelScope.launch {
+            preferencesRepository.setRecentSearchQueries(emptyList())
+        }
     }
 
     fun onTabSelected(tab: SearchTab) {
@@ -189,6 +194,13 @@ enum class SearchTab(@get:StringRes val titleRes: Int) {
     LIVE(R.string.search_live_tv),
     MOVIES(R.string.search_movies),
     SERIES(R.string.search_series)
+}
+
+private fun SearchTab.toSearchScope(): SearchContentScope = when (this) {
+    SearchTab.ALL -> SearchContentScope.ALL
+    SearchTab.LIVE -> SearchContentScope.LIVE
+    SearchTab.MOVIES -> SearchContentScope.MOVIES
+    SearchTab.SERIES -> SearchContentScope.SERIES
 }
 
 data class SearchUiState(

@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kover)
 }
 
 java {
@@ -9,6 +10,14 @@ java {
 
 kotlin {
     jvmToolchain(17)
+}
+
+kover {
+    currentProject {
+        createVariant("ci") {
+            add("jvm")
+        }
+    }
 }
 
 dependencies {

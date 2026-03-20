@@ -57,11 +57,17 @@ interface ChannelDao {
     @Query("SELECT * FROM channels WHERE provider_id = :providerId ORDER BY number ASC")
     fun getByProvider(providerId: Long): Flow<List<ChannelEntity>>
 
+    @Query("SELECT * FROM channels WHERE provider_id = :providerId AND error_count = 0 ORDER BY number ASC")
+    fun getByProviderWithoutErrors(providerId: Long): Flow<List<ChannelEntity>>
+
     @Query("SELECT * FROM channels WHERE provider_id = :providerId ORDER BY number ASC LIMIT :limit OFFSET :offset")
     fun getByProviderPage(providerId: Long, limit: Int, offset: Int): Flow<List<ChannelEntity>>
 
     @Query("SELECT * FROM channels WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY number ASC")
     fun getByCategory(providerId: Long, categoryId: Long): Flow<List<ChannelEntity>>
+
+    @Query("SELECT * FROM channels WHERE provider_id = :providerId AND category_id = :categoryId AND error_count = 0 ORDER BY number ASC")
+    fun getByCategoryWithoutErrors(providerId: Long, categoryId: Long): Flow<List<ChannelEntity>>
 
     @Query("SELECT * FROM channels WHERE provider_id = :providerId AND category_id = :categoryId ORDER BY number ASC LIMIT :limit OFFSET :offset")
     fun getByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<ChannelEntity>>
@@ -208,6 +214,65 @@ interface MovieDao {
     @Query("UPDATE movies SET watch_progress = :progress, last_watched_at = :timestamp WHERE id = :id")
     suspend fun updateWatchProgress(id: Long, progress: Long, timestamp: Long = System.currentTimeMillis())
 
+    @Query(
+        """
+        UPDATE movies
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = movies.id
+              AND playback_history.content_type = 'MOVIE'
+              AND playback_history.provider_id = movies.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = movies.id
+                  AND playback_history.content_type = 'MOVIE'
+                  AND playback_history.provider_id = movies.provider_id
+            ), 0)
+        WHERE id = :id AND provider_id = :providerId
+        """
+    )
+    suspend fun syncWatchProgressFromHistory(id: Long, providerId: Long)
+
+    @Query(
+        """
+        UPDATE movies
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = movies.id
+              AND playback_history.content_type = 'MOVIE'
+              AND playback_history.provider_id = movies.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = movies.id
+                  AND playback_history.content_type = 'MOVIE'
+                  AND playback_history.provider_id = movies.provider_id
+            ), 0)
+        WHERE provider_id = :providerId
+        """
+    )
+    suspend fun syncWatchProgressFromHistoryByProvider(providerId: Long)
+
+    @Query(
+        """
+        UPDATE movies
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = movies.id
+              AND playback_history.content_type = 'MOVIE'
+              AND playback_history.provider_id = movies.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = movies.id
+                  AND playback_history.content_type = 'MOVIE'
+                  AND playback_history.provider_id = movies.provider_id
+            ), 0)
+        """
+    )
+    suspend fun syncAllWatchProgressFromHistory()
+
     @Query("DELETE FROM movies WHERE provider_id = :providerId")
     suspend fun deleteByProvider(providerId: Long)
 
@@ -345,6 +410,27 @@ interface EpisodeDao {
     @Query("SELECT * FROM episodes WHERE id = :id")
     suspend fun getById(id: Long): EpisodeEntity?
 
+    @Query(
+        """
+        SELECT COUNT(*)
+        FROM episodes
+        LEFT JOIN playback_history
+            ON playback_history.content_id = episodes.id
+           AND playback_history.content_type = 'SERIES_EPISODE'
+           AND playback_history.provider_id = episodes.provider_id
+        WHERE episodes.provider_id = :providerId
+          AND episodes.series_id = :seriesId
+          AND (
+              COALESCE(playback_history.total_duration_ms, episodes.duration_seconds * 1000) <= 0
+              OR COALESCE(playback_history.resume_position_ms, episodes.watch_progress) < CAST(
+                  COALESCE(playback_history.total_duration_ms, episodes.duration_seconds * 1000) * :completionThreshold
+                  AS INTEGER
+              )
+          )
+        """
+    )
+    fun getUnwatchedCount(providerId: Long, seriesId: Long, completionThreshold: Float): Flow<Int>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(episodes: List<EpisodeEntity>)
 
@@ -353,6 +439,65 @@ interface EpisodeDao {
 
     @Query("UPDATE episodes SET watch_progress = :progress, last_watched_at = :timestamp WHERE id = :id")
     suspend fun updateWatchProgress(id: Long, progress: Long, timestamp: Long = System.currentTimeMillis())
+
+    @Query(
+        """
+        UPDATE episodes
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = episodes.id
+              AND playback_history.content_type = 'SERIES_EPISODE'
+              AND playback_history.provider_id = episodes.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = episodes.id
+                  AND playback_history.content_type = 'SERIES_EPISODE'
+                  AND playback_history.provider_id = episodes.provider_id
+            ), 0)
+        WHERE id = :id AND provider_id = :providerId
+        """
+    )
+    suspend fun syncWatchProgressFromHistory(id: Long, providerId: Long)
+
+    @Query(
+        """
+        UPDATE episodes
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = episodes.id
+              AND playback_history.content_type = 'SERIES_EPISODE'
+              AND playback_history.provider_id = episodes.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = episodes.id
+                  AND playback_history.content_type = 'SERIES_EPISODE'
+                  AND playback_history.provider_id = episodes.provider_id
+            ), 0)
+        WHERE provider_id = :providerId
+        """
+    )
+    suspend fun syncWatchProgressFromHistoryByProvider(providerId: Long)
+
+    @Query(
+        """
+        UPDATE episodes
+        SET watch_progress = COALESCE((
+            SELECT resume_position_ms FROM playback_history
+            WHERE playback_history.content_id = episodes.id
+              AND playback_history.content_type = 'SERIES_EPISODE'
+              AND playback_history.provider_id = episodes.provider_id
+        ), 0),
+            last_watched_at = COALESCE((
+                SELECT last_watched_at FROM playback_history
+                WHERE playback_history.content_id = episodes.id
+                  AND playback_history.content_type = 'SERIES_EPISODE'
+                  AND playback_history.provider_id = episodes.provider_id
+            ), 0)
+        """
+    )
+    suspend fun syncAllWatchProgressFromHistory()
 
     @Query("DELETE FROM episodes WHERE series_id = :seriesId")
     suspend fun deleteBySeries(seriesId: Long)
@@ -426,6 +571,55 @@ interface ProgramDao {
         """
     )
     fun getForChannels(providerId: Long, channelIds: List<String>, startTime: Long, endTime: Long): Flow<List<ProgramEntity>>
+
+    @Query(
+        """
+        SELECT programs.*
+        FROM programs
+        INNER JOIN channels
+            ON channels.provider_id = programs.provider_id
+           AND channels.epg_channel_id = programs.channel_id
+        WHERE programs.provider_id = :providerId
+          AND channels.category_id = :categoryId
+          AND programs.end_time > :startTime
+          AND programs.start_time < :endTime
+        ORDER BY channels.number ASC, programs.channel_id ASC, programs.start_time ASC
+        """
+    )
+    fun getForCategory(providerId: Long, categoryId: Long, startTime: Long, endTime: Long): Flow<List<ProgramEntity>>
+
+    @Query(
+        """
+        SELECT programs.*
+        FROM programs
+        WHERE programs.provider_id = :providerId
+          AND programs.end_time > :startTime
+          AND programs.start_time < :endTime
+          AND (
+              programs.title LIKE :queryPattern
+              OR programs.description LIKE :queryPattern
+          )
+          AND (
+              :categoryId IS NULL
+              OR EXISTS (
+                  SELECT 1 FROM channels
+                  WHERE channels.provider_id = programs.provider_id
+                    AND channels.epg_channel_id = programs.channel_id
+                    AND channels.category_id = :categoryId
+              )
+          )
+        ORDER BY programs.start_time ASC, programs.channel_id ASC
+        LIMIT :limit
+        """
+    )
+    fun searchPrograms(
+        providerId: Long,
+        queryPattern: String,
+        startTime: Long,
+        endTime: Long,
+        categoryId: Long?,
+        limit: Int
+    ): Flow<List<ProgramEntity>>
 
     @Query("SELECT * FROM programs WHERE provider_id = :providerId AND channel_id = :channelId AND start_time <= :now AND end_time > :now LIMIT 1")
     fun getNowPlaying(providerId: Long, channelId: String, now: Long = System.currentTimeMillis()): Flow<ProgramEntity?>
@@ -522,6 +716,9 @@ interface PlaybackHistoryDao {
 
     @Query("SELECT * FROM playback_history WHERE provider_id = :providerId ORDER BY last_watched_at DESC LIMIT :limit")
     fun getRecentlyWatchedByProvider(providerId: Long, limit: Int = 100): Flow<List<PlaybackHistoryEntity>>
+
+    @Query("SELECT * FROM playback_history WHERE provider_id = :providerId ORDER BY last_watched_at DESC")
+    fun getByProvider(providerId: Long): Flow<List<PlaybackHistoryEntity>>
 
     @Query("SELECT * FROM playback_history ORDER BY last_watched_at DESC")
     suspend fun getAllSync(): List<PlaybackHistoryEntity>

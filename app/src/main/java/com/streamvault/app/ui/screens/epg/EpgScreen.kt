@@ -25,23 +25,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.TextButton
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.Composable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.LaunchedEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.collectAsState
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.mutableStateOf
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.produceState
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.remember
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
@@ -62,6 +53,7 @@ import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import com.streamvault.app.R
 import com.streamvault.app.navigation.Routes
+import com.streamvault.app.ui.components.SearchInput
 import com.streamvault.app.ui.components.SelectionChip
 import com.streamvault.app.ui.components.SelectionChipRow
 import com.streamvault.app.ui.components.shell.AppNavigationChrome
@@ -139,6 +131,12 @@ fun FullEpgScreen(
                     onCategorySelected = viewModel::selectCategory
                 )
 
+                GuideProgramSearchRow(
+                    query = uiState.programSearchQuery,
+                    onQueryChange = viewModel::updateProgramSearchQuery,
+                    onClear = viewModel::clearProgramSearch
+                )
+
                 GuideTimeControlsRow(
                     onJumpToPreviousDay = viewModel::jumpToPreviousDay,
                     onPageBackward = viewModel::pageBackward,
@@ -212,7 +210,9 @@ fun FullEpgScreen(
 
                 uiState.channels.isEmpty() -> {
                     GuideMessageState(
-                        title = if (uiState.selectedCategoryId == ChannelRepository.ALL_CHANNELS_ID) {
+                        title = if (uiState.programSearchQuery.isNotBlank()) {
+                            stringResource(R.string.epg_no_search_results)
+                        } else if (uiState.selectedCategoryId == ChannelRepository.ALL_CHANNELS_ID) {
                             if (uiState.showScheduledOnly) {
                                 stringResource(R.string.epg_no_scheduled_channels)
                             } else {
@@ -225,13 +225,23 @@ fun FullEpgScreen(
                                 stringResource(R.string.epg_no_channels_in_category)
                             }
                         },
-                        subtitle = if (uiState.showScheduledOnly) {
+                        subtitle = if (uiState.programSearchQuery.isNotBlank()) {
+                            stringResource(R.string.epg_search_empty_hint)
+                        } else if (uiState.showScheduledOnly) {
                             stringResource(R.string.epg_scheduled_only_hint)
                         } else {
                             stringResource(R.string.epg_filter_hint)
                         },
-                        actionLabel = stringResource(R.string.epg_retry),
-                        onAction = viewModel::refresh
+                        actionLabel = if (uiState.programSearchQuery.isNotBlank()) {
+                            stringResource(R.string.epg_clear_search)
+                        } else {
+                            stringResource(R.string.epg_retry)
+                        },
+                        onAction = if (uiState.programSearchQuery.isNotBlank()) {
+                            viewModel::clearProgramSearch
+                        } else {
+                            viewModel::refresh
+                        }
                     )
                 }
 
@@ -620,6 +630,44 @@ private fun GuideDensityRow(
             GuideDensity.entries.firstOrNull { it.name == key }?.let(onDensitySelected)
         }
     )
+}
+
+@Composable
+private fun GuideProgramSearchRow(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClear: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 12.dp)
+    ) {
+        Text(
+            text = stringResource(R.string.epg_search_label),
+            style = MaterialTheme.typography.labelMedium,
+            color = OnSurfaceDim
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SearchInput(
+                value = query,
+                onValueChange = onQueryChange,
+                placeholder = stringResource(R.string.epg_search_placeholder),
+                modifier = Modifier.weight(1f)
+            )
+            if (query.isNotBlank()) {
+                GuideShortcutChip(
+                    label = stringResource(R.string.epg_clear_search),
+                    onClick = onClear
+                )
+            }
+        }
+    }
 }
 
 @Composable

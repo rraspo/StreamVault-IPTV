@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.kover)
 }
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -71,6 +72,14 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+kover {
+    currentProject {
+        createVariant("ci") {
+            add("debug")
+        }
     }
 }
 

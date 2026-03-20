@@ -14,6 +14,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.streamvault.data.local.dao.ChannelPreferenceDao
 import com.streamvault.data.local.entity.ChannelPreferenceEntity
+import com.streamvault.domain.manager.ParentalPinVerifier
 import com.streamvault.domain.manager.ParentalControlSessionState
 import com.streamvault.domain.manager.ParentalControlSessionStore
 import java.security.SecureRandom
@@ -36,7 +37,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 class PreferencesRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val channelPreferenceDao: ChannelPreferenceDao
-) : ParentalControlSessionStore {
+) : ParentalControlSessionStore, ParentalPinVerifier {
     companion object {
         private const val PIN_SALT_BYTES = 16
         private const val PIN_HASH_ITERATIONS = 120_000
@@ -67,6 +68,20 @@ class PreferencesRepository @Inject constructor(
         val MULTIVIEW_PERFORMANCE_MODE = stringPreferencesKey("multiview_performance_mode")
         val IS_INCOGNITO_MODE = booleanPreferencesKey("is_incognito_mode")
         val PLAYER_MUTED = booleanPreferencesKey("player_muted")
+        val PLAYER_PLAYBACK_SPEED = stringPreferencesKey("player_playback_speed")
+        val PREFERRED_AUDIO_LANGUAGE = stringPreferencesKey("preferred_audio_language")
+        val PLAYER_SUBTITLE_TEXT_SCALE = stringPreferencesKey("player_subtitle_text_scale")
+        val PLAYER_SUBTITLE_TEXT_COLOR = intPreferencesKey("player_subtitle_text_color")
+        val PLAYER_SUBTITLE_BACKGROUND_COLOR = intPreferencesKey("player_subtitle_background_color")
+        val PLAYER_WIFI_MAX_VIDEO_HEIGHT = intPreferencesKey("player_wifi_max_video_height")
+        val PLAYER_ETHERNET_MAX_VIDEO_HEIGHT = intPreferencesKey("player_ethernet_max_video_height")
+        val LAST_SPEED_TEST_MEGABITS = stringPreferencesKey("last_speed_test_megabits")
+        val LAST_SPEED_TEST_TIMESTAMP = longPreferencesKey("last_speed_test_timestamp")
+        val LAST_SPEED_TEST_TRANSPORT = stringPreferencesKey("last_speed_test_transport")
+        val LAST_SPEED_TEST_RECOMMENDED_HEIGHT = intPreferencesKey("last_speed_test_recommended_height")
+        val LAST_SPEED_TEST_ESTIMATED = booleanPreferencesKey("last_speed_test_estimated")
+        val GUIDE_SCHEDULED_ONLY = intPreferencesKey("guide_scheduled_only")
+        val RECENT_SEARCH_QUERIES = stringPreferencesKey("recent_search_queries")
     }
 
     private object ParentalSessionKeys {
@@ -106,6 +121,71 @@ class PreferencesRepository @Inject constructor(
         preferences[PreferencesKeys.PLAYER_MUTED] ?: false
     }
 
+    val playerPlaybackSpeed: Flow<Float> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_PLAYBACK_SPEED]
+            ?.toFloatOrNull()
+            ?.coerceIn(0.5f, 2f)
+            ?: 1f
+    }
+
+    val preferredAudioLanguage: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PREFERRED_AUDIO_LANGUAGE]
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: "auto"
+    }
+
+    val playerSubtitleTextScale: Flow<Float> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_SUBTITLE_TEXT_SCALE]
+            ?.toFloatOrNull()
+            ?.coerceIn(0.75f, 1.75f)
+            ?: 1f
+    }
+
+    val playerSubtitleTextColor: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_SUBTITLE_TEXT_COLOR] ?: 0xFFFFFFFF.toInt()
+    }
+
+    val playerSubtitleBackgroundColor: Flow<Int> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_SUBTITLE_BACKGROUND_COLOR] ?: 0x80000000.toInt()
+    }
+
+    val playerWifiMaxVideoHeight: Flow<Int?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_WIFI_MAX_VIDEO_HEIGHT]?.takeIf { it > 0 }
+    }
+
+    val playerEthernetMaxVideoHeight: Flow<Int?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_ETHERNET_MAX_VIDEO_HEIGHT]?.takeIf { it > 0 }
+    }
+
+    val lastSpeedTestMegabits: Flow<Double?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.LAST_SPEED_TEST_MEGABITS]?.toDoubleOrNull()
+    }
+
+    val lastSpeedTestTimestamp: Flow<Long?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.LAST_SPEED_TEST_TIMESTAMP]?.takeIf { it > 0L }
+    }
+
+    val lastSpeedTestTransport: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.LAST_SPEED_TEST_TRANSPORT]?.takeIf { it.isNotBlank() }
+    }
+
+    val lastSpeedTestRecommendedHeight: Flow<Int?> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.LAST_SPEED_TEST_RECOMMENDED_HEIGHT]?.takeIf { it > 0 }
+    }
+
+    val lastSpeedTestEstimated: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.LAST_SPEED_TEST_ESTIMATED] ?: false
+    }
+
+    val recentSearchQueries: Flow<List<String>> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.RECENT_SEARCH_QUERIES]
+            ?.split('|')
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            .orEmpty()
+    }
+
     val parentalControlLevel: Flow<Int> = context.dataStore.data
         .map { preferences ->
             preferences[PreferencesKeys.PARENTAL_CONTROL_LEVEL] ?: 1 // Default to 1 = LOCKED
@@ -143,6 +223,111 @@ class PreferencesRepository @Inject constructor(
         }
     }
 
+    suspend fun setPlayerPlaybackSpeed(speed: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_PLAYBACK_SPEED] = speed.coerceIn(0.5f, 2f).toString()
+        }
+    }
+
+    suspend fun setPreferredAudioLanguage(languageTag: String?) {
+        context.dataStore.edit { preferences ->
+            val normalized = languageTag
+                ?.trim()
+                ?.takeIf { it.isNotBlank() && !it.equals("auto", ignoreCase = true) }
+            if (normalized == null) {
+                preferences[PreferencesKeys.PREFERRED_AUDIO_LANGUAGE] = "auto"
+            } else {
+                preferences[PreferencesKeys.PREFERRED_AUDIO_LANGUAGE] = normalized
+            }
+        }
+    }
+
+    suspend fun setPlayerSubtitleTextScale(scale: Float) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_SUBTITLE_TEXT_SCALE] = scale.coerceIn(0.75f, 1.75f).toString()
+        }
+    }
+
+    suspend fun setPlayerSubtitleTextColor(colorArgb: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_SUBTITLE_TEXT_COLOR] = colorArgb
+        }
+    }
+
+    suspend fun setPlayerSubtitleBackgroundColor(colorArgb: Int) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_SUBTITLE_BACKGROUND_COLOR] = colorArgb
+        }
+    }
+
+    suspend fun setPlayerWifiMaxVideoHeight(maxHeight: Int?) {
+        context.dataStore.edit { preferences ->
+            val normalized = maxHeight?.takeIf { it > 0 }
+            if (normalized == null) {
+                preferences.remove(PreferencesKeys.PLAYER_WIFI_MAX_VIDEO_HEIGHT)
+            } else {
+                preferences[PreferencesKeys.PLAYER_WIFI_MAX_VIDEO_HEIGHT] = normalized
+            }
+        }
+    }
+
+    suspend fun setPlayerEthernetMaxVideoHeight(maxHeight: Int?) {
+        context.dataStore.edit { preferences ->
+            val normalized = maxHeight?.takeIf { it > 0 }
+            if (normalized == null) {
+                preferences.remove(PreferencesKeys.PLAYER_ETHERNET_MAX_VIDEO_HEIGHT)
+            } else {
+                preferences[PreferencesKeys.PLAYER_ETHERNET_MAX_VIDEO_HEIGHT] = normalized
+            }
+        }
+    }
+
+    suspend fun setLastSpeedTestResult(
+        megabitsPerSecond: Double?,
+        measuredAtMs: Long?,
+        transport: String?,
+        recommendedMaxHeight: Int?,
+        estimated: Boolean
+    ) {
+        context.dataStore.edit { preferences ->
+            val normalizedMbps = megabitsPerSecond?.takeIf { it > 0.0 }
+            val normalizedTimestamp = measuredAtMs?.takeIf { it > 0L }
+            val normalizedTransport = transport?.trim()?.takeIf { it.isNotBlank() }
+            val normalizedHeight = recommendedMaxHeight?.takeIf { it > 0 }
+
+            if (normalizedMbps == null || normalizedTimestamp == null || normalizedTransport == null) {
+                preferences.remove(PreferencesKeys.LAST_SPEED_TEST_MEGABITS)
+                preferences.remove(PreferencesKeys.LAST_SPEED_TEST_TIMESTAMP)
+                preferences.remove(PreferencesKeys.LAST_SPEED_TEST_TRANSPORT)
+                preferences.remove(PreferencesKeys.LAST_SPEED_TEST_RECOMMENDED_HEIGHT)
+                preferences.remove(PreferencesKeys.LAST_SPEED_TEST_ESTIMATED)
+            } else {
+                preferences[PreferencesKeys.LAST_SPEED_TEST_MEGABITS] = normalizedMbps.toString()
+                preferences[PreferencesKeys.LAST_SPEED_TEST_TIMESTAMP] = normalizedTimestamp
+                preferences[PreferencesKeys.LAST_SPEED_TEST_TRANSPORT] = normalizedTransport
+                if (normalizedHeight == null) {
+                    preferences.remove(PreferencesKeys.LAST_SPEED_TEST_RECOMMENDED_HEIGHT)
+                } else {
+                    preferences[PreferencesKeys.LAST_SPEED_TEST_RECOMMENDED_HEIGHT] = normalizedHeight
+                }
+                preferences[PreferencesKeys.LAST_SPEED_TEST_ESTIMATED] = estimated
+            }
+        }
+    }
+
+    suspend fun setRecentSearchQueries(queries: List<String>) {
+        context.dataStore.edit { preferences ->
+            val normalized = queries
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            if (normalized.isEmpty()) {
+                preferences.remove(PreferencesKeys.RECENT_SEARCH_QUERIES)
+            } else {
+                preferences[PreferencesKeys.RECENT_SEARCH_QUERIES] = normalized.joinToString("|")
+            }
+        }
+    }
+
     suspend fun setParentalPin(pin: String) {
         val salt = ByteArray(PIN_SALT_BYTES).also { secureRandom.nextBytes(it) }
         val hash = hashPin(pin, salt)
@@ -154,7 +339,7 @@ class PreferencesRepository @Inject constructor(
         }
     }
 
-    suspend fun verifyParentalPin(pin: String): Boolean {
+    override suspend fun verifyParentalPin(pin: String): Boolean {
         if (isPinLockedOut()) {
             return false
         }
@@ -183,6 +368,30 @@ class PreferencesRepository @Inject constructor(
         updatePinAttemptState(valid)
 
         return valid
+    }
+
+    suspend fun exportParentalPinBackup(): ParentalPinBackupData? {
+        val preferences = context.dataStore.data.first()
+        val hash = preferences[PreferencesKeys.PARENTAL_PIN_HASH]
+        val saltBase64 = preferences[PreferencesKeys.PARENTAL_PIN_SALT]
+        if (hash.isNullOrBlank() || saltBase64.isNullOrBlank()) {
+            return null
+        }
+        return ParentalPinBackupData(hash = hash, saltBase64 = saltBase64)
+    }
+
+    suspend fun restoreParentalPinBackup(backup: ParentalPinBackupData?) {
+        context.dataStore.edit { preferences ->
+            if (backup == null || backup.hash.isBlank() || backup.saltBase64.isBlank()) {
+                preferences.remove(PreferencesKeys.PARENTAL_PIN_HASH)
+                preferences.remove(PreferencesKeys.PARENTAL_PIN_SALT)
+                preferences.remove(PreferencesKeys.LEGACY_PARENTAL_PIN)
+            } else {
+                preferences[PreferencesKeys.PARENTAL_PIN_HASH] = backup.hash
+                preferences[PreferencesKeys.PARENTAL_PIN_SALT] = backup.saltBase64
+                preferences.remove(PreferencesKeys.LEGACY_PARENTAL_PIN)
+            }
+        }
     }
 
     override fun readSessionState(): ParentalControlSessionState {
@@ -284,9 +493,19 @@ class PreferencesRepository @Inject constructor(
         (preferences[PreferencesKeys.GUIDE_FAVORITES_ONLY] ?: 0) == 1
     }
 
+    val guideScheduledOnly: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        (preferences[PreferencesKeys.GUIDE_SCHEDULED_ONLY] ?: 0) == 1
+    }
+
     suspend fun setGuideFavoritesOnly(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.GUIDE_FAVORITES_ONLY] = if (enabled) 1 else 0
+        }
+    }
+
+    suspend fun setGuideScheduledOnly(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.GUIDE_SCHEDULED_ONLY] = if (enabled) 1 else 0
         }
     }
 
@@ -391,7 +610,8 @@ class PreferencesRepository @Inject constructor(
             val keysToRemove = preferences.asMap().keys.filter { key ->
                 key.name.startsWith("last_live_category_id_") || 
                 key.name.startsWith("aspect_ratio_") ||
-                key.name == PreferencesKeys.DEFAULT_CATEGORY_ID.name
+                key.name == PreferencesKeys.DEFAULT_CATEGORY_ID.name ||
+                key.name == PreferencesKeys.RECENT_SEARCH_QUERIES.name
             }
             keysToRemove.forEach { key ->
                 preferences.remove(key)
@@ -476,3 +696,8 @@ class PreferencesRepository @Inject constructor(
         return !preferences[PreferencesKeys.LEGACY_PARENTAL_PIN].isNullOrBlank()
     }
 }
+
+data class ParentalPinBackupData(
+    val hash: String,
+    val saltBase64: String
+)

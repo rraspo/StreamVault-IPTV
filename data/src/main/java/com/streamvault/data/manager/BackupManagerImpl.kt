@@ -3,12 +3,15 @@ package com.streamvault.data.manager
 import android.content.Context
 import android.net.Uri
 import com.google.gson.Gson
+import com.streamvault.data.local.dao.EpisodeDao
 import com.streamvault.data.local.dao.FavoriteDao
+import com.streamvault.data.local.dao.MovieDao
 import com.streamvault.data.local.dao.PlaybackHistoryDao
 import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.VirtualGroupDao
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.data.mapper.toEntity
+import com.streamvault.data.preferences.ParentalPinBackupData
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.domain.manager.BackupData
@@ -17,7 +20,14 @@ import com.streamvault.domain.manager.BackupImportPlan
 import com.streamvault.domain.manager.BackupImportResult
 import com.streamvault.domain.manager.BackupManager
 import com.streamvault.domain.manager.BackupPreview
+import com.streamvault.domain.manager.ProtectedCategoryBackup
+import com.streamvault.domain.manager.RecordingManager
+import com.streamvault.domain.manager.ScheduledRecordingBackup
+import com.streamvault.domain.model.RecordingRecurrence
+import com.streamvault.domain.model.RecordingRequest
+import com.streamvault.domain.model.RecordingStatus
 import com.streamvault.domain.model.Result
+import com.streamvault.domain.repository.CategoryRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -37,17 +47,32 @@ class BackupManagerImpl @Inject constructor(
     private val favoriteDao: FavoriteDao,
     private val virtualGroupDao: VirtualGroupDao,
     private val playbackHistoryDao: PlaybackHistoryDao,
+    private val movieDao: MovieDao,
+    private val episodeDao: EpisodeDao,
+    private val categoryRepository: CategoryRepository,
+    private val recordingManager: RecordingManager,
     private val gson: Gson
 ) : BackupManager {
 
     override suspend fun exportConfig(uriString: String): com.streamvault.domain.model.Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val uri = Uri.parse(uriString)
+            val parentalPinBackup = preferencesRepository.exportParentalPinBackup()
+            val providerEntities = providerDao.getAll().first()
             
             // 1. Gather Data
             val prefs = mapOf(
                 "parentalControlLevel" to preferencesRepository.parentalControlLevel.first().toString(),
+                "parentalPinHash" to (parentalPinBackup?.hash ?: ""),
+                "parentalPinSalt" to (parentalPinBackup?.saltBase64 ?: ""),
                 "appLanguage" to preferencesRepository.appLanguage.first(),
+                "playerPlaybackSpeed" to preferencesRepository.playerPlaybackSpeed.first().toString(),
+                "preferredAudioLanguage" to (preferencesRepository.preferredAudioLanguage.first() ?: "auto"),
+                "playerSubtitleTextScale" to preferencesRepository.playerSubtitleTextScale.first().toString(),
+                "playerSubtitleTextColor" to preferencesRepository.playerSubtitleTextColor.first().toString(),
+                "playerSubtitleBackgroundColor" to preferencesRepository.playerSubtitleBackgroundColor.first().toString(),
+                "playerWifiMaxVideoHeight" to (preferencesRepository.playerWifiMaxVideoHeight.first() ?: 0).toString(),
+                "playerEthernetMaxVideoHeight" to (preferencesRepository.playerEthernetMaxVideoHeight.first() ?: 0).toString(),
                 "guideDensity" to (preferencesRepository.guideDensity.first() ?: ""),
                 "guideChannelMode" to (preferencesRepository.guideChannelMode.first() ?: ""),
                 "guideFavoritesOnly" to preferencesRepository.guideFavoritesOnly.first().toString(),
@@ -56,12 +81,13 @@ class BackupManagerImpl @Inject constructor(
                 "promotedLiveGroupIds" to preferencesRepository.promotedLiveGroupIds.first().sorted().joinToString(",")
             )
 
-            val providers = providerDao.getAll().first().map { entity ->
+            val providers = providerEntities.map { entity ->
                 entity.toDomain().copy(
                     password = "",  // Strip credentials from backup export
                     username = entity.toDomain().username // Keep username for provider identification
                 )
             }
+            val providersById = providers.associateBy { it.id }
 
             // Gather all favorites across all types
             val liveFavs = favoriteDao.getAllByType("LIVE").first().map { it.toDomain() }
@@ -81,15 +107,46 @@ class BackupManagerImpl @Inject constructor(
                 "preset_2" to preferencesRepository.getMultiViewPreset(1).first(),
                 "preset_3" to preferencesRepository.getMultiViewPreset(2).first()
             )
+            val protectedCategories = providers.flatMap { provider ->
+                categoryRepository.getCategories(provider.id).first()
+                    .filter { it.isUserProtected }
+                    .map { category ->
+                        ProtectedCategoryBackup(
+                            providerServerUrl = provider.serverUrl,
+                            providerUsername = provider.username,
+                            categoryId = category.id,
+                            categoryName = category.name,
+                            type = category.type
+                        )
+                    }
+            }
+            val scheduledRecordings = recordingManager.observeRecordingItems().first()
+                .filter { it.status == RecordingStatus.SCHEDULED && it.scheduledEndMs > System.currentTimeMillis() }
+                .mapNotNull { item ->
+                    val provider = providersById[item.providerId] ?: return@mapNotNull null
+                    ScheduledRecordingBackup(
+                        providerServerUrl = provider.serverUrl,
+                        providerUsername = provider.username,
+                        channelId = item.channelId,
+                        channelName = item.channelName,
+                        streamUrl = item.streamUrl,
+                        scheduledStartMs = item.scheduledStartMs,
+                        scheduledEndMs = item.scheduledEndMs,
+                        programTitle = item.programTitle,
+                        recurrence = item.recurrence
+                    )
+                }
 
             val backupData = BackupData(
-                version = 2,
+                version = 4,
                 preferences = prefs,
                 providers = providers,
                 favorites = allFavorites,
                 virtualGroups = allGroups,
                 playbackHistory = playbackHistory,
-                multiViewPresets = multiViewPresets
+                multiViewPresets = multiViewPresets,
+                protectedCategories = protectedCategories,
+                scheduledRecordings = scheduledRecordings
             )
 
             // Compute checksum over the data without checksum field
@@ -113,7 +170,7 @@ class BackupManagerImpl @Inject constructor(
         try {
             val backupData = readBackupData(uriString)
                 ?: return@withContext Result.error("Failed to open input stream")
-            if (backupData.version > 2) {
+            if (backupData.version > 4) {
                 return@withContext Result.error("Unsupported backup version")
             }
             if (!verifyChecksum(backupData)) {
@@ -132,6 +189,13 @@ class BackupManagerImpl @Inject constructor(
                 addAll(favoriteDao.getAllByType("SERIES").first())
             }
             val existingHistory = playbackHistoryDao.getAllSync()
+            val existingProtectedCategories = existingProviders.flatMap { provider ->
+                categoryRepository.getCategories(provider.id).first()
+                    .filter { it.isUserProtected }
+                    .map { category -> Triple(provider, category.name.lowercase(), category.type) }
+            }
+            val existingScheduledRecordings = recordingManager.observeRecordingItems().first()
+                .filter { it.status == RecordingStatus.SCHEDULED }
 
             val providerConflicts = backupData.providers.orEmpty().count { incoming ->
                 existingProviders.any { it.serverUrl == incoming.serverUrl && it.username == incoming.username }
@@ -153,6 +217,24 @@ class BackupManagerImpl @Inject constructor(
                         it.providerId == incoming.providerId
                 }
             }
+            val protectedCategoryConflicts = backupData.protectedCategories.orEmpty().count { incoming ->
+                existingProtectedCategories.any { (provider, categoryName, type) ->
+                    provider.serverUrl == incoming.providerServerUrl &&
+                        provider.username == incoming.providerUsername &&
+                        categoryName == incoming.categoryName.lowercase() &&
+                        type == incoming.type
+                }
+            }
+            val recordingConflicts = backupData.scheduledRecordings.orEmpty().count { incoming ->
+                val provider = existingProviders.firstOrNull {
+                    it.serverUrl == incoming.providerServerUrl && it.username == incoming.providerUsername
+                } ?: return@count false
+                existingScheduledRecordings.any {
+                    it.providerId == provider.id &&
+                        it.scheduledStartMs == incoming.scheduledStartMs &&
+                        (it.channelId == incoming.channelId || it.streamUrl == incoming.streamUrl)
+                }
+            }
 
             Result.success(
                 BackupPreview(
@@ -163,10 +245,14 @@ class BackupManagerImpl @Inject constructor(
                     playbackHistoryCount = backupData.playbackHistory.orEmpty().size,
                     multiViewPresetCount = backupData.multiViewPresets.orEmpty().count { it.value.isNotEmpty() },
                     preferenceCount = backupData.preferences.orEmpty().size,
+                    protectedCategoryCount = backupData.protectedCategories.orEmpty().size,
+                    scheduledRecordingCount = backupData.scheduledRecordings.orEmpty().size,
                     providerConflicts = providerConflicts,
                     favoriteConflicts = favoriteConflicts,
                     groupConflicts = groupConflicts,
-                    historyConflicts = historyConflicts
+                    historyConflicts = historyConflicts,
+                    protectedCategoryConflicts = protectedCategoryConflicts,
+                    recordingConflicts = recordingConflicts
                 )
             )
         } catch (e: Exception) {
@@ -182,7 +268,7 @@ class BackupManagerImpl @Inject constructor(
             val backupData = readBackupData(uriString)
                 ?: return@withContext com.streamvault.domain.model.Result.error("Failed to open input stream")
 
-            if (backupData.version > 2) {
+            if (backupData.version > 4) {
                 return@withContext com.streamvault.domain.model.Result.error("Unsupported backup version")
             }
             if (!verifyChecksum(backupData)) {
@@ -198,7 +284,20 @@ class BackupManagerImpl @Inject constructor(
                 prefs["parentalControlLevel"]?.toIntOrNull()?.let {
                     preferencesRepository.setParentalControlLevel(it)
                 }
+                preferencesRepository.restoreParentalPinBackup(
+                    ParentalPinBackupData(
+                        hash = prefs["parentalPinHash"].orEmpty(),
+                        saltBase64 = prefs["parentalPinSalt"].orEmpty()
+                    ).takeIf { it.hash.isNotBlank() && it.saltBase64.isNotBlank() }
+                )
                 prefs["appLanguage"]?.takeIf { it.isNotBlank() }?.let { preferencesRepository.setAppLanguage(it) }
+                prefs["playerPlaybackSpeed"]?.toFloatOrNull()?.let { preferencesRepository.setPlayerPlaybackSpeed(it) }
+                preferencesRepository.setPreferredAudioLanguage(prefs["preferredAudioLanguage"])
+                prefs["playerSubtitleTextScale"]?.toFloatOrNull()?.let { preferencesRepository.setPlayerSubtitleTextScale(it) }
+                prefs["playerSubtitleTextColor"]?.toIntOrNull()?.let { preferencesRepository.setPlayerSubtitleTextColor(it) }
+                prefs["playerSubtitleBackgroundColor"]?.toIntOrNull()?.let { preferencesRepository.setPlayerSubtitleBackgroundColor(it) }
+                preferencesRepository.setPlayerWifiMaxVideoHeight(prefs["playerWifiMaxVideoHeight"]?.toIntOrNull()?.takeIf { it > 0 })
+                preferencesRepository.setPlayerEthernetMaxVideoHeight(prefs["playerEthernetMaxVideoHeight"]?.toIntOrNull()?.takeIf { it > 0 })
                 prefs["guideDensity"]?.takeIf { it.isNotBlank() }?.let { preferencesRepository.setGuideDensity(it) }
                 prefs["guideChannelMode"]?.takeIf { it.isNotBlank() }?.let { preferencesRepository.setGuideChannelMode(it) }
                 prefs["guideFavoritesOnly"]?.toBooleanStrictOrNull()?.let { preferencesRepository.setGuideFavoritesOnly(it) }
@@ -273,6 +372,34 @@ class BackupManagerImpl @Inject constructor(
                     favoriteDao.insert(fav.toEntity())
                 }
                 }
+                val categoriesByProviderId = mutableMapOf<Long, List<com.streamvault.domain.model.Category>>()
+                backupData.protectedCategories?.forEach { protectedCategory ->
+                    val provider = providerDao.getByUrlAndUser(
+                        protectedCategory.providerServerUrl,
+                        protectedCategory.providerUsername
+                    ) ?: return@forEach
+                    val categories = categoriesByProviderId.getOrPut(provider.id) {
+                        categoryRepository.getCategories(provider.id).first()
+                    }
+                    val resolvedCategory = categories.firstOrNull {
+                        it.type == protectedCategory.type && it.id == protectedCategory.categoryId
+                    } ?: categories.firstOrNull {
+                        it.type == protectedCategory.type &&
+                            it.name.equals(protectedCategory.categoryName, ignoreCase = true)
+                    }
+                    if (resolvedCategory == null) {
+                        return@forEach
+                    }
+                    if (plan.conflictStrategy == BackupConflictStrategy.KEEP_EXISTING && resolvedCategory.isUserProtected) {
+                        return@forEach
+                    }
+                    categoryRepository.setCategoryProtection(
+                        providerId = provider.id,
+                        categoryId = resolvedCategory.id,
+                        type = resolvedCategory.type,
+                        isProtected = true
+                    )
+                }
                 importedSections += "Saved Library"
             } else {
                 skippedSections += "Saved Library"
@@ -294,6 +421,8 @@ class BackupManagerImpl @Inject constructor(
                     }
                     playbackHistoryDao.insertOrUpdate(item.toEntity())
                 }
+                    movieDao.syncAllWatchProgressFromHistory()
+                    episodeDao.syncAllWatchProgressFromHistory()
                     importedSections += "Playback History"
                 } ?: run { skippedSections += "Playback History" }
             } else {
@@ -309,6 +438,53 @@ class BackupManagerImpl @Inject constructor(
                 } ?: run { skippedSections += "Split Screen Presets" }
             } else {
                 skippedSections += "Split Screen Presets"
+            }
+
+            if (plan.importRecordingSchedules) {
+                backupData.scheduledRecordings?.let { recordings ->
+                    val existingSchedules = recordingManager.observeRecordingItems().first()
+                        .filter { it.status == RecordingStatus.SCHEDULED }
+                        .toMutableList()
+                    recordings.forEach { scheduled ->
+                        if (scheduled.scheduledEndMs <= System.currentTimeMillis()) {
+                            return@forEach
+                        }
+                        val provider = providerDao.getByUrlAndUser(
+                            scheduled.providerServerUrl,
+                            scheduled.providerUsername
+                        ) ?: return@forEach
+                        val conflict = existingSchedules.firstOrNull {
+                            it.providerId == provider.id &&
+                                it.scheduledStartMs == scheduled.scheduledStartMs &&
+                                (it.channelId == scheduled.channelId || it.streamUrl == scheduled.streamUrl)
+                        }
+                        if (conflict != null) {
+                            if (plan.conflictStrategy == BackupConflictStrategy.KEEP_EXISTING) {
+                                return@forEach
+                            }
+                            recordingManager.cancelRecording(conflict.id)
+                            existingSchedules.remove(conflict)
+                        }
+                        val result = recordingManager.scheduleRecording(
+                            RecordingRequest(
+                                providerId = provider.id,
+                                channelId = scheduled.channelId,
+                                channelName = scheduled.channelName,
+                                streamUrl = scheduled.streamUrl,
+                                scheduledStartMs = scheduled.scheduledStartMs,
+                                scheduledEndMs = scheduled.scheduledEndMs,
+                                programTitle = scheduled.programTitle,
+                                recurrence = scheduled.recurrence
+                            )
+                        )
+                        if (result is Result.Success) {
+                            existingSchedules += result.data
+                        }
+                    }
+                    importedSections += "Recording Schedules"
+                } ?: run { skippedSections += "Recording Schedules" }
+            } else {
+                skippedSections += "Recording Schedules"
             }
 
             com.streamvault.domain.model.Result.success(

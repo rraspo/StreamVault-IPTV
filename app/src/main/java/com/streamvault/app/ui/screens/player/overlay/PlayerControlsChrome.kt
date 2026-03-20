@@ -9,6 +9,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.LinearProgressIndicator
@@ -44,6 +46,8 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -57,11 +61,14 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import com.streamvault.app.R
+import com.streamvault.app.ui.components.rememberCrossfadeImageModel
 import com.streamvault.app.ui.screens.player.NumericChannelInputState
+import com.streamvault.app.ui.screens.player.SeekPreviewState
 import com.streamvault.app.ui.theme.ErrorColor
 import com.streamvault.app.ui.theme.Primary
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.RecordingStatus
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -89,9 +96,10 @@ fun PlayerControlsOverlay(
     videoQualityCount: Int,
     currentRecordingStatus: RecordingStatus?,
     isMuted: Boolean,
+    playbackSpeed: Float = 1f,
     mediaTitle: String?,
     playButtonFocusRequester: FocusRequester,
-    quickActionsFocusRequester: FocusRequester,
+    quickActionsFocusRequester: FocusRequester = FocusRequester(),
     onClose: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
@@ -101,18 +109,23 @@ fun PlayerControlsOverlay(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onScheduleRecording: () -> Unit,
+    onScheduleDailyRecording: () -> Unit = {},
+    onScheduleWeeklyRecording: () -> Unit = {},
     onToggleAspectRatio: () -> Unit,
     onOpenSubtitleTracks: () -> Unit,
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
+    onOpenPlaybackSpeed: () -> Unit = {},
     onOpenSplitScreen: () -> Unit,
-    onEnterPictureInPicture: () -> Unit,
+    onEnterPictureInPicture: () -> Unit = {},
     onToggleMute: () -> Unit,
-    isCastConnected: Boolean,
-    onCast: () -> Unit,
-    onStopCasting: () -> Unit,
+    isCastConnected: Boolean = false,
+    onCast: () -> Unit = {},
+    onStopCasting: () -> Unit = {},
     onSeekToPosition: (Long) -> Unit = {},
     onSetScrubbingMode: (Boolean) -> Unit = {},
+    seekPreview: SeekPreviewState = SeekPreviewState(),
+    onSeekPreviewPositionChanged: (Long?) -> Unit = {},
     clockLabelOverride: String? = null,
     modifier: Modifier = Modifier
 ) {
@@ -146,6 +159,7 @@ fun PlayerControlsOverlay(
                 videoQualityCount = videoQualityCount,
                 currentRecordingStatus = currentRecordingStatus,
                 isMuted = isMuted,
+                playbackSpeed = playbackSpeed,
                 mediaTitle = mediaTitle,
                 playButtonFocusRequester = playButtonFocusRequester,
                 quickActionsFocusRequester = quickActionsFocusRequester,
@@ -155,10 +169,13 @@ fun PlayerControlsOverlay(
                 onStartRecording = onStartRecording,
                 onStopRecording = onStopRecording,
                 onScheduleRecording = onScheduleRecording,
+                onScheduleDailyRecording = onScheduleDailyRecording,
+                onScheduleWeeklyRecording = onScheduleWeeklyRecording,
                 onToggleAspectRatio = onToggleAspectRatio,
                 onOpenSubtitleTracks = onOpenSubtitleTracks,
                 onOpenAudioTracks = onOpenAudioTracks,
                 onOpenVideoTracks = onOpenVideoTracks,
+                onOpenPlaybackSpeed = onOpenPlaybackSpeed,
                 onOpenSplitScreen = onOpenSplitScreen,
                 onEnterPictureInPicture = onEnterPictureInPicture,
                 onToggleMute = onToggleMute,
@@ -169,7 +186,9 @@ fun PlayerControlsOverlay(
                 onSeekBackward = onSeekBackward,
                 onSeekForward = onSeekForward,
                 onSeekToPosition = onSeekToPosition,
-                onSetScrubbingMode = onSetScrubbingMode
+                onSetScrubbingMode = onSetScrubbingMode,
+                seekPreview = seekPreview,
+                onSeekPreviewPositionChanged = onSeekPreviewPositionChanged
             )
         }
     }
@@ -439,6 +458,7 @@ private fun PlayerBottomBar(
     videoQualityCount: Int,
     currentRecordingStatus: RecordingStatus?,
     isMuted: Boolean,
+    playbackSpeed: Float,
     mediaTitle: String?,
     playButtonFocusRequester: FocusRequester,
     quickActionsFocusRequester: FocusRequester,
@@ -447,10 +467,13 @@ private fun PlayerBottomBar(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onScheduleRecording: () -> Unit,
+    onScheduleDailyRecording: () -> Unit,
+    onScheduleWeeklyRecording: () -> Unit,
     onToggleAspectRatio: () -> Unit,
     onOpenSubtitleTracks: () -> Unit,
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
+    onOpenPlaybackSpeed: () -> Unit,
     onOpenSplitScreen: () -> Unit,
     onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
@@ -462,6 +485,8 @@ private fun PlayerBottomBar(
     onSeekForward: () -> Unit,
     onSeekToPosition: (Long) -> Unit,
     onSetScrubbingMode: (Boolean) -> Unit,
+    seekPreview: SeekPreviewState,
+    onSeekPreviewPositionChanged: (Long?) -> Unit,
     modifier: Modifier = Modifier
 ) {
     Box(
@@ -511,6 +536,8 @@ private fun PlayerBottomBar(
                         onStartRecording = onStartRecording,
                         onStopRecording = onStopRecording,
                         onScheduleRecording = onScheduleRecording,
+                        onScheduleDailyRecording = onScheduleDailyRecording,
+                        onScheduleWeeklyRecording = onScheduleWeeklyRecording,
                         onToggleAspectRatio = onToggleAspectRatio,
                         onOpenSubtitleTracks = onOpenSubtitleTracks,
                         onOpenAudioTracks = onOpenAudioTracks,
@@ -534,6 +561,7 @@ private fun PlayerBottomBar(
                         audioTrackCount = audioTrackCount,
                         videoQualityCount = videoQualityCount,
                         isMuted = isMuted,
+                        playbackSpeed = playbackSpeed,
                         playButtonFocusRequester = playButtonFocusRequester,
                         quickActionsFocusRequester = quickActionsFocusRequester,
                         onSeekToPosition = onSeekToPosition,
@@ -542,6 +570,7 @@ private fun PlayerBottomBar(
                         onOpenSubtitleTracks = onOpenSubtitleTracks,
                         onOpenAudioTracks = onOpenAudioTracks,
                         onOpenVideoTracks = onOpenVideoTracks,
+                        onOpenPlaybackSpeed = onOpenPlaybackSpeed,
                         onEnterPictureInPicture = onEnterPictureInPicture,
                         onToggleMute = onToggleMute,
                         isCastConnected = isCastConnected,
@@ -549,7 +578,9 @@ private fun PlayerBottomBar(
                         onStopCasting = onStopCasting,
                         onTogglePlayPause = onTogglePlayPause,
                         onSeekBackward = onSeekBackward,
-                        onSeekForward = onSeekForward
+                        onSeekForward = onSeekForward,
+                        seekPreview = seekPreview,
+                        onSeekPreviewPositionChanged = onSeekPreviewPositionChanged
                     )
                 }
             }
@@ -576,6 +607,8 @@ private fun PlayerLiveInfo(
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onScheduleRecording: () -> Unit,
+    onScheduleDailyRecording: () -> Unit,
+    onScheduleWeeklyRecording: () -> Unit,
     onToggleAspectRatio: () -> Unit,
     onOpenSubtitleTracks: () -> Unit,
     onOpenAudioTracks: () -> Unit,
@@ -606,6 +639,8 @@ private fun PlayerLiveInfo(
         } else {
             add(PlayerActionSpec(stringResource(R.string.player_record), onStartRecording))
             add(PlayerActionSpec(stringResource(R.string.player_schedule_recording), onScheduleRecording))
+            add(PlayerActionSpec(stringResource(R.string.player_schedule_daily_recording), onScheduleDailyRecording))
+            add(PlayerActionSpec(stringResource(R.string.player_schedule_weekly_recording), onScheduleWeeklyRecording))
         }
     }
     val secondaryActions = buildList {
@@ -718,6 +753,7 @@ private fun PlayerVodInfo(
     audioTrackCount: Int,
     videoQualityCount: Int,
     isMuted: Boolean,
+    playbackSpeed: Float,
     playButtonFocusRequester: FocusRequester,
     quickActionsFocusRequester: FocusRequester,
     onSeekToPosition: (Long) -> Unit,
@@ -726,6 +762,7 @@ private fun PlayerVodInfo(
     onOpenSubtitleTracks: () -> Unit,
     onOpenAudioTracks: () -> Unit,
     onOpenVideoTracks: () -> Unit,
+    onOpenPlaybackSpeed: () -> Unit,
     onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
     isCastConnected: Boolean,
@@ -733,10 +770,18 @@ private fun PlayerVodInfo(
     onStopCasting: () -> Unit,
     onTogglePlayPause: () -> Unit,
     onSeekBackward: () -> Unit,
-    onSeekForward: () -> Unit
+    onSeekForward: () -> Unit,
+    seekPreview: SeekPreviewState,
+    onSeekPreviewPositionChanged: (Long?) -> Unit
 ) {
     val playbackLabel = stringResource(R.string.player_playback_label)
     val actions = buildList {
+        add(
+            PlayerActionSpec(
+                stringResource(R.string.player_playback_speed_value, formatPlaybackSpeedLabel(playbackSpeed)),
+                onOpenPlaybackSpeed
+            )
+        )
         add(PlayerActionSpec(stringResource(R.string.player_aspect_ratio_label, aspectRatioLabel), onToggleAspectRatio))
         add(PlayerActionSpec(
             stringResource(if (isMuted) R.string.player_unmute else R.string.player_mute),
@@ -763,6 +808,7 @@ private fun PlayerVodInfo(
     var isScrubbing by remember { mutableStateOf(false) }
     val latestSeekCallback by rememberUpdatedState(onSeekToPosition)
     val latestScrubbingCallback by rememberUpdatedState(onSetScrubbingMode)
+    val latestSeekPreviewPositionChanged by rememberUpdatedState(onSeekPreviewPositionChanged)
 
     LaunchedEffect(duration, currentPosition, isScrubbing) {
         if (!isScrubbing) {
@@ -870,6 +916,13 @@ private fun PlayerVodInfo(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                AnimatedVisibility(visible = seekPreview.visible) {
+                    PlayerSeekPreviewCard(
+                        preview = seekPreview,
+                        modifier = Modifier.width(220.dp)
+                    )
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -904,11 +957,15 @@ private fun PlayerVodInfo(
                     Slider(
                         value = sliderValue,
                         onValueChange = { newValue ->
+                            val clampedValue = newValue.coerceIn(0f, 1f)
                             if (!isScrubbing) {
                                 isScrubbing = true
                                 latestScrubbingCallback(true)
                             }
-                            sliderValue = newValue
+                            sliderValue = clampedValue
+                            if (duration > 0) {
+                                latestSeekPreviewPositionChanged((clampedValue * duration).toLong())
+                            }
                         },
                         onValueChangeFinished = {
                             if (duration > 0) {
@@ -918,6 +975,7 @@ private fun PlayerVodInfo(
                                 latestScrubbingCallback(false)
                                 isScrubbing = false
                             }
+                            latestSeekPreviewPositionChanged(null)
                         },
                         modifier = Modifier
                             .weight(1f)
@@ -948,6 +1006,91 @@ private fun PlayerVodInfo(
         firstActionFocusRequester = quickActionsFocusRequester,
         primaryActionsUpFocusRequester = playButtonFocusRequester
     )
+}
+
+@Composable
+private fun PlayerSeekPreviewCard(
+    preview: SeekPreviewState,
+    modifier: Modifier = Modifier
+) {
+    val artworkModel = rememberCrossfadeImageModel(preview.artworkUrl)
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(18.dp),
+        colors = SurfaceDefaults.colors(containerColor = Color.White.copy(alpha = 0.08f))
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(118.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.Black.copy(alpha = 0.38f)),
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    preview.frameBitmap != null -> {
+                        Image(
+                            bitmap = preview.frameBitmap.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    artworkModel != null -> {
+                        AsyncImage(
+                            model = artworkModel,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+
+                    else -> {
+                        Text(
+                            text = preview.title.ifBlank { formatDuration(preview.positionMs) },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = Color.White.copy(alpha = 0.72f),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = formatDuration(preview.positionMs),
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = preview.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.64f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 10.dp)
+                )
+            }
+        }
+    }
+}
+
+private fun formatPlaybackSpeedLabel(speed: Float): String {
+    return if (speed % 1f == 0f) {
+        "${speed.toInt()}x"
+    } else {
+        "${("%.2f".format(Locale.US, speed)).trimEnd('0').trimEnd('.')}x"
+    }
 }
 
 @Composable

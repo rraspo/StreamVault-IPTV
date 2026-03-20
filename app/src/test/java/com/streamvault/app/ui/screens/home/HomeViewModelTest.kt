@@ -1,7 +1,9 @@
 package com.streamvault.app.ui.screens.home
 
 import android.app.Application
+import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.data.preferences.PreferencesRepository
+import com.streamvault.data.sync.SyncManager
 import com.streamvault.domain.manager.ParentalControlManager
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
@@ -9,9 +11,11 @@ import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderType
+import com.streamvault.domain.model.SyncState
 import com.streamvault.domain.model.VirtualCategoryIds
 import com.streamvault.domain.repository.*
 import com.streamvault.domain.usecase.GetCustomCategories
+import com.streamvault.domain.usecase.UnlockParentalCategory
 import com.streamvault.player.PlayerEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -35,7 +39,10 @@ class HomeViewModelTest {
     private val epgRepository: EpgRepository = mock()
     private val playbackHistoryRepository: PlaybackHistoryRepository = mock()
     private val getCustomCategories: GetCustomCategories = mock()
+    private val unlockParentalCategory: UnlockParentalCategory = mock()
     private val parentalControlManager: ParentalControlManager = mock()
+    private val syncManager: SyncManager = mock()
+    private val tvInputChannelSyncManager: TvInputChannelSyncManager = mock()
     private val playerEngine: PlayerEngine = mock()
     private val playerEngineProvider: InjectProvider<PlayerEngine> = mock()
     private val application: Application = mock()
@@ -59,6 +66,7 @@ class HomeViewModelTest {
         whenever(preferencesRepository.isIncognitoMode).thenReturn(flowOf(false))
         whenever(playbackHistoryRepository.getRecentlyWatchedByProvider(any(), any())).thenReturn(flowOf(emptyList()))
         whenever(getCustomCategories()).thenReturn(flowOf(emptyList()))
+        whenever(syncManager.syncStateForProvider(any())).thenReturn(flowOf(SyncState.Idle))
         whenever(playerEngineProvider.get()).thenReturn(playerEngine)
 
         viewModel = createViewModel()
@@ -80,7 +88,10 @@ class HomeViewModelTest {
             epgRepository = epgRepository,
             playbackHistoryRepository = playbackHistoryRepository,
             getCustomCategories = getCustomCategories,
+            unlockParentalCategory = unlockParentalCategory,
             parentalControlManager = parentalControlManager,
+            syncManager = syncManager,
+            tvInputChannelSyncManager = tvInputChannelSyncManager,
             playerEngineProvider = playerEngineProvider
         )
 

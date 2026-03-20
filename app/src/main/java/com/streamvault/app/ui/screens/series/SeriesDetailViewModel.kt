@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.Season
 import com.streamvault.domain.model.Series
+import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.SeriesRepository
 import com.streamvault.domain.repository.ProviderRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,7 +22,8 @@ import javax.inject.Inject
 class SeriesDetailViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val seriesRepository: SeriesRepository,
-    private val providerRepository: ProviderRepository
+    private val providerRepository: ProviderRepository,
+    private val playbackHistoryRepository: PlaybackHistoryRepository
 ) : ViewModel() {
 
     private val seriesId: Long = checkNotNull(savedStateHandle.get<String>("seriesId")?.toLongOrNull())
@@ -45,6 +47,8 @@ class SeriesDetailViewModel @Inject constructor(
                 _uiState.update { it.copy(isLoading = false, error = "No active provider") }
                 return@launch
             }
+
+            observeUnwatchedCount(provider.id)
 
             // Fetch details (repository resolves remote provider IDs internally when needed).
             val result = seriesRepository.getSeriesDetails(provider.id, seriesId)
@@ -71,6 +75,14 @@ class SeriesDetailViewModel @Inject constructor(
         }
     }
 
+    private fun observeUnwatchedCount(providerId: Long) {
+        viewModelScope.launch {
+            playbackHistoryRepository.getUnwatchedCount(providerId = providerId, seriesId = seriesId).collect { count ->
+                _uiState.update { it.copy(unwatchedEpisodeCount = count) }
+            }
+        }
+    }
+
     fun selectSeason(season: Season) {
         _uiState.update { it.copy(selectedSeason = season) }
     }
@@ -80,5 +92,6 @@ data class SeriesDetailUiState(
     val isLoading: Boolean = false,
     val series: Series? = null,
     val selectedSeason: Season? = null,
+    val unwatchedEpisodeCount: Int = 0,
     val error: String? = null
 )

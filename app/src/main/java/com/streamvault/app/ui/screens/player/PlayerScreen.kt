@@ -43,6 +43,7 @@ import com.streamvault.domain.model.VideoFormat
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.repository.EpgRepository
 import com.streamvault.player.PlaybackState
+import com.streamvault.player.PLAYER_TRACK_AUTO_ID
 import com.streamvault.player.PlayerEngine
 import com.streamvault.player.PlayerError
 import com.streamvault.player.PlayerSurfaceResizeMode
@@ -79,6 +80,7 @@ import com.streamvault.app.ui.screens.player.overlay.PlayerAspectRatioToast
 import com.streamvault.app.ui.screens.player.overlay.PlayerControlsOverlay
 import com.streamvault.app.ui.screens.player.overlay.PlayerNumericInputOverlay
 import com.streamvault.app.ui.screens.player.overlay.PlayerResolutionBadge
+import com.streamvault.app.ui.screens.player.overlay.PlayerSpeedSelectionDialog
 import com.streamvault.app.ui.screens.multiview.MultiViewViewModel
 import com.streamvault.app.ui.screens.multiview.MultiViewPlannerDialog
 import com.streamvault.app.navigation.Routes
@@ -149,9 +151,12 @@ fun PlayerScreen(
     val currentChannelRecording by viewModel.currentChannelRecording.collectAsStateWithLifecycle()
     val isMuted by viewModel.isMuted.collectAsStateWithLifecycle()
     val mediaTitle by viewModel.mediaTitle.collectAsStateWithLifecycle()
+    val playbackSpeed by viewModel.playbackSpeed.collectAsStateWithLifecycle()
     val castConnectionState by viewModel.castConnectionState.collectAsStateWithLifecycle()
+    val seekPreview by viewModel.seekPreview.collectAsStateWithLifecycle()
 
     var showTrackSelection by remember { mutableStateOf<TrackType?>(null) }
+    var showSpeedSelection by remember { mutableStateOf(false) }
     var showProgramHistory by remember { mutableStateOf(false) }
     var showSplitDialog by remember { mutableStateOf(false) }
     
@@ -217,7 +222,7 @@ fun PlayerScreen(
 
     // Consolidated focus management for all overlays
     val liveOverlayVisible = contentType == "LIVE" && (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay)
-    val anyOverlayVisible = liveOverlayVisible || showTrackSelection != null || showProgramHistory || showSplitDialog || showDiagnostics
+    val anyOverlayVisible = liveOverlayVisible || showTrackSelection != null || showSpeedSelection || showProgramHistory || showSplitDialog || showDiagnostics
     
     LaunchedEffect(anyOverlayVisible) {
         if (anyOverlayVisible) {
@@ -235,13 +240,27 @@ fun PlayerScreen(
         }
     }
     
-    // Show resolution overlay temporarily when it changes
-    var showResolution by remember { mutableStateOf(false) }
-    
-    LaunchedEffect(videoFormat) {
-        if (!videoFormat.isEmpty) {
-            showResolution = true
-            delay(3000)
+    val resolutionBadgeLabel = buildResolutionBadgeLabel(
+        videoFormat = videoFormat,
+        videoTracks = availableVideoQualities,
+        autoResolutionLabel = stringResource(R.string.player_resolution_auto_label, videoFormat.resolutionLabel)
+    )
+    var showResolution by remember(streamUrl) { mutableStateOf(false) }
+    var lastResolutionBadgeLabel by remember(streamUrl) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(resolutionBadgeLabel) {
+        val nextLabel = resolutionBadgeLabel ?: run {
+            showResolution = false
+            lastResolutionBadgeLabel = null
+            return@LaunchedEffect
+        }
+        if (nextLabel == lastResolutionBadgeLabel) {
+            return@LaunchedEffect
+        }
+        lastResolutionBadgeLabel = nextLabel
+        showResolution = true
+        delay(3000)
+        if (lastResolutionBadgeLabel == nextLabel) {
             showResolution = false
         }
     }
@@ -326,7 +345,23 @@ fun PlayerScreen(
             .onKeyEvent { event ->
                 // Only handle KeyDown to avoid double actions
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                    if (showTrackSelection != null) {
+                    if (showTrackSelection != null || showSpeedSelection) {
+                        if (showSpeedSelection) {
+                            return@onKeyEvent when (event.nativeKeyEvent.keyCode) {
+                                KeyEvent.KEYCODE_BACK -> {
+                                    showSpeedSelection = false
+                                    true
+                                }
+                                KeyEvent.KEYCODE_DPAD_UP,
+                                KeyEvent.KEYCODE_DPAD_DOWN,
+                                KeyEvent.KEYCODE_DPAD_LEFT,
+                                KeyEvent.KEYCODE_DPAD_RIGHT,
+                                KeyEvent.KEYCODE_DPAD_CENTER,
+                                KeyEvent.KEYCODE_ENTER,
+                                KeyEvent.KEYCODE_NUMPAD_ENTER -> false
+                                else -> true
+                            }
+                        }
                         return@onKeyEvent when (event.nativeKeyEvent.keyCode) {
                             KeyEvent.KEYCODE_BACK -> {
                                 showTrackSelection = null
@@ -435,6 +470,9 @@ fun PlayerScreen(
                                 true
                             } else if (showSplitDialog) {
                                 showSplitDialog = false
+                                true
+                            } else if (showSpeedSelection) {
+                                showSpeedSelection = false
                                 true
                             } else if (showTrackSelection != null) {
                                 showTrackSelection = null
@@ -625,6 +663,7 @@ fun PlayerScreen(
             videoQualityCount = availableVideoQualities.size,
             currentRecordingStatus = currentChannelRecording?.status,
             isMuted = isMuted,
+            playbackSpeed = playbackSpeed,
             mediaTitle = mediaTitle,
             playButtonFocusRequester = playButtonFocusRequester,
             quickActionsFocusRequester = quickActionsFocusRequester,
@@ -638,10 +677,13 @@ fun PlayerScreen(
             onStartRecording = viewModel::startManualRecording,
             onStopRecording = viewModel::stopCurrentRecording,
             onScheduleRecording = viewModel::scheduleRecording,
+            onScheduleDailyRecording = viewModel::scheduleDailyRecording,
+            onScheduleWeeklyRecording = viewModel::scheduleWeeklyRecording,
             onToggleAspectRatio = viewModel::toggleAspectRatio,
             onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
             onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
             onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
+            onOpenPlaybackSpeed = { showSpeedSelection = true },
             onOpenSplitScreen = { showSplitDialog = true },
             onEnterPictureInPicture = enterPictureInPicture,
             onToggleMute = viewModel::toggleMute,
@@ -649,7 +691,9 @@ fun PlayerScreen(
             onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
             onStopCasting = viewModel::stopCasting,
             onSeekToPosition = viewModel::seekTo,
-            onSetScrubbingMode = viewModel::setScrubbingMode
+            onSetScrubbingMode = viewModel::setScrubbingMode,
+            seekPreview = seekPreview,
+            onSeekPreviewPositionChanged = viewModel::updateSeekPreview
         )
 
         PlayerNumericInputOverlay(
@@ -669,8 +713,8 @@ fun PlayerScreen(
         )
 
         PlayerResolutionBadge(
-            visible = showResolution && !showControls && !videoFormat.isEmpty,
-            resolutionLabel = videoFormat.resolutionLabel,
+            visible = showResolution && !showControls && resolutionBadgeLabel != null,
+            resolutionLabel = resolutionBadgeLabel.orEmpty(),
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(32.dp)
@@ -696,6 +740,12 @@ fun PlayerScreen(
                 onSelectAudio = viewModel::selectAudioTrack,
                 onSelectVideo = viewModel::selectVideoQuality,
                 onSelectSubtitle = viewModel::selectSubtitleTrack
+            )
+            PlayerSpeedSelectionDialog(
+                visible = showSpeedSelection,
+                selectedSpeed = playbackSpeed,
+                onDismiss = { showSpeedSelection = false },
+                onSelectSpeed = viewModel::setPlaybackSpeed
             )
         }
 
@@ -845,6 +895,20 @@ private fun AspectRatio.toPlayerSurfaceResizeMode(): PlayerSurfaceResizeMode = w
     AspectRatio.FIT -> PlayerSurfaceResizeMode.FIT
     AspectRatio.FILL -> PlayerSurfaceResizeMode.FILL
     AspectRatio.ZOOM -> PlayerSurfaceResizeMode.ZOOM
+}
+
+private fun buildResolutionBadgeLabel(
+    videoFormat: VideoFormat,
+    videoTracks: List<PlayerTrack>,
+    autoResolutionLabel: String
+): String? {
+    if (videoFormat.isEmpty) return null
+    val selectedTrack = videoTracks.firstOrNull(PlayerTrack::isSelected)
+    return if (selectedTrack?.id == PLAYER_TRACK_AUTO_ID) {
+        autoResolutionLabel
+    } else {
+        videoFormat.resolutionLabel
+    }
 }
 
 private tailrec fun android.content.Context.findMainActivity(): MainActivity? = when (this) {

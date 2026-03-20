@@ -3,11 +3,14 @@ package com.streamvault.player
 import android.content.Context
 import android.view.View
 import com.streamvault.domain.model.DecoderMode
+import com.streamvault.domain.model.DrmScheme
 import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.model.VideoFormat
 import androidx.media3.common.PlaybackException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+
+const val PLAYER_TRACK_AUTO_ID = "__auto__"
 
 /**
  * Abstraction over the underlying media player.
@@ -25,6 +28,8 @@ interface PlayerEngine {
     // Tracks
     val availableAudioTracks: StateFlow<List<PlayerTrack>>
     val availableSubtitleTracks: StateFlow<List<PlayerTrack>>
+    val availableVideoTracks: StateFlow<List<PlayerTrack>>
+    val playbackSpeed: StateFlow<Float>
 
     /** In-stream metadata title (ICY / HLS). Null when the stream sends nothing. */
     val mediaTitle: StateFlow<String?>
@@ -39,7 +44,12 @@ interface PlayerEngine {
     fun setDecoderMode(mode: DecoderMode)
     fun setVolume(volume: Float)
     fun setMuted(muted: Boolean)
+    fun setPlaybackSpeed(speed: Float)
+    fun setPreferredAudioLanguage(languageTag: String?)
+    fun setSubtitleStyle(style: PlayerSubtitleStyle)
+    fun setNetworkQualityPreferences(wifiMaxHeight: Int?, ethernetMaxHeight: Int?)
     fun selectAudioTrack(trackId: String)
+    fun selectVideoTrack(trackId: String)
     fun selectSubtitleTrack(trackId: String?) // null to disable subtitles
     fun release()
 
@@ -95,6 +105,7 @@ sealed class PlayerError(val message: String) {
     class NetworkError(message: String) : PlayerError(message)
     class SourceError(message: String) : PlayerError(message)
     class DecoderError(message: String) : PlayerError(message)
+    class DrmError(message: String, val scheme: DrmScheme? = null) : PlayerError(message)
     class UnknownError(message: String) : PlayerError(message)
 
     companion object {
@@ -120,6 +131,16 @@ sealed class PlayerError(val message: String) {
                     PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
                     PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED ->
                         DecoderError(msg)
+                    PlaybackException.ERROR_CODE_DRM_CONTENT_ERROR,
+                    PlaybackException.ERROR_CODE_DRM_DEVICE_REVOKED,
+                    PlaybackException.ERROR_CODE_DRM_DISALLOWED_OPERATION,
+                    PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED,
+                    PlaybackException.ERROR_CODE_DRM_LICENSE_EXPIRED,
+                    PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED,
+                    PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED,
+                    PlaybackException.ERROR_CODE_DRM_SYSTEM_ERROR,
+                    PlaybackException.ERROR_CODE_DRM_UNSPECIFIED ->
+                        DrmError(msg)
                     else -> UnknownError(msg)
                 }
             }

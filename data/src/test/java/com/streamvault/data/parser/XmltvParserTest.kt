@@ -101,6 +101,32 @@ class XmltvParserTest {
     }
 
     @Test
+    fun `parse_programMetadata_extracts_rating_icon_and_categories`() {
+        val xml = """
+            <?xml version="1.0"?>
+            <tv>
+              <programme start="20250101120000 +0000" stop="20250101130000 +0000" channel="ch1">
+                <title>Metadata Show</title>
+                <icon src="https://cdn.example.com/poster.jpg" />
+                <category>Sports</category>
+                <category>Football</category>
+                <rating>
+                  <value>PG-13</value>
+                </rating>
+              </programme>
+            </tv>
+        """.trimIndent()
+
+        val programs = parser.parse(xml.byteInputStream())
+
+        assertThat(programs).hasSize(1)
+        assertThat(programs.single().imageUrl).isEqualTo("https://cdn.example.com/poster.jpg")
+        assertThat(programs.single().category).isEqualTo("Sports")
+        assertThat(programs.single().genre).isEqualTo("Sports / Football")
+        assertThat(programs.single().rating).isEqualTo("PG-13")
+    }
+
+    @Test
     fun `parse_timezoneOffset_correctUtc`() {
         // 2025-01-01 12:00:00 +03:00 == 2025-01-01 09:00:00 UTC
         val xml = """
@@ -179,8 +205,8 @@ class XmltvParserTest {
         assertThat(programs.size).isAtMost(2)
     }
 
-      @Test
-      fun `parse_sameInstance_isStableAcrossConcurrentCalls`() = runTest {
+    @Test
+    fun `parse_sameInstance_isStableAcrossConcurrentCalls`() = runTest {
         val xml = """
           <?xml version="1.0"?>
           <tv>
@@ -197,5 +223,5 @@ class XmltvParserTest {
         }.awaitAll()
 
         assertThat(timestamps.distinct()).containsExactly(1_735_722_000_000L)
-      }
+    }
 }

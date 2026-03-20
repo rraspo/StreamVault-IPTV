@@ -15,6 +15,8 @@ import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.ContinueWatchingScope
+import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.data.preferences.PreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -126,7 +128,8 @@ class FavoritesViewModel @Inject constructor(
     private val seriesRepository: SeriesRepository,
     private val playbackHistoryRepository: PlaybackHistoryRepository,
     private val providerRepository: ProviderRepository,
-    private val preferencesRepository: PreferencesRepository
+    private val preferencesRepository: PreferencesRepository,
+    private val getContinueWatching: GetContinueWatching
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(FavoritesUiState())
@@ -235,31 +238,32 @@ class FavoritesViewModel @Inject constructor(
             if (provider == null) {
                 flowOf(SavedHistorySnapshot())
             } else {
-                playbackHistoryRepository.getRecentlyWatchedByProvider(provider.id, limit = 18)
-                    .flatMapLatest { history ->
-                        val continueWatching = history
-                            .asSequence()
-                            .filter { it.contentType != ContentType.LIVE }
-                            .filter { it.resumePositionMs > 0L || it.contentType == ContentType.SERIES }
-                            .distinctBy { it.contentType to it.contentId }
-                            .take(8)
-                            .toList()
+                combine(
+                    getContinueWatching(
+                        providerId = provider.id,
+                        limit = 8,
+                        scope = ContinueWatchingScope.ALL_VOD,
+                        requireResumePosition = true
+                    ),
+                    playbackHistoryRepository.getRecentlyWatchedByProvider(provider.id, limit = 18)
+                ) { continueWatching, history ->
+                    continueWatching to history
+                }.flatMapLatest { (continueWatching, history) ->
+                    val recentLiveHistory = history
+                        .asSequence()
+                        .filter { it.contentType == ContentType.LIVE }
+                        .distinctBy { it.contentId }
+                        .take(10)
+                        .toList()
 
-                        val recentLiveHistory = history
-                            .asSequence()
-                            .filter { it.contentType == ContentType.LIVE }
-                            .distinctBy { it.contentId }
-                            .take(10)
-                            .toList()
+                    val recentLiveIds = recentLiveHistory.map { it.contentId }
+                    val recentLiveFlow = if (recentLiveIds.isEmpty()) {
+                        flowOf(emptyList())
+                    } else {
+                        channelRepository.getChannelsByIds(recentLiveIds)
+                    }
 
-                        val recentLiveIds = recentLiveHistory.map { it.contentId }
-                        val recentLiveFlow = if (recentLiveIds.isEmpty()) {
-                            flowOf(emptyList())
-                        } else {
-                            channelRepository.getChannelsByIds(recentLiveIds)
-                        }
-
-                        recentLiveFlow.map { liveChannels ->
+                    recentLiveFlow.map { liveChannels ->
                             val liveById = liveChannels.associateBy { it.id }
                             SavedHistorySnapshot(
                                 continueWatching = continueWatching.map { entry ->
@@ -298,7 +302,7 @@ class FavoritesViewModel @Inject constructor(
                                     )
                                 }
                             )
-                        }
+                    }
                     }
             }
         }

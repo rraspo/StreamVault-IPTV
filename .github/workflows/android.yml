@@ -24,11 +24,11 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Compile Code
-      run: ./gradlew assembleDebug
+    - name: Compile Debug And Release
+      run: ./gradlew assembleDebug assembleRelease
 
     - name: Run Unit Tests
-      run: ./gradlew testDebugUnitTest --continue
+      run: ./gradlew testDebugUnitTest koverXmlReportCi koverHtmlReportCi
 
     - name: Upload Test Reports
       if: always()
@@ -40,3 +40,11 @@ jobs:
           data/build/reports/tests/
           domain/build/reports/tests/
           player/build/reports/tests/
+
+    - name: Upload Coverage Reports
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: coverage-reports
+        path: |
+          build/reports/kover/

@@ -89,6 +89,7 @@ fun SeriesDetailScreen(
     SeriesDetailContent(
         series = series,
         selectedSeason = uiState.selectedSeason,
+        unwatchedEpisodeCount = uiState.unwatchedEpisodeCount,
         onSeasonSelected = viewModel::selectSeason,
         onEpisodeClick = onEpisodeClick,
         onBack = onBack
@@ -99,6 +100,7 @@ fun SeriesDetailScreen(
 private fun SeriesDetailContent(
     series: Series,
     selectedSeason: Season?,
+    unwatchedEpisodeCount: Int,
     onSeasonSelected: (Season) -> Unit,
     onEpisodeClick: (Episode) -> Unit,
     onBack: () -> Unit
@@ -181,6 +183,12 @@ private fun SeriesDetailContent(
                             StatusPill(label = stringResource(R.string.nav_series), containerColor = AppColors.BrandMuted)
                             series.rating.takeIf { it > 0f }?.let {
                                 StatusPill(label = "RTG ${String.format("%.1f", it)}", containerColor = AppColors.Warning, contentColor = Color.Black)
+                            }
+                            if (unwatchedEpisodeCount > 0) {
+                                StatusPill(
+                                    label = stringResource(R.string.series_unwatched_badge, unwatchedEpisodeCount),
+                                    containerColor = AppColors.SurfaceEmphasis
+                                )
                             }
                         }
                         Text(

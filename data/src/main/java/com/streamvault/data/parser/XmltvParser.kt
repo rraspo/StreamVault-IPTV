@@ -70,6 +70,10 @@ class XmltvParser {
             var currentStart: Long = 0
             var currentEnd: Long = 0
             var currentLang: String = ""
+            var currentImageUrl: String? = null
+            val currentCategories = mutableListOf<String>()
+            var currentRating: String? = null
+            var inRating = false
             var inProgramme = false
             var currentTag: String? = null
 
@@ -85,6 +89,10 @@ class XmltvParser {
                                 currentTitle = null
                                 currentDescription = null
                                 currentLang = ""
+                                currentImageUrl = null
+                                currentCategories.clear()
+                                currentRating = null
+                                inRating = false
                             }
                             "title" -> {
                                 if (inProgramme) {
@@ -95,6 +103,20 @@ class XmltvParser {
                             "desc" -> {
                                 if (inProgramme) currentTag = "desc"
                             }
+                            "icon" -> {
+                                if (inProgramme) {
+                                    currentImageUrl = parser.getAttributeValue(null, "src")
+                                }
+                            }
+                            "category" -> {
+                                if (inProgramme) currentTag = "category"
+                            }
+                            "rating" -> {
+                                if (inProgramme) inRating = true
+                            }
+                            "value" -> {
+                                if (inProgramme && inRating) currentTag = "rating"
+                            }
                         }
                     }
                     XmlPullParser.TEXT -> {
@@ -102,11 +124,16 @@ class XmltvParser {
                             when (currentTag) {
                                 "title" -> currentTitle = parser.text
                                 "desc" -> currentDescription = parser.text
+                                "category" -> parser.text?.trim()?.takeIf { it.isNotEmpty() }?.let(currentCategories::add)
+                                "rating" -> currentRating = parser.text?.trim()?.takeIf { it.isNotEmpty() }
                             }
                             currentTag = null
                         }
                     }
                     XmlPullParser.END_TAG -> {
+                        if (parser.name == "rating") {
+                            inRating = false
+                        }
                         if (parser.name == "programme" && inProgramme) {
                             if (currentChannelId != null && currentTitle != null) {
                                 programs.add(
@@ -116,7 +143,11 @@ class XmltvParser {
                                         description = currentDescription ?: "",
                                         startTime = currentStart,
                                         endTime = currentEnd,
-                                        lang = currentLang
+                                        lang = currentLang,
+                                        rating = currentRating,
+                                        imageUrl = currentImageUrl,
+                                        genre = currentCategories.distinct().joinToString(" / ").takeIf { it.isNotBlank() },
+                                        category = currentCategories.firstOrNull()
                                     )
                                 )
                             }
@@ -153,6 +184,10 @@ class XmltvParser {
         var currentStart: Long = 0
         var currentEnd: Long = 0
         var currentLang: String = ""
+        var currentImageUrl: String? = null
+        val currentCategories = mutableListOf<String>()
+        var currentRating: String? = null
+        var inRating = false
         var inProgramme = false
         var currentTag: String? = null
         var parsedCount = 0
@@ -170,6 +205,10 @@ class XmltvParser {
                                 currentTitle = null
                                 currentDescription = null
                                 currentLang = ""
+                                currentImageUrl = null
+                                currentCategories.clear()
+                                currentRating = null
+                                inRating = false
                             }
                             "title" -> {
                                 if (inProgramme) {
@@ -180,6 +219,20 @@ class XmltvParser {
                             "desc" -> {
                                 if (inProgramme) currentTag = "desc"
                             }
+                            "icon" -> {
+                                if (inProgramme) {
+                                    currentImageUrl = parser.getAttributeValue(null, "src")
+                                }
+                            }
+                            "category" -> {
+                                if (inProgramme) currentTag = "category"
+                            }
+                            "rating" -> {
+                                if (inProgramme) inRating = true
+                            }
+                            "value" -> {
+                                if (inProgramme && inRating) currentTag = "rating"
+                            }
                         }
                     }
                     XmlPullParser.TEXT -> {
@@ -187,11 +240,16 @@ class XmltvParser {
                             when (currentTag) {
                                 "title" -> currentTitle = parser.text
                                 "desc" -> currentDescription = parser.text
+                                "category" -> parser.text?.trim()?.takeIf { it.isNotEmpty() }?.let(currentCategories::add)
+                                "rating" -> currentRating = parser.text?.trim()?.takeIf { it.isNotEmpty() }
                             }
                             currentTag = null
                         }
                     }
                     XmlPullParser.END_TAG -> {
+                        if (parser.name == "rating") {
+                            inRating = false
+                        }
                         if (parser.name == "programme" && inProgramme) {
                             if (currentChannelId != null && currentTitle != null) {
                                 onProgram(
@@ -201,7 +259,11 @@ class XmltvParser {
                                         description = currentDescription ?: "",
                                         startTime = currentStart,
                                         endTime = currentEnd,
-                                        lang = currentLang
+                                        lang = currentLang,
+                                        rating = currentRating,
+                                        imageUrl = currentImageUrl,
+                                        genre = currentCategories.distinct().joinToString(" / ").takeIf { it.isNotBlank() },
+                                        category = currentCategories.firstOrNull()
                                     )
                                 )
                                 parsedCount++

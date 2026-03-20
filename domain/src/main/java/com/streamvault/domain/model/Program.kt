@@ -8,6 +8,10 @@ data class Program(
     val startTime: Long = 0L,
     val endTime: Long = 0L,
     val lang: String = "",
+    val rating: String? = null,
+    val imageUrl: String? = null,
+    val genre: String? = null,
+    val category: String? = null,
     val hasArchive: Boolean = false,
     val isNowPlaying: Boolean = false,
     val providerId: Long = 0L

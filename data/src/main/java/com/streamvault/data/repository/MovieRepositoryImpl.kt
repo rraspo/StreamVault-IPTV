@@ -1,34 +1,44 @@
 package com.streamvault.data.repository
 
 import com.streamvault.data.local.dao.CategoryDao
+import com.streamvault.data.local.dao.FavoriteDao
 import com.streamvault.data.local.dao.MovieDao
+import com.streamvault.data.local.dao.PlaybackHistoryDao
 import com.streamvault.data.local.entity.MovieEntity
 import com.streamvault.data.local.entity.CategoryEntity
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.model.LibraryFilterType
 import com.streamvault.domain.model.LibraryBrowseQuery
+import com.streamvault.domain.model.LibrarySortBy
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.PagedResult
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.repository.MovieRepository
+import com.streamvault.domain.util.isPlaybackComplete
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import com.streamvault.data.util.toFtsPrefixQuery
+import com.streamvault.data.util.rankSearchResults
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import javax.inject.Singleton
 
 @Singleton
+@OptIn(ExperimentalCoroutinesApi::class)
 class MovieRepositoryImpl @Inject constructor(
     private val movieDao: MovieDao,
     private val categoryDao: CategoryDao,
     private val preferencesRepository: PreferencesRepository,
+    private val favoriteDao: FavoriteDao,
+    private val playbackHistoryDao: PlaybackHistoryDao,
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver
 ) : MovieRepository {
 
@@ -122,6 +132,33 @@ class MovieRepositoryImpl @Inject constructor(
             }
         }.map { list -> list.map { it.toDomain() } }
 
+    override fun getRecommendations(providerId: Long, limit: Int): Flow<List<Movie>> =
+        combine(
+            getMovies(providerId),
+            favoriteDao.getAllByType(ContentType.MOVIE.name),
+            playbackHistoryDao.getRecentlyWatchedByProvider(providerId, limit = maxOf(limit * 4, 24))
+        ) { movies, favorites, history ->
+            buildRecommendations(
+                movies = movies,
+                favoriteIds = favorites.map { it.contentId }.toSet(),
+                recentlyWatchedIds = history
+                    .asSequence()
+                    .filter { it.contentType == ContentType.MOVIE }
+                    .map { it.contentId }
+                    .toSet(),
+                limit = limit
+            )
+        }
+
+    override fun getRelatedContent(providerId: Long, movieId: Long, limit: Int): Flow<List<Movie>> =
+        getMovies(providerId).map { movies ->
+            buildRelatedContent(
+                movies = movies,
+                movieId = movieId,
+                limit = limit
+            )
+        }
+
     override fun getMoviesByIds(ids: List<Long>): Flow<List<Movie>> =
         movieDao.getByIds(ids).map { entities -> entities.map { it.toDomain() } }
 
@@ -147,26 +184,38 @@ class MovieRepositoryImpl @Inject constructor(
         movieDao.getCount(providerId)
 
     override fun browseMovies(query: LibraryBrowseQuery): Flow<PagedResult<Movie>> {
-        val categoryId = query.categoryId
-        val pageFlow = if (query.categoryId == null) {
-            movieDao.getByProviderPage(query.providerId, query.limit, query.offset)
-        } else {
-            movieDao.getByCategoryPage(query.providerId, categoryId!!, query.limit, query.offset)
-        }
-        val countFlow = if (query.categoryId == null) {
-            movieDao.getCount(query.providerId)
-        } else {
-            movieDao.getCountByCategory(query.providerId, categoryId!!)
-        }
-        return combine(pageFlow, countFlow, preferencesRepository.parentalControlLevel) { entities, totalCount, level ->
-            val filtered = if (level == 2) {
-                entities.filter { !it.isUserProtected }
-            } else {
-                entities
-            }
+        return combine(
+            movieBrowseSource(query.providerId, query.categoryId),
+            favoriteDao.getAllByType(ContentType.MOVIE.name),
+            playbackHistoryDao.getByProvider(query.providerId)
+        ) { movies, favorites, history ->
+            val favoriteIds = favorites
+                .asSequence()
+                .filter { it.groupId == null }
+                .map { it.contentId }
+                .toSet()
+            val inProgressIds = history
+                .asSequence()
+                .filter { it.contentType == ContentType.MOVIE }
+                .filter { it.resumePositionMs > 0L && (it.totalDurationMs <= 0L || !isPlaybackComplete(it.resumePositionMs, it.totalDurationMs)) }
+                .map { it.contentId }
+                .toSet()
+            val watchCounts = history
+                .asSequence()
+                .filter { it.contentType == ContentType.MOVIE }
+                .associate { it.contentId to it.watchCount }
+
+            val browsed = applyMovieBrowseQuery(
+                movies = movies,
+                query = query,
+                favoriteIds = favoriteIds,
+                inProgressIds = inProgressIds,
+                watchCounts = watchCounts
+            )
+
             PagedResult(
-                items = filtered.map { it.toDomain() },
-                totalCount = totalCount,
+                items = browsed.drop(query.offset).take(query.limit),
+                totalCount = browsed.size,
                 offset = query.offset,
                 limit = query.limit
             )
@@ -186,7 +235,10 @@ class MovieRepositoryImpl @Inject constructor(
                 } else {
                     entities
                 }
-            }.map { list -> list.map { it.toDomain() } }
+            }.map { list ->
+                list.map { it.toDomain() }
+                    .rankSearchResults(query) { it.name }
+            }
         }
 
     override suspend fun getMovie(movieId: Long): Movie? =
@@ -198,14 +250,20 @@ class MovieRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getStreamInfo(movie: Movie): Result<StreamInfo> = try {
-        xtreamStreamUrlResolver.resolve(
+        xtreamStreamUrlResolver.resolveWithMetadata(
             url = movie.streamUrl,
             fallbackProviderId = movie.providerId,
             fallbackStreamId = movie.streamId,
             fallbackContentType = ContentType.MOVIE,
             fallbackContainerExtension = movie.containerExtension
-        )?.let { resolvedUrl ->
-            Result.success(StreamInfo(url = resolvedUrl, title = movie.name))
+        )?.let { resolvedStream ->
+            Result.success(
+                StreamInfo(
+                    url = resolvedStream.url,
+                    title = movie.name,
+                    expirationTime = resolvedStream.expirationTime
+                )
+            )
         } ?: Result.error("No stream URL available for movie: ${movie.name}")
     } catch (e: Exception) {
         Result.error(e.message ?: "Failed to resolve stream URL for movie: ${movie.name}", e)
@@ -220,4 +278,176 @@ class MovieRepositoryImpl @Inject constructor(
     } catch (e: Exception) {
         Result.error("Failed to update movie watch progress", e)
     }
+
+    private fun buildRecommendations(
+        movies: List<Movie>,
+        favoriteIds: Set<Long>,
+        recentlyWatchedIds: Set<Long>,
+        limit: Int
+    ): List<Movie> {
+        if (movies.isEmpty()) return emptyList()
+
+        val seedMovies = movies.filter { movie -> movie.id in favoriteIds || movie.id in recentlyWatchedIds }
+        val excludedIds = favoriteIds + recentlyWatchedIds
+
+        if (seedMovies.isEmpty()) {
+            return movies
+                .sortedWith(compareByDescending<Movie> { it.rating }.thenByDescending(::movieReleaseScore).thenBy { it.name.lowercase() })
+                .take(limit)
+        }
+
+        return movies
+            .asSequence()
+            .filterNot { movie -> movie.id in excludedIds }
+            .map { movie -> movie to recommendationScore(movie, seedMovies, favoriteIds) }
+            .filter { (_, score) -> score > 0f }
+            .sortedWith(
+                compareByDescending<Pair<Movie, Float>> { it.second }
+                    .thenByDescending { it.first.rating }
+                    .thenByDescending { movieReleaseScore(it.first) }
+                    .thenBy { it.first.name.lowercase() }
+            )
+            .map { it.first }
+            .take(limit)
+            .toList()
+            .ifEmpty {
+                movies
+                    .filterNot { movie -> movie.id in excludedIds }
+                    .sortedWith(compareByDescending<Movie> { it.rating }.thenByDescending(::movieReleaseScore).thenBy { it.name.lowercase() })
+                    .take(limit)
+            }
+    }
+
+    private fun buildRelatedContent(
+        movies: List<Movie>,
+        movieId: Long,
+        limit: Int
+    ): List<Movie> {
+        val target = movies.firstOrNull { it.id == movieId } ?: return emptyList()
+
+        return movies
+            .asSequence()
+            .filterNot { it.id == movieId }
+            .map { movie -> movie to relatedScore(target, movie) }
+            .filter { (_, score) -> score > 0f }
+            .sortedWith(
+                compareByDescending<Pair<Movie, Float>> { it.second }
+                    .thenByDescending { it.first.rating }
+                    .thenByDescending { movieReleaseScore(it.first) }
+                    .thenBy { it.first.name.lowercase() }
+            )
+            .map { it.first }
+            .take(limit)
+            .toList()
+    }
+
+    private fun recommendationScore(candidate: Movie, seedMovies: List<Movie>, favoriteIds: Set<Long>): Float {
+        val candidateGenres = metadataTokens(candidate.genre)
+        val candidateCast = metadataTokens(candidate.cast)
+        val candidateDirector = metadataTokens(candidate.director)
+        var score = if (candidate.id in favoriteIds) -2f else 0f
+
+        seedMovies.forEach { seed ->
+            score += tokenOverlap(candidateGenres, metadataTokens(seed.genre)) * 4f
+            score += tokenOverlap(candidateCast, metadataTokens(seed.cast)) * 2.5f
+            score += tokenOverlap(candidateDirector, metadataTokens(seed.director)) * 2f
+            if (candidate.categoryId != null && candidate.categoryId == seed.categoryId) {
+                score += 1.5f
+            }
+        }
+
+        score += candidate.rating * 0.35f
+        score += movieReleaseScore(candidate) * 0.0001f
+        return score
+    }
+
+    private fun relatedScore(target: Movie, candidate: Movie): Float {
+        val genreScore = tokenOverlap(metadataTokens(target.genre), metadataTokens(candidate.genre)) * 5f
+        val castScore = tokenOverlap(metadataTokens(target.cast), metadataTokens(candidate.cast)) * 3f
+        val directorScore = tokenOverlap(metadataTokens(target.director), metadataTokens(candidate.director)) * 2f
+        val categoryScore = if (target.categoryId != null && target.categoryId == candidate.categoryId) 1.5f else 0f
+        val yearScore = if (target.year != null && target.year == candidate.year) 0.75f else 0f
+
+        return genreScore + castScore + directorScore + categoryScore + yearScore + (candidate.rating * 0.25f)
+    }
+
+    private fun metadataTokens(value: String?): Set<String> =
+        value.orEmpty()
+            .lowercase()
+            .split(',', '/', '|')
+            .flatMap { chunk -> chunk.split(' ') }
+            .map { it.trim() }
+            .filter { it.length >= 3 }
+            .toSet()
+
+    private fun tokenOverlap(left: Set<String>, right: Set<String>): Float {
+        if (left.isEmpty() || right.isEmpty()) return 0f
+        return left.intersect(right).size.toFloat()
+    }
+
+    private fun movieBrowseSource(providerId: Long, categoryId: Long?): Flow<List<Movie>> =
+        if (categoryId == null) {
+            getMovies(providerId)
+        } else {
+            getMoviesByCategory(providerId, categoryId)
+        }
+
+    private fun applyMovieBrowseQuery(
+        movies: List<Movie>,
+        query: LibraryBrowseQuery,
+        favoriteIds: Set<Long>,
+        inProgressIds: Set<Long>,
+        watchCounts: Map<Long, Int>
+    ): List<Movie> {
+        val withFavoriteState = movies.map { movie ->
+            movie.copy(isFavorite = movie.id in favoriteIds)
+        }
+        val filtered = withFavoriteState.filter { movie ->
+            movieMatchesFilter(movie, query.filterBy.type, inProgressIds) && movieMatchesSearch(movie, query.searchQuery)
+        }
+
+        val sorted = when (query.sortBy) {
+            LibrarySortBy.LIBRARY -> filtered
+            LibrarySortBy.TITLE -> filtered.sortedBy { it.name.lowercase() }
+            LibrarySortBy.RELEASE, LibrarySortBy.UPDATED -> filtered.sortedByDescending(::movieReleaseScore)
+            LibrarySortBy.RATING -> filtered.sortedByDescending { it.rating }
+            LibrarySortBy.WATCH_COUNT -> filtered.sortedByDescending { watchCounts[it.id] ?: 0 }
+        }
+
+        return if (query.searchQuery.isBlank() || query.sortBy != LibrarySortBy.LIBRARY) {
+            sorted
+        } else {
+            sorted.rankSearchResults(query.searchQuery) { it.name }
+        }
+    }
+
+    private fun movieMatchesFilter(movie: Movie, filterType: LibraryFilterType, inProgressIds: Set<Long>): Boolean = when (filterType) {
+        LibraryFilterType.ALL -> true
+        LibraryFilterType.FAVORITES -> movie.isFavorite
+        LibraryFilterType.IN_PROGRESS -> movie.id in inProgressIds || movieIsInProgress(movie)
+        LibraryFilterType.UNWATCHED -> movie.id !in inProgressIds && movie.watchProgress <= 0L
+        LibraryFilterType.TOP_RATED -> movie.rating > 0f
+        LibraryFilterType.RECENTLY_UPDATED -> movieReleaseScore(movie) > 0L
+    }
+
+    private fun movieMatchesSearch(movie: Movie, searchQuery: String): Boolean {
+        val normalizedQuery = searchQuery.trim().lowercase()
+        if (normalizedQuery.isBlank()) return true
+        return sequenceOf(movie.name, movie.plot, movie.genre, movie.cast, movie.director, movie.categoryName)
+            .filterNotNull()
+            .any { value -> value.lowercase().contains(normalizedQuery) }
+    }
+
+    private fun movieIsInProgress(movie: Movie): Boolean {
+        if (movie.watchProgress <= 0L) return false
+        val totalDurationMs = movie.durationSeconds.takeIf { it > 0 }?.times(1000L) ?: 0L
+        return !isPlaybackComplete(movie.watchProgress, totalDurationMs)
+    }
+
+    private fun movieReleaseScore(movie: Movie): Long =
+        movie.releaseDate
+            ?.filter { it.isDigit() }
+            ?.toLongOrNull()
+            ?: movie.year?.toLongOrNull()
+            ?: 0L
 }

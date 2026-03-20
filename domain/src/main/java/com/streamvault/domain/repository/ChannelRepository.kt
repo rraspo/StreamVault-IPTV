@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.Flow
 interface ChannelRepository {
     fun getChannels(providerId: Long): Flow<List<Channel>>
     fun getChannelsByCategory(providerId: Long, categoryId: Long): Flow<List<Channel>>
+    fun getChannelsByNumber(providerId: Long, categoryId: Long = ALL_CHANNELS_ID): Flow<List<Channel>>
+    fun getChannelsWithoutErrors(providerId: Long, categoryId: Long = ALL_CHANNELS_ID): Flow<List<Channel>>
     fun searchChannelsByCategory(providerId: Long, categoryId: Long, query: String): Flow<List<Channel>>
     fun getCategories(providerId: Long): Flow<List<Category>>
     fun searchChannels(providerId: Long, query: String): Flow<List<Channel>>

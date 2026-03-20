@@ -5,6 +5,7 @@ plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
     alias(libs.plugins.room)
+    alias(libs.plugins.kover)
 }
 
 android {
@@ -32,6 +33,14 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+kover {
+    currentProject {
+        createVariant("ci") {
+            add("debug")
+        }
     }
 }
 

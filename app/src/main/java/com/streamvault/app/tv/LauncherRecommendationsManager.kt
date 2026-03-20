@@ -20,6 +20,7 @@ import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.GetRecommendations
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
 import java.io.OutputStream
@@ -31,9 +32,10 @@ class LauncherRecommendationsManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val providerRepository: ProviderRepository,
     private val playbackHistoryRepository: PlaybackHistoryRepository,
-    private val movieRepository: MovieRepository,
+    movieRepository: MovieRepository,
     private val seriesRepository: SeriesRepository
 ) {
+    private val getRecommendations = GetRecommendations(movieRepository)
 
     suspend fun refreshRecommendations() {
         val provider = providerRepository.getActiveProvider().first()
@@ -91,7 +93,7 @@ class LauncherRecommendationsManager @Inject constructor(
             }
             .toList()
 
-        val topMovies = movieRepository.getTopRatedPreview(provider.id, limit = 12)
+        val recommendedMovies = getRecommendations(provider.id, limit = 12)
             .first()
             .mapIndexed { index, movie ->
                 RecommendationProgramSpec(
@@ -142,9 +144,9 @@ class LauncherRecommendationsManager @Inject constructor(
             ),
             RecommendationChannelSpec(
                 key = CHANNEL_TOP_MOVIES,
-                title = context.getString(R.string.tv_channel_top_movies_title),
-                description = context.getString(R.string.tv_channel_top_movies_description, provider.name),
-                programs = topMovies
+                title = context.getString(R.string.tv_channel_recommended_movies_title),
+                description = context.getString(R.string.tv_channel_recommended_movies_description, provider.name),
+                programs = recommendedMovies
             ),
             RecommendationChannelSpec(
                 key = CHANNEL_FRESH_SERIES,

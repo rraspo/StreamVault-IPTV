@@ -27,6 +27,7 @@ data class ProviderEntity(
     @ColumnInfo(name = "is_active") val isActive: Boolean = true,
     @ColumnInfo(name = "max_connections") val maxConnections: Int = 1,
     @ColumnInfo(name = "expiration_date") val expirationDate: Long? = null,
+    @ColumnInfo(name = "api_version") val apiVersion: String? = null,
     val status: ProviderStatus = ProviderStatus.UNKNOWN,
     @ColumnInfo(name = "last_synced_at") val lastSyncedAt: Long = 0,
     @ColumnInfo(name = "created_at") val createdAt: Long = System.currentTimeMillis()
@@ -66,7 +67,8 @@ data class ChannelEntity(
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
     @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
     @ColumnInfo(name = "logical_group_id") val logicalGroupId: String = "",
-    @ColumnInfo(name = "error_count") val errorCount: Int = 0
+    @ColumnInfo(name = "error_count") val errorCount: Int = 0,
+    @ColumnInfo(name = "quality_options_json") val qualityOptionsJson: String? = null
 )
 
 @Entity(
@@ -278,6 +280,10 @@ data class ProgramEntity(
     @ColumnInfo(name = "start_time") val startTime: Long = 0,
     @ColumnInfo(name = "end_time") val endTime: Long = 0,
     val lang: String = "",
+    val rating: String? = null,
+    @ColumnInfo(name = "image_url") val imageUrl: String? = null,
+    val genre: String? = null,
+    val category: String? = null,
     @ColumnInfo(name = "has_archive") val hasArchive: Boolean = false
 )
 
@@ -354,6 +360,7 @@ data class PlaybackHistoryEntity(
     @ColumnInfo(name = "total_duration_ms") val totalDurationMs: Long = 0,
     @ColumnInfo(name = "last_watched_at") val lastWatchedAt: Long = 0,
     @ColumnInfo(name = "watch_count") val watchCount: Int = 1,
+    @ColumnInfo(name = "watched_status") val watchedStatus: String = "IN_PROGRESS",
     @ColumnInfo(name = "series_id") val seriesId: Long? = null,
     @ColumnInfo(name = "season_number") val seasonNumber: Int? = null,
     @ColumnInfo(name = "episode_number") val episodeNumber: Int? = null

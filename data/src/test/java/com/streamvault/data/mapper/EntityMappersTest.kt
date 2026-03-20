@@ -2,10 +2,13 @@ package com.streamvault.data.mapper
 
 import com.google.common.truth.Truth.assertThat
 import com.streamvault.data.local.entity.ChannelEntity
-import com.streamvault.data.local.entity.MovieEntity
+import com.streamvault.data.local.entity.PlaybackHistoryEntity
 import com.streamvault.data.local.entity.ProviderEntity
 import com.streamvault.domain.model.Channel
+import com.streamvault.domain.model.ChannelQualityOption
+import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Movie
+import com.streamvault.domain.model.PlaybackWatchedStatus
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.ProviderType
@@ -35,6 +38,7 @@ class EntityMappersTest {
             isActive = true,
             maxConnections = 3,
             expirationDate = 1_798_761_600_000L, // 2027-01-01 UTC as epoch ms
+            apiVersion = "2.0.1",
             status = ProviderStatus.ACTIVE,
             lastSyncedAt = 1_700_000_000_000L,
             createdAt = 1_600_000_000_000L
@@ -53,34 +57,24 @@ class EntityMappersTest {
         assertThat(roundTripped.isActive).isEqualTo(original.isActive)
         assertThat(roundTripped.maxConnections).isEqualTo(original.maxConnections)
         assertThat(roundTripped.expirationDate).isEqualTo(original.expirationDate)
+        assertThat(roundTripped.apiVersion).isEqualTo(original.apiVersion)
         assertThat(roundTripped.status).isEqualTo(original.status)
         assertThat(roundTripped.lastSyncedAt).isEqualTo(original.lastSyncedAt)
         assertThat(roundTripped.createdAt).isEqualTo(original.createdAt)
     }
 
     @Test
-    fun `provider_unknownStatus_defaultsToUnknown`() {
-        // Simulate a DB row with a status string that is not a valid enum value
-        val entity = ProviderEntity(
-            id = 1L,
-            name = "Test",
-            type = ProviderType.M3U.name,
-            serverUrl = "http://x.com",
-            username = "",
-            password = "",
-            m3uUrl = "",
-            epgUrl = "",
-            isActive = false,
-            maxConnections = 1,
-            expirationDate = null,   // Long? — null is fine
-            status = "EXPIRED_FUTURE_VALUE",  // unknown status string
-            lastSyncedAt = 0L,
-            createdAt = 0L
+    fun `playbackHistory_unknownWatchedStatus_defaultsToInProgress`() {
+        val entity = PlaybackHistoryEntity(
+            contentId = 10L,
+            contentType = ContentType.MOVIE,
+            providerId = 1L,
+            watchedStatus = "NOT_A_REAL_STATUS"
         )
 
         val domain = entity.toDomain()
 
-        assertThat(domain.status).isEqualTo(ProviderStatus.UNKNOWN)
+        assertThat(domain.watchedStatus).isEqualTo(PlaybackWatchedStatus.IN_PROGRESS)
     }
 
     // ── Channel ───────────────────────────────────────────────────
@@ -99,6 +93,7 @@ class EntityMappersTest {
             number = 0,
             catchUpSupported = false,
             catchUpDays = 0,
+            qualityOptions = listOf(ChannelQualityOption(label = "1080p", height = 1080, url = "http://stream.example.com/99_1080.ts")),
             providerId = 1L
         )
 
@@ -110,6 +105,9 @@ class EntityMappersTest {
         assertThat(roundTripped.epgChannelId).isNull()
         assertThat(roundTripped.name).isEqualTo("Test Channel")
         assertThat(roundTripped.streamUrl).isEqualTo("http://stream.example.com/99.ts")
+        assertThat(roundTripped.qualityOptions).containsExactly(
+            ChannelQualityOption(label = "1080p", height = 1080, url = "http://stream.example.com/99_1080.ts")
+        )
     }
 
     // ── Movie ─────────────────────────────────────────────────────

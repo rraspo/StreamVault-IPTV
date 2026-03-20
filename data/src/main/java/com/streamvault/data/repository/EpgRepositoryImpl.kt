@@ -6,6 +6,7 @@ import com.streamvault.data.local.entity.ProgramEntity
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.data.mapper.toEntity
 import com.streamvault.data.parser.XmltvParser
+import com.streamvault.data.util.rankSearchResults
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.repository.EpgRepository
@@ -72,6 +73,38 @@ class EpgRepositoryImpl @Inject constructor(
             programDao.getForChannels(providerId, chunk, startTime, endTime)
         }) { arrays ->
             arrays.flatMap { it.toList() }.map { it.toDomain() }.groupBy { it.channelId }
+        }
+    }
+
+    override fun getProgramsByCategory(
+        providerId: Long,
+        categoryId: Long,
+        startTime: Long,
+        endTime: Long
+    ): Flow<List<Program>> =
+        programDao.getForCategory(providerId, categoryId, startTime, endTime)
+            .map { entities -> entities.map { it.toDomain() } }
+
+    override fun searchPrograms(
+        providerId: Long,
+        query: String,
+        startTime: Long,
+        endTime: Long,
+        categoryId: Long?,
+        limit: Int
+    ): Flow<List<Program>> {
+        val normalizedQuery = query.trim()
+        if (normalizedQuery.length < 2) return flowOf(emptyList())
+        return programDao.searchPrograms(
+            providerId = providerId,
+            queryPattern = "%$normalizedQuery%",
+            startTime = startTime,
+            endTime = endTime,
+            categoryId = categoryId,
+            limit = limit
+        ).map { entities ->
+            entities.map { it.toDomain() }
+                .rankSearchResults(normalizedQuery) { it.title }
         }
     }
 

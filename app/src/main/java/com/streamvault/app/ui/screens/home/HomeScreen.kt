@@ -196,17 +196,30 @@ fun HomeScreen(
             },
             onPinEntered = { pin ->
                 scope.launch {
+                    pendingUnlockCategory?.let { category ->
+                        when (val unlockResult = viewModel.unlockCategoryWithPin(category, pin)) {
+                            is com.streamvault.domain.model.Result.Success -> {
+                                showPinDialog = false
+                                pinError = null
+                                pendingUnlockCategory = null
+                                pendingUnlockChannel = null
+                            }
+                            is com.streamvault.domain.model.Result.Error -> {
+                                pinError = if (unlockResult.message == "Incorrect PIN") {
+                                    context.getString(R.string.home_incorrect_pin)
+                                } else {
+                                    unlockResult.message
+                                }
+                            }
+                            com.streamvault.domain.model.Result.Loading -> Unit
+                        }
+                        return@launch
+                    }
+
                     if (viewModel.verifyPin(pin)) {
                         showPinDialog = false
                         pinError = null
-                        
-                        pendingUnlockCategory?.let { category ->
-                            // Use the sequence: Select (clears old unlocks) -> Unlock (adds this one)
-                            viewModel.selectCategory(category)
-                            viewModel.unlockCategory(category)
-                            pendingUnlockCategory = null
-                        }
-                        
+
                         pendingUnlockChannel?.let { channel ->
                              viewModel.clearPreview()
                              onChannelClick(channel, uiState.selectedCategory, uiState.provider)

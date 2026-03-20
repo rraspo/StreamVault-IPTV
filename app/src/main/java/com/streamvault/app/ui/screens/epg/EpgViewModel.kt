@@ -28,6 +28,7 @@ data class EpgUiState(
     val providerArchiveSummary: String = "",
     val categories: List<Category> = emptyList(),
     val selectedCategoryId: Long = ChannelRepository.ALL_CHANNELS_ID,
+    val programSearchQuery: String = "",
     val showScheduledOnly: Boolean = false,
     val selectedChannelMode: GuideChannelMode = GuideChannelMode.ALL,
     val selectedDensity: GuideDensity = GuideDensity.COMFORTABLE,
@@ -99,6 +100,7 @@ class EpgViewModel @Inject constructor(
     private val selectedChannelMode = MutableStateFlow(GuideChannelMode.ALL)
     private val selectedDensity = MutableStateFlow(GuideDensity.COMFORTABLE)
     private val showFavoritesOnly = MutableStateFlow(false)
+    private val programSearchQuery = MutableStateFlow("")
     private val refreshNonce = MutableStateFlow(0)
 
     init {
@@ -109,6 +111,15 @@ class EpgViewModel @Inject constructor(
     fun selectCategory(categoryId: Long) {
         if (selectedCategoryId.value == categoryId) return
         selectedCategoryId.value = categoryId
+    }
+
+    fun updateProgramSearchQuery(query: String) {
+        programSearchQuery.value = query
+    }
+
+    fun clearProgramSearch() {
+        if (programSearchQuery.value.isBlank()) return
+        programSearchQuery.value = ""
     }
 
     fun refresh() {
@@ -168,7 +179,11 @@ class EpgViewModel @Inject constructor(
     }
 
     fun toggleScheduledOnly() {
-        showScheduledOnly.update { !it }
+        val enabled = !showScheduledOnly.value
+        showScheduledOnly.value = enabled
+        viewModelScope.launch {
+            preferencesRepository.setGuideScheduledOnly(enabled)
+        }
     }
 
     fun selectChannelMode(mode: GuideChannelMode) {
@@ -221,6 +236,7 @@ class EpgViewModel @Inject constructor(
                             categories = emptyList(),
                             channels = emptyList(),
                             programsByChannel = emptyMap(),
+                            programSearchQuery = "",
                             isLoading = false,
                             error = NO_ACTIVE_PROVIDER,
                             totalChannelCount = 0,
@@ -239,14 +255,21 @@ class EpgViewModel @Inject constructor(
                 channelRepository.getCategories(provider.id).combine(
                     combine(
                         combine(
-                            selectedCategoryId,
-                            guideAnchorTime,
+                            combine(
+                                selectedCategoryId,
+                                programSearchQuery,
+                                guideAnchorTime
+                            ) { requestedCategoryId, searchQuery, anchorTime ->
+                                Triple(requestedCategoryId, searchQuery, anchorTime)
+                            },
                             showScheduledOnly,
                             selectedChannelMode,
                             selectedDensity
-                        ) { requestedCategoryId, anchorTime, scheduledOnly, channelMode, density ->
+                        ) { selectionTriple, scheduledOnly, channelMode, density ->
+                            val (requestedCategoryId, searchQuery, anchorTime) = selectionTriple
                             GuideSelectionState(
                                 requestedCategoryId = requestedCategoryId,
+                                programSearchQuery = searchQuery,
                                 anchorTime = anchorTime,
                                 scheduledOnly = scheduledOnly,
                                 channelMode = channelMode,
@@ -262,6 +285,7 @@ class EpgViewModel @Inject constructor(
                     GuideRequest(
                         categories = categories,
                         requestedCategoryId = selection.requestedCategoryId,
+                        programSearchQuery = selection.programSearchQuery,
                         anchorTime = selection.anchorTime,
                         scheduledOnly = selection.scheduledOnly,
                         channelMode = selection.channelMode,
@@ -293,6 +317,7 @@ class EpgViewModel @Inject constructor(
                             providerArchiveSummary = buildProviderArchiveSummary(provider),
                             categories = categories,
                             selectedCategoryId = resolvedCategoryId,
+                            programSearchQuery = request.programSearchQuery,
                             showScheduledOnly = request.scheduledOnly,
                             selectedChannelMode = request.channelMode,
                             selectedDensity = request.density,
@@ -305,25 +330,26 @@ class EpgViewModel @Inject constructor(
                         )
                     }
 
-                    val channelsFlow = if (resolvedCategoryId == ChannelRepository.ALL_CHANNELS_ID) {
-                        channelRepository.getChannels(provider.id)
-                    } else {
-                        channelRepository.getChannelsByCategory(provider.id, resolvedCategoryId)
-                    }
-
                     combine(
-                        channelsFlow,
+                        channelRepository.getChannelsByNumber(provider.id, resolvedCategoryId),
+                        channelRepository.getChannelsWithoutErrors(provider.id, resolvedCategoryId),
                         favoriteRepository.getFavorites(ContentType.LIVE)
-                    ) { channels, favorites ->
+                    ) { channelsByNumber, healthyChannels, favorites ->
                         val favoriteIds = favorites.map { it.contentId }.toSet()
+                        val preferredChannels = if (request.favoritesOnly) {
+                            healthyChannels.filter { it.id in favoriteIds }
+                                .ifEmpty { channelsByNumber.filter { it.id in favoriteIds } }
+                        } else {
+                            healthyChannels.ifEmpty { channelsByNumber }
+                        }
                         if (!request.favoritesOnly) {
                             GuideChannelSelection(
-                                channels = channels,
+                                channels = preferredChannels,
                                 favoriteChannelIds = favoriteIds
                             )
                         } else {
                             GuideChannelSelection(
-                                channels = channels.filter { it.id in favoriteIds },
+                                channels = preferredChannels,
                                 favoriteChannelIds = favoriteIds
                             )
                         }
@@ -331,7 +357,15 @@ class EpgViewModel @Inject constructor(
                         val visibleChannels = channelSelection.channels.take(MAX_CHANNELS)
                         val windowStart = anchorTime - LOOKBACK_MS
                         val windowEnd = anchorTime + LOOKAHEAD_MS
-                        val guideResult = loadGuidePrograms(provider.id, visibleChannels, windowStart, windowEnd)
+                        val guideResult = loadGuidePrograms(
+                            providerId = provider.id,
+                            channels = visibleChannels,
+                            categoryId = resolvedCategoryId,
+                            favoritesOnly = request.favoritesOnly,
+                            searchQuery = request.programSearchQuery,
+                            windowStart = windowStart,
+                            windowEnd = windowEnd
+                        )
                         val now = System.currentTimeMillis()
                         val channelsWithSchedule = guideResult.programsByChannel.count { it.value.isNotEmpty() }
                         val hasUpcomingData = guideResult.programsByChannel.values.flatten().any { program ->
@@ -392,6 +426,7 @@ class EpgViewModel @Inject constructor(
                     }
                 }
             showFavoritesOnly.value = preferencesRepository.guideFavoritesOnly.first()
+            showScheduledOnly.value = preferencesRepository.guideScheduledOnly.first()
             preferencesRepository.guideAnchorTime.first()
                 ?.takeIf { it > 0L }
                 ?.let { guideAnchorTime.value = it }
@@ -421,6 +456,9 @@ class EpgViewModel @Inject constructor(
     private suspend fun loadGuidePrograms(
         providerId: Long,
         channels: List<Channel>,
+        categoryId: Long,
+        favoritesOnly: Boolean,
+        searchQuery: String,
         windowStart: Long,
         windowEnd: Long
     ): GuideProgramsResult {
@@ -430,7 +468,30 @@ class EpgViewModel @Inject constructor(
 
         val epgIds = channels.mapNotNull { it.epgChannelId }.distinct()
         val programsByChannel = runCatching {
-            epgRepository.getProgramsForChannels(providerId, epgIds, windowStart, windowEnd).first()
+            val allowedIds = epgIds.toSet()
+            when {
+                searchQuery.trim().length >= 2 -> {
+                    epgRepository.searchPrograms(
+                        providerId = providerId,
+                        query = searchQuery,
+                        startTime = windowStart,
+                        endTime = windowEnd,
+                        categoryId = categoryId.takeUnless { it == ChannelRepository.ALL_CHANNELS_ID },
+                        limit = maxOf(120, channels.size * 12)
+                    ).first().filter { it.channelId in allowedIds }.groupBy { it.channelId }
+                }
+
+                categoryId != ChannelRepository.ALL_CHANNELS_ID && !favoritesOnly -> {
+                    epgRepository.getProgramsByCategory(
+                        providerId = providerId,
+                        categoryId = categoryId,
+                        startTime = windowStart,
+                        endTime = windowEnd
+                    ).first().filter { it.channelId in allowedIds }.groupBy { it.channelId }
+                }
+
+                else -> epgRepository.getProgramsForChannels(providerId, epgIds, windowStart, windowEnd).first()
+            }
         }.getOrElse { emptyMap() }
 
         return GuideProgramsResult(
@@ -444,6 +505,7 @@ class EpgViewModel @Inject constructor(
 private data class GuideRequest(
     val categories: List<Category>,
     val requestedCategoryId: Long,
+    val programSearchQuery: String,
     val anchorTime: Long,
     val scheduledOnly: Boolean,
     val channelMode: GuideChannelMode,
@@ -453,6 +515,7 @@ private data class GuideRequest(
 
 private data class GuideSelectionState(
     val requestedCategoryId: Long,
+    val programSearchQuery: String,
     val anchorTime: Long,
     val scheduledOnly: Boolean,
     val channelMode: GuideChannelMode,

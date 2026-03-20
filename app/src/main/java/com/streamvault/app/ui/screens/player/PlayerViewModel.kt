@@ -1,5 +1,6 @@
 package com.streamvault.app.ui.screens.player
 
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.cast.CastConnectionState
@@ -18,18 +19,24 @@ import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.DecoderMode
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.RecordingItem
+import com.streamvault.domain.model.RecordingRecurrence
 import com.streamvault.domain.model.RecordingRequest
 import com.streamvault.domain.model.RecordingStatus
 import com.streamvault.domain.model.VirtualCategoryIds
 import com.streamvault.domain.model.VideoFormat
 import com.streamvault.domain.usecase.GetCustomCategories
+import com.streamvault.domain.usecase.MarkAsWatched
+import com.streamvault.domain.usecase.ScheduleRecording
+import com.streamvault.domain.usecase.ScheduleRecordingCommand
 import com.streamvault.domain.repository.ChannelRepository
 import com.streamvault.domain.repository.EpgRepository
 import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
+import com.streamvault.domain.util.isPlaybackComplete
 import com.streamvault.player.PlaybackState
 import com.streamvault.player.PlayerEngine
 import com.streamvault.player.PlayerError
+import com.streamvault.player.PlayerSubtitleStyle
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -37,6 +44,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import java.util.Locale
 
 data class ResumePromptState(
     val show: Boolean = false,
@@ -54,6 +62,15 @@ data class PlayerNoticeState(
     val message: String = "",
     val recoveryType: PlayerRecoveryType = PlayerRecoveryType.UNKNOWN,
     val actions: List<PlayerNoticeAction> = emptyList()
+)
+
+data class SeekPreviewState(
+    val visible: Boolean = false,
+    val positionMs: Long = 0L,
+    val frameBitmap: Bitmap? = null,
+    val artworkUrl: String? = null,
+    val title: String = "",
+    val isLoading: Boolean = false
 )
 
 data class PlayerDiagnosticsUiState(
@@ -74,6 +91,7 @@ enum class PlayerRecoveryType {
     NETWORK,
     SOURCE,
     DECODER,
+    DRM,
     CATCH_UP,
     BUFFER_TIMEOUT,
     UNKNOWN
@@ -105,11 +123,14 @@ class PlayerViewModel @Inject constructor(
     private val providerRepository: com.streamvault.domain.repository.ProviderRepository,
     private val preferencesRepository: com.streamvault.data.preferences.PreferencesRepository,
     private val getCustomCategories: GetCustomCategories,
+    private val markAsWatched: MarkAsWatched,
+    private val scheduleRecordingUseCase: ScheduleRecording,
     private val recordingManager: RecordingManager,
     private val watchNextManager: WatchNextManager,
     private val launcherRecommendationsManager: LauncherRecommendationsManager,
     private val castManager: CastManager,
-    private val xtreamStreamUrlResolver: XtreamStreamUrlResolver
+    private val xtreamStreamUrlResolver: XtreamStreamUrlResolver,
+    private val seekThumbnailProvider: SeekThumbnailProvider
 ) : ViewModel() {
 
     private val _showControls = MutableStateFlow(false)
@@ -179,6 +200,8 @@ class PlayerViewModel @Inject constructor(
     val playerNotice: StateFlow<PlayerNoticeState?> = _playerNotice.asStateFlow()
     private val _playerDiagnostics = MutableStateFlow(PlayerDiagnosticsUiState())
     val playerDiagnostics: StateFlow<PlayerDiagnosticsUiState> = _playerDiagnostics.asStateFlow()
+    private val _seekPreview = MutableStateFlow(SeekPreviewState())
+    val seekPreview: StateFlow<SeekPreviewState> = _seekPreview.asStateFlow()
     private val _recordingItems = MutableStateFlow<List<RecordingItem>>(emptyList())
     val recordingItems: StateFlow<List<RecordingItem>> = _recordingItems.asStateFlow()
     private val _currentChannelRecording = MutableStateFlow<RecordingItem?>(null)
@@ -198,6 +221,7 @@ class PlayerViewModel @Inject constructor(
     private var currentStreamClassLabel: String = "Primary"
     private var prepareRequestVersion: Long = 0L
     private var currentArtworkUrl: String? = null
+    private var currentResolvedPlaybackUrl: String = ""
 
     val castConnectionState: StateFlow<CastConnectionState> = castManager.connectionState
 
@@ -236,6 +260,19 @@ class PlayerViewModel @Inject constructor(
                 _recordingItems.value = items
                 refreshCurrentChannelRecording(items)
             }
+        }
+        viewModelScope.launch {
+            combine(
+                preferencesRepository.playerSubtitleTextScale,
+                preferencesRepository.playerSubtitleTextColor,
+                preferencesRepository.playerSubtitleBackgroundColor
+            ) { textScale, textColor, backgroundColor ->
+                PlayerSubtitleStyle(
+                    textScale = textScale,
+                    foregroundColorArgb = textColor,
+                    backgroundColorArgb = backgroundColor
+                )
+            }.collect(playerEngine::setSubtitleStyle)
         }
     }
 
@@ -420,12 +457,14 @@ class PlayerViewModel @Inject constructor(
     private var recentChannelsJob: Job? = null
     private var lastVisitedCategoryJob: Job? = null
     private var controlsHideJob: Job? = null
+    private var seekPreviewJob: Job? = null
     private var progressTrackingJob: Job? = null
     private var zapOverlayJob: Job? = null
     private var aspectRatioJob: Job? = null
     private var zapBufferWatchdogJob: Job? = null
     private var isAppInForeground: Boolean = true
     private var shouldResumeAfterForeground: Boolean = false
+    private var seekPreviewRequestVersion: Long = 0L
     
     val playerError: StateFlow<PlayerError?> = playerEngine.error
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), null)
@@ -435,11 +474,10 @@ class PlayerViewModel @Inject constructor(
     val playerStats = playerEngine.playerStats
     val availableAudioTracks = playerEngine.availableAudioTracks
     val availableSubtitleTracks = playerEngine.availableSubtitleTracks
+    val availableVideoQualities = playerEngine.availableVideoTracks
     val isMuted: StateFlow<Boolean> = playerEngine.isMuted
     val mediaTitle: StateFlow<String?> = playerEngine.mediaTitle
-
-    private val _availableVideoQualities = MutableStateFlow<List<com.streamvault.player.PlayerTrack>>(emptyList())
-    val availableVideoQualities: StateFlow<List<com.streamvault.player.PlayerTrack>> = _availableVideoQualities.asStateFlow()
+    val playbackSpeed: StateFlow<Float> = playerEngine.playbackSpeed
 
     fun selectAudioTrack(trackId: String) {
         playerEngine.selectAudioTrack(trackId)
@@ -449,29 +487,97 @@ class PlayerViewModel @Inject constructor(
         playerEngine.selectSubtitleTrack(trackId)
     }
 
-    fun selectVideoQuality(url: String) {
-        prepare(
-            streamUrl = url,
-            epgChannelId = _currentChannel.value?.epgChannelId,
-            internalChannelId = currentContentId,
-            categoryId = currentCategoryId,
-            providerId = currentProviderId,
-            isVirtual = isVirtualCategory,
-            contentType = currentContentType.name,
-            title = currentTitle
-        )
+    fun selectVideoQuality(trackId: String) {
+        playerEngine.selectVideoTrack(trackId)
+    }
+
+    fun setPlaybackSpeed(speed: Float) {
+        val normalizedSpeed = speed.coerceIn(0.5f, 2f)
+        playerEngine.setPlaybackSpeed(normalizedSpeed)
+        viewModelScope.launch {
+            preferencesRepository.setPlayerPlaybackSpeed(normalizedSpeed)
+        }
     }
 
     fun seekTo(positionMs: Long) {
         playerEngine.seekTo(positionMs)
+        clearSeekPreview()
     }
 
     fun setScrubbingMode(enabled: Boolean) {
         playerEngine.setScrubbingMode(enabled)
+        if (!enabled) {
+            clearSeekPreview()
+        }
+    }
+
+    fun updateSeekPreview(positionMs: Long?) {
+        if (positionMs == null || currentContentType == ContentType.LIVE) {
+            clearSeekPreview()
+            return
+        }
+
+        val previewPositionMs = positionMs.coerceAtLeast(0L)
+        val previewUrl = currentResolvedPlaybackUrl.ifBlank { currentStreamUrl }
+        val canExtractFrame = previewUrl.isNotBlank() && seekThumbnailProvider.supportsFrameExtraction(previewUrl)
+
+        _seekPreview.update { current ->
+            current.copy(
+                visible = true,
+                positionMs = previewPositionMs,
+                artworkUrl = currentArtworkUrl,
+                title = currentTitle,
+                isLoading = canExtractFrame,
+                frameBitmap = if (canExtractFrame) current.frameBitmap else null
+            )
+        }
+
+        seekPreviewJob?.cancel()
+        if (!canExtractFrame) {
+            return
+        }
+
+        val requestVersion = ++seekPreviewRequestVersion
+        seekPreviewJob = viewModelScope.launch {
+            delay(120)
+            val bitmap = seekThumbnailProvider.loadFrame(previewUrl, previewPositionMs)
+            if (requestVersion != seekPreviewRequestVersion) return@launch
+
+            _seekPreview.update { current ->
+                if (!current.visible || current.positionMs != previewPositionMs) {
+                    current
+                } else {
+                    current.copy(
+                        frameBitmap = bitmap,
+                        artworkUrl = currentArtworkUrl,
+                        title = currentTitle,
+                        isLoading = false
+                    )
+                }
+            }
+        }
     }
 
     private suspend fun preparePlayer(streamInfo: com.streamvault.domain.model.StreamInfo) {
+        currentResolvedPlaybackUrl = streamInfo.url
         playerEngine.setMuted(preferencesRepository.playerMuted.first())
+        playerEngine.setPlaybackSpeed(
+            if (currentContentType == ContentType.LIVE) {
+                1f
+            } else {
+                preferencesRepository.playerPlaybackSpeed.first()
+            }
+        )
+        playerEngine.setPreferredAudioLanguage(
+            resolvePreferredAudioLanguage(
+                preferredAudioLanguage = preferencesRepository.preferredAudioLanguage.first(),
+                appLanguage = preferencesRepository.appLanguage.first()
+            )
+        )
+        playerEngine.setNetworkQualityPreferences(
+            wifiMaxHeight = preferencesRepository.playerWifiMaxVideoHeight.first(),
+            ethernetMaxHeight = preferencesRepository.playerEthernetMaxVideoHeight.first()
+        )
         playerEngine.prepare(streamInfo)
     }
 
@@ -490,12 +596,18 @@ class PlayerViewModel @Inject constructor(
         archiveTitle: String? = null
     ) {
         val requestVersion = ++prepareRequestVersion
+        val previousProviderId = currentProviderId
+        val previousCategoryId = currentCategoryId
+        val shouldReloadPlaylist = categoryId != -1L &&
+            (categoryId != previousCategoryId || providerId != previousProviderId)
+        clearSeekPreview()
+        currentResolvedPlaybackUrl = ""
         currentStreamUrl = streamUrl
-        currentProviderId = providerId
         currentContentId = internalChannelId
         currentTitle = title
         currentArtworkUrl = artworkUrl
         currentContentType = try { ContentType.valueOf(contentType) } catch (e: Exception) { ContentType.LIVE }
+        currentProviderId = providerId
         currentStreamClassLabel = if (archiveStartMs != null && archiveEndMs != null) "Catch-up" else "Primary"
         if (currentContentType != ContentType.LIVE) {
             lastRecordedLivePlaybackKey = null
@@ -553,7 +665,7 @@ class PlayerViewModel @Inject constructor(
         if (currentContentType != ContentType.LIVE && currentContentId != -1L && currentProviderId != -1L) {
             viewModelScope.launch {
                 val history = playbackHistoryRepository.getPlaybackHistory(currentContentId, currentContentType, currentProviderId)
-                if (history != null && history.resumePositionMs > 5000L && history.totalDurationMs > 0 && history.resumePositionMs < history.totalDurationMs * 0.95) {
+                if (history != null && history.resumePositionMs > 5000L && !isPlaybackComplete(history.resumePositionMs, history.totalDurationMs)) {
                     playerEngine.pause()
                     _resumePrompt.value = ResumePromptState(
                         show = true,
@@ -565,10 +677,9 @@ class PlayerViewModel @Inject constructor(
         }
         
         // Load playlist if context changed
-        if (categoryId != -1L && (categoryId != currentCategoryId || providerId != currentProviderId)) {
+        if (shouldReloadPlaylist) {
             currentCategoryId = categoryId
             _activeCategoryId.value = categoryId
-            currentProviderId = providerId
             isVirtualCategory = isVirtual
             loadPlaylist(categoryId, providerId, isVirtual, internalChannelId)
         } else {
@@ -669,35 +780,7 @@ class PlayerViewModel @Inject constructor(
                     }
                     updateChannelDiagnostics(channel)
                 }
-                if (channel != null && channel.alternativeStreams.isNotEmpty()) {
-                    val tracks = mutableListOf<com.streamvault.player.PlayerTrack>()
-                    tracks.add(
-                        com.streamvault.player.PlayerTrack(
-                            id = channel.streamUrl,
-                            name = "Primary / Default",
-                            language = null,
-                            type = com.streamvault.player.TrackType.VIDEO,
-                            isSelected = streamUrl == channel.streamUrl
-                        )
-                    )
-                    channel.alternativeStreams.forEachIndexed { index, altUrl ->
-                        tracks.add(
-                            com.streamvault.player.PlayerTrack(
-                                id = altUrl,
-                                name = "Alternative ${index + 1}",
-                                language = null,
-                                type = com.streamvault.player.TrackType.VIDEO,
-                                isSelected = streamUrl == altUrl
-                            )
-                        )
-                    }
-                    _availableVideoQualities.value = tracks as List<com.streamvault.player.PlayerTrack> // Ensure cast
-                } else {
-                    _availableVideoQualities.value = emptyList()
-                }
             }
-        } else {
-             _availableVideoQualities.value = emptyList()
         }
 
         // 2. Start Progress Tracking for VODs
@@ -895,13 +978,11 @@ class PlayerViewModel @Inject constructor(
                         }
                 }
             } else {
-                channelRepository.getChannelsByCategory(providerId, categoryId)
+                channelRepository.getChannelsByNumber(providerId, categoryId)
             }
             
             flows.collect { channels ->
-                val numberedChannels = channels.mapIndexed { index, channel ->
-                    channel.copy(number = index + 1)
-                }
+                val numberedChannels = channels
                 channelList = numberedChannels
                 _currentChannelList.value = numberedChannels
                 // Recalculate index based on initial ID or URL
@@ -1220,6 +1301,7 @@ class PlayerViewModel @Inject constructor(
         }
         is PlayerError.SourceError -> PlayerRecoveryType.SOURCE
         is PlayerError.DecoderError -> PlayerRecoveryType.DECODER
+        is PlayerError.DrmError -> PlayerRecoveryType.DRM
         is PlayerError.UnknownError -> {
             if (error.message.contains("timeout", ignoreCase = true)) {
                 PlayerRecoveryType.BUFFER_TIMEOUT
@@ -1233,6 +1315,7 @@ class PlayerViewModel @Inject constructor(
         PlayerRecoveryType.NETWORK -> "The stream stopped responding. Check the network or try another source."
         PlayerRecoveryType.SOURCE -> "This stream is unavailable from the provider right now."
         PlayerRecoveryType.DECODER -> "Playback failed in the current decoder path."
+        PlayerRecoveryType.DRM -> "Playback requires valid DRM credentials or a supported device security level."
         PlayerRecoveryType.BUFFER_TIMEOUT -> "Playback stalled for too long on this stream."
         PlayerRecoveryType.CATCH_UP -> "Replay is unavailable for the selected program."
         PlayerRecoveryType.UNKNOWN -> error.message.ifBlank { "Playback failed for an unknown reason." }
@@ -1406,7 +1489,7 @@ class PlayerViewModel @Inject constructor(
     private fun resolveChannelNumber(
         channel: com.streamvault.domain.model.Channel,
         index: Int
-    ): Int = index + 1
+    ): Int = channel.number.takeIf { number -> number > 0 } ?: (index + 1)
 
     fun play() = playerEngine.play()
     fun pause() = playerEngine.pause()
@@ -1423,6 +1506,15 @@ class PlayerViewModel @Inject constructor(
     fun toggleControls() {
         closeChannelInfoOverlay()
         _showControls.value = !_showControls.value
+        if (!_showControls.value) {
+            clearSeekPreview()
+        }
+    }
+
+    private fun clearSeekPreview() {
+        seekPreviewJob?.cancel()
+        seekPreviewRequestVersion++
+        _seekPreview.value = SeekPreviewState()
     }
 
     fun toggleAspectRatio() {
@@ -1544,28 +1636,41 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun scheduleRecording() {
-        val channel = _currentChannel.value
-        val targetProgram = _nextProgram.value ?: _currentProgram.value
-        if (currentContentType != ContentType.LIVE || channel == null || currentProviderId <= 0 || targetProgram == null) {
-            showPlayerNotice(message = "Recording needs guide timing for the current live channel.")
-            return
-        }
+        scheduleRecording(RecordingRecurrence.NONE)
+    }
+
+    fun scheduleDailyRecording() {
+        scheduleRecording(RecordingRecurrence.DAILY)
+    }
+
+    fun scheduleWeeklyRecording() {
+        scheduleRecording(RecordingRecurrence.WEEKLY)
+    }
+
+    private fun scheduleRecording(recurrence: RecordingRecurrence) {
         viewModelScope.launch {
-            val result = recordingManager.scheduleRecording(
-                RecordingRequest(
+            val result = scheduleRecordingUseCase(
+                ScheduleRecordingCommand(
+                    contentType = currentContentType,
                     providerId = currentProviderId,
-                    channelId = channel.id,
-                    channelName = channel.name,
+                    channel = _currentChannel.value,
                     streamUrl = currentStreamUrl,
-                    scheduledStartMs = maxOf(System.currentTimeMillis(), targetProgram.startTime),
-                    scheduledEndMs = targetProgram.endTime,
-                    programTitle = targetProgram.title
+                    currentProgram = _currentProgram.value,
+                    nextProgram = _nextProgram.value,
+                    recurrence = recurrence
                 )
             )
             if (result is com.streamvault.domain.model.Result.Error) {
                 showPlayerNotice(message = result.message, recoveryType = PlayerRecoveryType.SOURCE)
             } else {
-                showPlayerNotice(message = "Recording scheduled for ${targetProgram.title}.")
+                val recurrenceLabel = when (recurrence) {
+                    RecordingRecurrence.NONE -> ""
+                    RecordingRecurrence.DAILY -> " daily"
+                    RecordingRecurrence.WEEKLY -> " weekly"
+                }
+                val scheduledItem = (result as? com.streamvault.domain.model.Result.Success)?.data
+                val title = scheduledItem?.programTitle ?: "Recording"
+                showPlayerNotice(message = "$title scheduled$recurrenceLabel.")
             }
         }
     }
@@ -1846,4 +1951,17 @@ class PlayerViewModel @Inject constructor(
         lastVisitedCategoryJob?.cancel()
         playerEngine.release()
     }
+}
+
+private fun resolvePreferredAudioLanguage(preferredAudioLanguage: String?, appLanguage: String): String? {
+    val normalizedPreference = preferredAudioLanguage
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && !it.equals("auto", ignoreCase = true) }
+    val effectiveTag = normalizedPreference ?: appLanguage.takeIf { it.isNotBlank() && it != "system" }
+        ?: Locale.getDefault().toLanguageTag()
+    return effectiveTag
+        .takeIf { it.isNotBlank() }
+        ?.let { Locale.forLanguageTag(it) }
+        ?.takeIf { it.language.isNotBlank() }
+        ?.toLanguageTag()
 }

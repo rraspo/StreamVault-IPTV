@@ -5,6 +5,7 @@ import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.model.Favorite
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderType
@@ -66,10 +67,13 @@ class EpgViewModelTest {
         whenever(providerRepository.getActiveProvider()).thenReturn(flowOf(provider))
         whenever(channelRepository.getCategories(provider.id)).thenReturn(flowOf(listOf(Category(id = 10L, name = "News"))))
         whenever(channelRepository.getChannels(provider.id)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsByNumber(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsWithoutErrors(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(flowOf(channels))
         whenever(favoriteRepository.getFavorites(ContentType.LIVE)).thenReturn(flowOf(emptyList()))
         whenever(preferencesRepository.guideDensity).thenReturn(flowOf(null))
         whenever(preferencesRepository.guideChannelMode).thenReturn(flowOf(null))
         whenever(preferencesRepository.guideFavoritesOnly).thenReturn(flowOf(false))
+        whenever(preferencesRepository.guideScheduledOnly).thenReturn(flowOf(false))
         whenever(preferencesRepository.guideAnchorTime).thenReturn(flowOf(null))
         whenever(epgRepository.getProgramsForChannels(eq(provider.id), any(), any(), any())).thenReturn(
             flowOf(
@@ -102,5 +106,131 @@ class EpgViewModelTest {
         assertThat(viewModel.uiState.value.programsByChannel.keys).containsExactly("one", "two")
         verify(epgRepository).getProgramsForChannels(eq(provider.id), eq(listOf("one", "two")), any(), any())
         verify(epgRepository, never()).getProgramsForChannel(any(), any(), any(), any())
+    }
+
+    @Test
+    fun `guide search uses repository program search within selected category`() = runTest {
+        val provider = Provider(
+            id = 1L,
+            name = "Provider",
+            type = ProviderType.M3U,
+            serverUrl = "https://provider.example.com"
+        )
+        val channels = listOf(
+            Channel(id = 1L, name = "One", providerId = provider.id, epgChannelId = "one", categoryId = 10L),
+            Channel(id = 2L, name = "Two", providerId = provider.id, epgChannelId = "two", categoryId = 10L)
+        )
+        whenever(providerRepository.getActiveProvider()).thenReturn(flowOf(provider))
+        whenever(channelRepository.getCategories(provider.id)).thenReturn(flowOf(listOf(Category(id = 10L, name = "News"))))
+        whenever(channelRepository.getChannels(provider.id)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsByCategory(provider.id, 10L)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsByNumber(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsByNumber(provider.id, 10L)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsWithoutErrors(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(flowOf(channels))
+        whenever(channelRepository.getChannelsWithoutErrors(provider.id, 10L)).thenReturn(flowOf(channels))
+        whenever(favoriteRepository.getFavorites(ContentType.LIVE)).thenReturn(flowOf(emptyList()))
+        whenever(preferencesRepository.guideDensity).thenReturn(flowOf(null))
+        whenever(preferencesRepository.guideChannelMode).thenReturn(flowOf(null))
+        whenever(preferencesRepository.guideFavoritesOnly).thenReturn(flowOf(false))
+        whenever(preferencesRepository.guideScheduledOnly).thenReturn(flowOf(false))
+        whenever(preferencesRepository.guideAnchorTime).thenReturn(flowOf(null))
+        whenever(epgRepository.getProgramsForChannels(eq(provider.id), any(), any(), any())).thenReturn(flowOf(emptyMap()))
+        whenever(epgRepository.searchPrograms(eq(provider.id), eq("Headline"), any(), any(), eq(10L), any())).thenReturn(
+            flowOf(
+                listOf(
+                    Program(
+                        id = 1L,
+                        channelId = "one",
+                        title = "Headline",
+                        startTime = System.currentTimeMillis() - 60_000L,
+                        endTime = System.currentTimeMillis() + 60_000L,
+                        providerId = provider.id
+                    )
+                )
+            )
+        )
+
+        val viewModel = EpgViewModel(
+            providerRepository = providerRepository,
+            channelRepository = channelRepository,
+            epgRepository = epgRepository,
+            favoriteRepository = favoriteRepository,
+            preferencesRepository = preferencesRepository
+        )
+
+        advanceUntilIdle()
+        viewModel.selectCategory(10L)
+        viewModel.updateProgramSearchQuery("Headline")
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.channels.map { it.id }).containsExactly(1L, 2L)
+        assertThat(viewModel.uiState.value.programsByChannel.keys).containsExactly("one")
+        assertThat(viewModel.uiState.value.programSearchQuery).isEqualTo("Headline")
+        verify(epgRepository).searchPrograms(eq(provider.id), eq("Headline"), any(), any(), eq(10L), any())
+    }
+
+    @Test
+    fun `guide prefers healthy channels but falls back when favorite channels have errors`() = runTest {
+        val provider = Provider(
+            id = 1L,
+            name = "Provider",
+            type = ProviderType.M3U,
+            serverUrl = "https://provider.example.com"
+        )
+        val healthyChannel = Channel(
+            id = 1L,
+            name = "Healthy",
+            providerId = provider.id,
+            epgChannelId = "healthy",
+            number = 1,
+            categoryId = 10L
+        )
+        val unhealthyFavorite = Channel(
+            id = 2L,
+            name = "Unhealthy Favorite",
+            providerId = provider.id,
+            epgChannelId = "unhealthy",
+            number = 2,
+            categoryId = 10L,
+            errorCount = 3
+        )
+
+        whenever(providerRepository.getActiveProvider()).thenReturn(flowOf(provider))
+        whenever(channelRepository.getCategories(provider.id)).thenReturn(flowOf(listOf(Category(id = 10L, name = "News"))))
+        whenever(channelRepository.getChannelsByNumber(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(
+            flowOf(listOf(healthyChannel, unhealthyFavorite))
+        )
+        whenever(channelRepository.getChannelsWithoutErrors(provider.id, ChannelRepository.ALL_CHANNELS_ID)).thenReturn(
+            flowOf(listOf(healthyChannel))
+        )
+        whenever(channelRepository.getChannelsByNumber(provider.id, 10L)).thenReturn(
+            flowOf(listOf(healthyChannel, unhealthyFavorite))
+        )
+        whenever(channelRepository.getChannelsWithoutErrors(provider.id, 10L)).thenReturn(
+            flowOf(listOf(healthyChannel))
+        )
+        whenever(favoriteRepository.getFavorites(ContentType.LIVE)).thenReturn(
+            flowOf(listOf(Favorite(contentId = unhealthyFavorite.id, contentType = ContentType.LIVE)))
+        )
+        whenever(preferencesRepository.guideDensity).thenReturn(flowOf(null))
+        whenever(preferencesRepository.guideChannelMode).thenReturn(flowOf(null))
+        whenever(preferencesRepository.guideFavoritesOnly).thenReturn(flowOf(false))
+        whenever(preferencesRepository.guideScheduledOnly).thenReturn(flowOf(false))
+        whenever(preferencesRepository.guideAnchorTime).thenReturn(flowOf(null))
+        whenever(epgRepository.getProgramsForChannels(eq(provider.id), any(), any(), any())).thenReturn(flowOf(emptyMap()))
+
+        val viewModel = EpgViewModel(
+            providerRepository = providerRepository,
+            channelRepository = channelRepository,
+            epgRepository = epgRepository,
+            favoriteRepository = favoriteRepository,
+            preferencesRepository = preferencesRepository
+        )
+
+        advanceUntilIdle()
+        viewModel.toggleFavoritesOnly()
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.channels.map { it.id }).containsExactly(unhealthyFavorite.id)
     }
 }

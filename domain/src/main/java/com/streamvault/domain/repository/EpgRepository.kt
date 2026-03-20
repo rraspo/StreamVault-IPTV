@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.Flow
 interface EpgRepository {
     fun getProgramsForChannel(providerId: Long, channelId: String, startTime: Long, endTime: Long): Flow<List<Program>>
     fun getProgramsForChannels(providerId: Long, channelIds: List<String>, startTime: Long, endTime: Long): Flow<Map<String, List<Program>>>
+    fun getProgramsByCategory(providerId: Long, categoryId: Long, startTime: Long, endTime: Long): Flow<List<Program>>
+    fun searchPrograms(providerId: Long, query: String, startTime: Long, endTime: Long, categoryId: Long? = null, limit: Int = 250): Flow<List<Program>>
     fun getNowPlaying(providerId: Long, channelId: String): Flow<Program?>
     fun getNowPlayingForChannels(providerId: Long, channelIds: List<String>): Flow<Map<String, Program?>>
     fun getNowAndNext(providerId: Long, channelId: String): Flow<Pair<Program?, Program?>>

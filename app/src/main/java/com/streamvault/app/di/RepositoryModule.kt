@@ -3,6 +3,11 @@ package com.streamvault.app.di
 import com.streamvault.data.local.DatabaseTransactionRunner
 import com.streamvault.data.local.RoomDatabaseTransactionRunner
 import com.streamvault.data.preferences.PreferencesRepository
+import com.streamvault.data.sync.ProviderSyncStateReaderImpl
+import com.streamvault.data.validation.ProviderSetupInputValidatorImpl
+import com.streamvault.domain.manager.ParentalPinVerifier
+import com.streamvault.domain.manager.ProviderSetupInputValidator
+import com.streamvault.domain.manager.ProviderSyncStateReader
 import com.streamvault.data.repository.*
 import com.streamvault.domain.manager.ParentalControlSessionStore
 import com.streamvault.domain.repository.*
@@ -55,6 +60,15 @@ abstract class RepositoryModule {
 
     @Binds @Singleton
     abstract fun bindParentalControlSessionStore(impl: PreferencesRepository): ParentalControlSessionStore
+
+    @Binds @Singleton
+    abstract fun bindParentalPinVerifier(impl: PreferencesRepository): ParentalPinVerifier
+
+    @Binds @Singleton
+    abstract fun bindProviderSetupInputValidator(impl: ProviderSetupInputValidatorImpl): ProviderSetupInputValidator
+
+    @Binds @Singleton
+    abstract fun bindProviderSyncStateReader(impl: ProviderSyncStateReaderImpl): ProviderSyncStateReader
 
     companion object {
         @Provides

@@ -25,6 +25,8 @@ import com.streamvault.domain.repository.FavoriteRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.usecase.GetCustomCategories
+import com.streamvault.domain.usecase.UnlockParentalCategory
+import com.streamvault.domain.usecase.UnlockParentalCategoryCommand
 import com.streamvault.player.PlaybackState
 import com.streamvault.player.PlayerEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -51,6 +53,7 @@ class HomeViewModel @Inject constructor(
     private val epgRepository: EpgRepository,
     private val playbackHistoryRepository: PlaybackHistoryRepository,
     private val getCustomCategories: GetCustomCategories,
+    private val unlockParentalCategory: UnlockParentalCategory,
     private val parentalControlManager: ParentalControlManager,
     private val syncManager: SyncManager,
     private val tvInputChannelSyncManager: TvInputChannelSyncManager,
@@ -823,9 +826,20 @@ class HomeViewModel @Inject constructor(
         return preferencesRepository.verifyParentalPin(pin)
     }
 
-    fun unlockCategory(category: Category) {
-        val providerId = _uiState.value.provider?.id ?: return
-        parentalControlManager.unlockCategory(providerId, category.id)
+    suspend fun unlockCategoryWithPin(category: Category, pin: String): Result<Unit> {
+        val providerId = _uiState.value.provider?.id
+            ?: return Result.error("Locked category context is unavailable.")
+        val result = unlockParentalCategory(
+            UnlockParentalCategoryCommand(
+                providerId = providerId,
+                categoryId = category.id,
+                pin = pin
+            )
+        )
+        if (result is Result.Success) {
+            selectCategory(category)
+        }
+        return result
     }
 
     fun setDefaultCategory(category: Category) {

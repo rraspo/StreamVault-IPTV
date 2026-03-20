@@ -31,7 +31,13 @@ class TvInputChannelSyncManager @Inject constructor(
     private val epgRepository: EpgRepository
 ) {
 
-    suspend fun refreshTvInputCatalog() = withContext(Dispatchers.IO) {
+    suspend fun refreshTvInputCatalog() {
+        refreshTvInputCatalogResult().onFailure { throwable ->
+            Log.w(TAG, "TV input catalog sync failed", throwable)
+        }
+    }
+
+    suspend fun refreshTvInputCatalogResult(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val provider = providerRepository.getActiveProvider().first()
             if (provider == null) {
@@ -61,8 +67,6 @@ class TvInputChannelSyncManager @Inject constructor(
                     channel = channel
                 )
             }
-        }.onFailure { throwable ->
-            Log.w(TAG, "TV input catalog sync failed", throwable)
         }
     }
 

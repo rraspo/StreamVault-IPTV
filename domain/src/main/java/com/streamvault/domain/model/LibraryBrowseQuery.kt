@@ -1,8 +1,34 @@
 package com.streamvault.domain.model
 
+enum class LibrarySortBy {
+    LIBRARY,
+    TITLE,
+    RELEASE,
+    UPDATED,
+    RATING,
+    WATCH_COUNT
+}
+
+enum class LibraryFilterType {
+    ALL,
+    FAVORITES,
+    IN_PROGRESS,
+    UNWATCHED,
+    TOP_RATED,
+    RECENTLY_UPDATED
+}
+
+data class LibraryFilterBy(
+    val type: LibraryFilterType = LibraryFilterType.ALL,
+    val language: String? = null
+)
+
 data class LibraryBrowseQuery(
     val providerId: Long,
     val categoryId: Long? = null,
+    val sortBy: LibrarySortBy = LibrarySortBy.LIBRARY,
+    val filterBy: LibraryFilterBy = LibraryFilterBy(),
+    val searchQuery: String = "",
     val offset: Int = 0,
     val limit: Int = 40
 ) {

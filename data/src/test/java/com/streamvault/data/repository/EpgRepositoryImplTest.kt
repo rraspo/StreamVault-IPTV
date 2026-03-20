@@ -10,6 +10,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import okhttp3.MediaType.Companion.toMediaType
@@ -19,6 +21,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.atLeastOnce
 import org.mockito.kotlin.mock
@@ -34,6 +37,43 @@ class EpgRepositoryImplTest {
     private val xmltvParser: XmltvParser = mock()
     private val transactionRunner = object : DatabaseTransactionRunner {
         override suspend fun <T> inTransaction(block: suspend () -> T): T = block()
+    }
+
+    @Test
+    fun `searchPrograms ranks exact matches ahead of loose matches`() = runTest {
+        whenever(programDao.searchPrograms(any(), any(), any(), any(), anyOrNull(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    ProgramEntity(
+                        id = 1L,
+                        providerId = 7L,
+                        channelId = "one",
+                        title = "Late Sports Replay",
+                        startTime = 10L,
+                        endTime = 20L
+                    ),
+                    ProgramEntity(
+                        id = 2L,
+                        providerId = 7L,
+                        channelId = "two",
+                        title = "Sports",
+                        startTime = 30L,
+                        endTime = 40L
+                    )
+                )
+            )
+        )
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = xmltvParser,
+            okHttpClient = okHttpClientReturningXml(),
+            transactionRunner = transactionRunner
+        )
+
+        val result = repository.searchPrograms(7L, "sports", 0L, 100L).first()
+
+        assertThat(result.map { it.title }).containsExactly("Sports", "Late Sports Replay").inOrder()
     }
 
     @Test

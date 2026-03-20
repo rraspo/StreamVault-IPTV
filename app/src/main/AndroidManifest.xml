@@ -62,6 +62,13 @@
             android:launchMode="singleTop"
             android:theme="@style/Theme.StreamVault.CastChooser" />
 
+        <activity
+            android:name=".tvinput.TvInputSetupActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.StreamVault" />
+
         <service
             android:name=".tvinput.StreamVaultTvInputService"
             android:exported="true"

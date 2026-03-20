@@ -8,6 +8,12 @@ enum class RecordingStatus {
     CANCELLED
 }
 
+enum class RecordingRecurrence {
+    NONE,
+    DAILY,
+    WEEKLY
+}
+
 data class RecordingRequest(
     val providerId: Long,
     val channelId: Long,
@@ -16,7 +22,9 @@ data class RecordingRequest(
     val scheduledStartMs: Long,
     val scheduledEndMs: Long,
     val programTitle: String? = null,
-    val outputPath: String? = null
+    val outputPath: String? = null,
+    val recurrence: RecordingRecurrence = RecordingRecurrence.NONE,
+    val recurringRuleId: String? = null
 ) {
     init {
         require(channelName.isNotBlank()) { "channelName must not be blank" }
@@ -36,6 +44,8 @@ data class RecordingItem(
     val scheduledEndMs: Long,
     val programTitle: String? = null,
     val outputPath: String? = null,
+    val recurrence: RecordingRecurrence = RecordingRecurrence.NONE,
+    val recurringRuleId: String? = null,
     val status: RecordingStatus = RecordingStatus.SCHEDULED,
     val failureReason: String? = null,
     val terminalAtMs: Long? = null

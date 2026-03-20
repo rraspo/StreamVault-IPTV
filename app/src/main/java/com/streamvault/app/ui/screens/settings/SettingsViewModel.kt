@@ -20,9 +20,19 @@ import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.RecordingItem
 import com.streamvault.domain.model.RecordingStorageState
 import com.streamvault.domain.model.Result
-import com.streamvault.domain.model.SyncState
+import com.streamvault.domain.usecase.ExportBackup
+import com.streamvault.domain.usecase.ExportBackupCommand
+import com.streamvault.domain.usecase.ExportBackupResult
+import com.streamvault.domain.usecase.ImportBackup
+import com.streamvault.domain.usecase.ImportBackupCommand
+import com.streamvault.domain.usecase.ImportBackupResult
+import com.streamvault.domain.usecase.InspectBackupCommand
+import com.streamvault.domain.usecase.InspectBackupResult
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SyncMetadataRepository
+import com.streamvault.domain.usecase.SyncProvider
+import com.streamvault.domain.usecase.SyncProviderCommand
+import com.streamvault.domain.usecase.SyncProviderResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -41,6 +51,18 @@ private data class SettingsPreferenceSnapshot(
     val parentalControlLevel: Int,
     val hasParentalPin: Boolean,
     val appLanguage: String,
+    val preferredAudioLanguage: String,
+    val playerPlaybackSpeed: Float,
+    val subtitleTextScale: Float,
+    val subtitleTextColor: Int,
+    val subtitleBackgroundColor: Int,
+    val wifiMaxVideoHeight: Int?,
+    val ethernetMaxVideoHeight: Int?,
+    val lastSpeedTestMegabits: Double?,
+    val lastSpeedTestTimestamp: Long?,
+    val lastSpeedTestTransport: String?,
+    val lastSpeedTestRecommendedHeight: Int?,
+    val lastSpeedTestEstimated: Boolean,
     val isIncognitoMode: Boolean,
     val liveTvChannelMode: LiveTvChannelMode
 )
@@ -51,14 +73,18 @@ class SettingsViewModel @Inject constructor(
     application: Application,
     private val providerRepository: ProviderRepository,
     private val preferencesRepository: PreferencesRepository,
+    private val internetSpeedTestRunner: InternetSpeedTestRunner,
     private val backupManager: BackupManager,
     private val recordingManager: RecordingManager,
     private val syncManager: SyncManager,
     private val syncMetadataRepository: SyncMetadataRepository,
     private val playbackHistoryRepository: com.streamvault.domain.repository.PlaybackHistoryRepository,
-    private val tvInputChannelSyncManager: TvInputChannelSyncManager
+    private val tvInputChannelSyncManager: TvInputChannelSyncManager,
+    private val syncProvider: SyncProvider
 ) : ViewModel() {
     private val appContext = application
+    private val exportBackup = ExportBackup(backupManager)
+    private val importBackup = ImportBackup(backupManager)
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
@@ -77,11 +103,47 @@ class SettingsViewModel @Inject constructor(
                     parentalControlLevel = level,
                     hasParentalPin = hasParentalPin,
                     appLanguage = "system",
+                    preferredAudioLanguage = "auto",
+                    playerPlaybackSpeed = 1f,
+                    subtitleTextScale = 1f,
+                    subtitleTextColor = 0xFFFFFFFF.toInt(),
+                    subtitleBackgroundColor = 0x80000000.toInt(),
+                    wifiMaxVideoHeight = null,
+                    ethernetMaxVideoHeight = null,
+                    lastSpeedTestMegabits = null,
+                    lastSpeedTestTimestamp = null,
+                    lastSpeedTestTransport = null,
+                    lastSpeedTestRecommendedHeight = null,
+                    lastSpeedTestEstimated = false,
                     isIncognitoMode = false,
                     liveTvChannelMode = LiveTvChannelMode.COMFORTABLE
                 )
             }.combine(preferencesRepository.appLanguage) { snapshot, language ->
                 snapshot.copy(appLanguage = language)
+            }.combine(preferencesRepository.preferredAudioLanguage) { snapshot, preferredAudioLanguage ->
+                snapshot.copy(preferredAudioLanguage = preferredAudioLanguage ?: "auto")
+            }.combine(preferencesRepository.playerPlaybackSpeed) { snapshot, playerPlaybackSpeed ->
+                snapshot.copy(playerPlaybackSpeed = playerPlaybackSpeed)
+            }.combine(preferencesRepository.playerSubtitleTextScale) { snapshot, subtitleTextScale ->
+                snapshot.copy(subtitleTextScale = subtitleTextScale)
+            }.combine(preferencesRepository.playerSubtitleTextColor) { snapshot, subtitleTextColor ->
+                snapshot.copy(subtitleTextColor = subtitleTextColor)
+            }.combine(preferencesRepository.playerSubtitleBackgroundColor) { snapshot, subtitleBackgroundColor ->
+                snapshot.copy(subtitleBackgroundColor = subtitleBackgroundColor)
+            }.combine(preferencesRepository.playerWifiMaxVideoHeight) { snapshot, wifiMaxVideoHeight ->
+                snapshot.copy(wifiMaxVideoHeight = wifiMaxVideoHeight)
+            }.combine(preferencesRepository.playerEthernetMaxVideoHeight) { snapshot, ethernetMaxVideoHeight ->
+                snapshot.copy(ethernetMaxVideoHeight = ethernetMaxVideoHeight)
+            }.combine(preferencesRepository.lastSpeedTestMegabits) { snapshot, lastSpeedTestMegabits ->
+                snapshot.copy(lastSpeedTestMegabits = lastSpeedTestMegabits)
+            }.combine(preferencesRepository.lastSpeedTestTimestamp) { snapshot, lastSpeedTestTimestamp ->
+                snapshot.copy(lastSpeedTestTimestamp = lastSpeedTestTimestamp)
+            }.combine(preferencesRepository.lastSpeedTestTransport) { snapshot, lastSpeedTestTransport ->
+                snapshot.copy(lastSpeedTestTransport = lastSpeedTestTransport)
+            }.combine(preferencesRepository.lastSpeedTestRecommendedHeight) { snapshot, lastSpeedTestRecommendedHeight ->
+                snapshot.copy(lastSpeedTestRecommendedHeight = lastSpeedTestRecommendedHeight)
+            }.combine(preferencesRepository.lastSpeedTestEstimated) { snapshot, lastSpeedTestEstimated ->
+                snapshot.copy(lastSpeedTestEstimated = lastSpeedTestEstimated)
             }.combine(preferencesRepository.isIncognitoMode) { snapshot, incognito ->
                 snapshot.copy(isIncognitoMode = incognito)
             }.combine(preferencesRepository.liveTvChannelMode) { snapshot, liveTvChannelMode ->
@@ -94,6 +156,22 @@ class SettingsViewModel @Inject constructor(
                         parentalControlLevel = snapshot.parentalControlLevel,
                         hasParentalPin = snapshot.hasParentalPin,
                         appLanguage = snapshot.appLanguage,
+                        preferredAudioLanguage = snapshot.preferredAudioLanguage,
+                        playerPlaybackSpeed = snapshot.playerPlaybackSpeed,
+                        subtitleTextScale = snapshot.subtitleTextScale,
+                        subtitleTextColor = snapshot.subtitleTextColor,
+                        subtitleBackgroundColor = snapshot.subtitleBackgroundColor,
+                        wifiMaxVideoHeight = snapshot.wifiMaxVideoHeight,
+                        ethernetMaxVideoHeight = snapshot.ethernetMaxVideoHeight,
+                        lastSpeedTest = snapshot.lastSpeedTestMegabits?.let {
+                            InternetSpeedTestUiModel(
+                                megabitsPerSecond = it,
+                                measuredAtMs = snapshot.lastSpeedTestTimestamp ?: 0L,
+                                transportLabel = snapshot.lastSpeedTestTransport ?: InternetSpeedTestTransport.UNKNOWN.name,
+                                recommendedMaxVideoHeight = snapshot.lastSpeedTestRecommendedHeight,
+                                isEstimated = snapshot.lastSpeedTestEstimated
+                            )
+                        },
                         isIncognitoMode = snapshot.isIncognitoMode,
                         liveTvChannelMode = snapshot.liveTvChannelMode
                     )
@@ -196,6 +274,100 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setDefaultPlaybackSpeed(speed: Float) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerPlaybackSpeed(speed)
+        }
+    }
+
+    fun setPreferredAudioLanguage(languageTag: String?) {
+        viewModelScope.launch {
+            preferencesRepository.setPreferredAudioLanguage(languageTag)
+        }
+    }
+
+    fun setSubtitleTextScale(scale: Float) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerSubtitleTextScale(scale)
+        }
+    }
+
+    fun setSubtitleTextColor(colorArgb: Int) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerSubtitleTextColor(colorArgb)
+        }
+    }
+
+    fun setSubtitleBackgroundColor(colorArgb: Int) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerSubtitleBackgroundColor(colorArgb)
+        }
+    }
+
+    fun setWifiQualityCap(maxHeight: Int?) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerWifiMaxVideoHeight(maxHeight)
+        }
+    }
+
+    fun setEthernetQualityCap(maxHeight: Int?) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerEthernetMaxVideoHeight(maxHeight)
+        }
+    }
+
+    fun runInternetSpeedTest() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isRunningInternetSpeedTest = true) }
+            when (val result = internetSpeedTestRunner.run()) {
+                is InternetSpeedTestResult.Success -> {
+                    val snapshot = result.snapshot
+                    preferencesRepository.setLastSpeedTestResult(
+                        megabitsPerSecond = snapshot.megabitsPerSecond,
+                        measuredAtMs = snapshot.measuredAtMs,
+                        transport = snapshot.transport.name,
+                        recommendedMaxHeight = snapshot.recommendedMaxVideoHeight,
+                        estimated = snapshot.isEstimated
+                    )
+                    _uiState.update {
+                        it.copy(
+                            isRunningInternetSpeedTest = false,
+                            userMessage = if (snapshot.isEstimated) {
+                                appContext.getString(R.string.settings_speed_test_estimate_complete)
+                            } else {
+                                appContext.getString(R.string.settings_speed_test_complete)
+                            }
+                        )
+                    }
+                }
+                is InternetSpeedTestResult.Error -> {
+                    _uiState.update {
+                        it.copy(
+                            isRunningInternetSpeedTest = false,
+                            userMessage = appContext.getString(R.string.settings_speed_test_failed, result.message)
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun applySpeedTestRecommendationToWifi() {
+        viewModelScope.launch {
+            val recommendation = _uiState.value.lastSpeedTest?.recommendedMaxVideoHeight
+            preferencesRepository.setPlayerWifiMaxVideoHeight(recommendation)
+            _uiState.update { it.copy(userMessage = appContext.getString(R.string.settings_speed_test_wifi_applied)) }
+        }
+    }
+
+    fun applySpeedTestRecommendationToEthernet() {
+        viewModelScope.launch {
+            val recommendation = _uiState.value.lastSpeedTest?.recommendedMaxVideoHeight
+            preferencesRepository.setPlayerEthernetMaxVideoHeight(recommendation)
+            _uiState.update { it.copy(userMessage = appContext.getString(R.string.settings_speed_test_ethernet_applied)) }
+        }
+    }
+
     fun toggleIncognitoMode() {
         viewModelScope.launch {
             val current = _uiState.value.isIncognitoMode
@@ -237,13 +409,14 @@ class SettingsViewModel @Inject constructor(
     fun refreshProvider(providerId: Long) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncing = true) }
-            val result = providerRepository.refreshProviderData(providerId, force = true)
-            if (result !is Result.Error) {
+            val result = syncProvider(
+                SyncProviderCommand(providerId = providerId, force = true)
+            )
+            if (result !is SyncProviderResult.Error) {
                 tvInputChannelSyncManager.refreshTvInputCatalog()
             }
-            val refreshedProvider = providerRepository.getProvider(providerId)
             _uiState.update { state ->
-                val partialWarnings = (syncManager.currentSyncState(providerId) as? SyncState.Partial)?.warnings.orEmpty()
+                val partialWarnings = (result as? SyncProviderResult.Success)?.warnings.orEmpty()
                 val warningsMessage = partialWarnings
                     .take(3)
                     .joinToString(separator = ", ")
@@ -251,13 +424,13 @@ class SettingsViewModel @Inject constructor(
                 state.copy(
                     isSyncing = false,
                     userMessage = when {
-                        result is Result.Error -> "Refresh failed: ${result.message}"
-                        refreshedProvider?.status == ProviderStatus.PARTIAL -> "Refresh completed with warnings: $warningsMessage"
+                        result is SyncProviderResult.Error -> "Refresh failed: ${result.message}"
+                        (result as? SyncProviderResult.Success)?.isPartial == true -> "Refresh completed with warnings: $warningsMessage"
                         else -> "Provider refreshed successfully"
                     },
                     syncWarningsByProvider = when {
-                        result is Result.Error -> state.syncWarningsByProvider - providerId
-                        refreshedProvider?.status == ProviderStatus.PARTIAL -> state.syncWarningsByProvider + (providerId to partialWarnings)
+                        result is SyncProviderResult.Error -> state.syncWarningsByProvider - providerId
+                        (result as? SyncProviderResult.Success)?.isPartial == true -> state.syncWarningsByProvider + (providerId to partialWarnings)
                         else -> state.syncWarningsByProvider - providerId
                     }
                 )
@@ -320,11 +493,11 @@ class SettingsViewModel @Inject constructor(
     fun exportConfig(uriString: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncing = true) }
-            val result = backupManager.exportConfig(uriString)
+            val result = exportBackup(ExportBackupCommand(uriString))
             _uiState.update { state ->
                 state.copy(
                     isSyncing = false,
-                    userMessage = if (result is Result.Error)
+                    userMessage = if (result is ExportBackupResult.Error)
                         "Export failed: ${result.message}"
                     else "Configuration exported successfully"
                 )
@@ -335,20 +508,19 @@ class SettingsViewModel @Inject constructor(
     fun inspectBackup(uriString: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncing = true) }
-            val result = backupManager.inspectBackup(uriString)
+            val result = importBackup.inspect(InspectBackupCommand(uriString))
             _uiState.update { state ->
                 when (result) {
-                    is Result.Error -> state.copy(
+                    is InspectBackupResult.Error -> state.copy(
                         isSyncing = false,
                         userMessage = "Import failed: ${result.message}"
                     )
-                    is Result.Success -> state.copy(
+                    is InspectBackupResult.Success -> state.copy(
                         isSyncing = false,
-                        pendingBackupUri = uriString,
-                        backupPreview = result.data,
-                        backupImportPlan = BackupImportPlan()
+                        pendingBackupUri = result.uriString,
+                        backupPreview = result.preview,
+                        backupImportPlan = result.defaultPlan
                     )
-                    else -> state.copy(isSyncing = false)
                 }
             }
         }
@@ -388,23 +560,22 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importMultiViewPresets = enabled)) }
     }
 
+    fun setImportRecordingSchedules(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importRecordingSchedules = enabled)) }
+    }
+
     fun confirmBackupImport() {
         val uriString = _uiState.value.pendingBackupUri ?: return
         val plan = _uiState.value.backupImportPlan
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncing = true) }
-            val result = backupManager.importConfig(uriString, plan)
+            val result = importBackup.confirm(ImportBackupCommand(uriString, plan))
             _uiState.update { state ->
-                val importedSummary = if (result is Result.Success) {
-                    result.data.importedSections.joinToString().ifBlank { "Nothing imported" }
-                } else {
-                    null
-                }
                 state.copy(
                     isSyncing = false,
-                    userMessage = if (result is Result.Error)
+                    userMessage = if (result is ImportBackupResult.Error)
                         "Import failed: ${result.message}"
-                    else "Configuration imported: $importedSummary",
+                    else "Configuration imported: ${(result as ImportBackupResult.Success).importedSummary}",
                     backupPreview = null,
                     pendingBackupUri = null,
                     backupImportPlan = BackupImportPlan()
@@ -487,6 +658,15 @@ data class SettingsUiState(
     val parentalControlLevel: Int = 0,
     val hasParentalPin: Boolean = false,
     val appLanguage: String = "system",
+    val preferredAudioLanguage: String = "auto",
+    val playerPlaybackSpeed: Float = 1f,
+    val subtitleTextScale: Float = 1f,
+    val subtitleTextColor: Int = 0xFFFFFFFF.toInt(),
+    val subtitleBackgroundColor: Int = 0x80000000.toInt(),
+    val wifiMaxVideoHeight: Int? = null,
+    val ethernetMaxVideoHeight: Int? = null,
+    val lastSpeedTest: InternetSpeedTestUiModel? = null,
+    val isRunningInternetSpeedTest: Boolean = false,
     val backupPreview: BackupPreview? = null,
     val pendingBackupUri: String? = null,
     val backupImportPlan: BackupImportPlan = BackupImportPlan(),
@@ -494,4 +674,12 @@ data class SettingsUiState(
     val recordingStorageState: RecordingStorageState = RecordingStorageState(),
     val isIncognitoMode: Boolean = false,
     val liveTvChannelMode: LiveTvChannelMode = LiveTvChannelMode.COMFORTABLE
+)
+
+data class InternetSpeedTestUiModel(
+    val megabitsPerSecond: Double,
+    val measuredAtMs: Long,
+    val transportLabel: String,
+    val recommendedMaxVideoHeight: Int?,
+    val isEstimated: Boolean
 )
