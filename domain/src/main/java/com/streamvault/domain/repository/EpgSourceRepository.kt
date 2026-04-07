@@ -1,6 +1,7 @@
 package com.streamvault.domain.repository
 
 import com.streamvault.domain.model.ChannelEpgMapping
+import com.streamvault.domain.model.EpgOverrideCandidate
 import com.streamvault.domain.model.EpgResolutionSummary
 import com.streamvault.domain.model.EpgSource
 import com.streamvault.domain.model.Program
@@ -45,6 +46,23 @@ interface EpgSourceRepository {
     suspend fun resolveForProvider(providerId: Long): EpgResolutionSummary
 
     suspend fun getResolutionSummary(providerId: Long): EpgResolutionSummary
+
+    suspend fun getChannelMapping(providerId: Long, channelId: Long): ChannelEpgMapping?
+
+    suspend fun getOverrideCandidates(
+        providerId: Long,
+        query: String,
+        limit: Int = 150
+    ): List<EpgOverrideCandidate>
+
+    suspend fun applyManualOverride(
+        providerId: Long,
+        channelId: Long,
+        epgSourceId: Long,
+        xmltvChannelId: String
+    ): Result<Unit>
+
+    suspend fun clearManualOverride(providerId: Long, channelId: Long): Result<Unit>
 
     // ── Resolved query ─────────────────────────────────────────────
 

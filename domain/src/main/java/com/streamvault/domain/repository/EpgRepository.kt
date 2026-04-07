@@ -23,4 +23,13 @@ interface EpgRepository {
         startTime: Long,
         endTime: Long
     ): Map<String, List<Program>>
+
+    suspend fun getResolvedProgramsForPlaybackChannel(
+        providerId: Long,
+        internalChannelId: Long,
+        epgChannelId: String?,
+        streamId: Long,
+        startTime: Long,
+        endTime: Long
+    ): List<Program>
 }

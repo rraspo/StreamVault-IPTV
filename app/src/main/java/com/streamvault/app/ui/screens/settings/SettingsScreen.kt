@@ -864,6 +864,7 @@ fun SettingsScreen(
                             items(providers.size) { providerIndex ->
                                 val provider = providers[providerIndex]
                                 val assignments = uiState.epgSourceAssignments[provider.id].orEmpty()
+                                val resolutionSummary = uiState.epgResolutionSummaries[provider.id]
                                 val assignedSourceIds = assignments.map { it.epgSourceId }.toSet()
                                 val unassignedSources = epgSources.filter { it.id !in assignedSourceIds }
 
@@ -879,11 +880,19 @@ fun SettingsScreen(
                                 ) {
                                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Text(provider.name, style = MaterialTheme.typography.titleSmall, color = Color.White)
+                                        if (resolutionSummary != null) {
+                                            val matchedChannels = (resolutionSummary.totalChannels - resolutionSummary.unresolvedChannels).coerceAtLeast(0)
+                                            Text(
+                                                text = "Matched $matchedChannels/${resolutionSummary.totalChannels} channels • ${resolutionSummary.exactIdMatches} exact • ${resolutionSummary.normalizedNameMatches} name • ${resolutionSummary.providerNativeMatches} provider",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = OnSurfaceDim
+                                            )
+                                        }
 
                                         if (assignments.isEmpty()) {
                                             Text("No EPG sources assigned", style = MaterialTheme.typography.bodySmall, color = OnSurfaceDim)
                                         } else {
-                                            assignments.forEach { assignment ->
+                                            assignments.sortedBy { it.priority }.forEachIndexed { assignmentIndex, assignment ->
                                                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                                     Text(
                                                         "${assignment.epgSourceName} (priority: ${assignment.priority})",
@@ -891,6 +900,35 @@ fun SettingsScreen(
                                                         color = Color.White,
                                                         modifier = Modifier.weight(1f)
                                                     )
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                        TvClickableSurface(
+                                                            onClick = { viewModel.moveEpgSourceAssignmentUp(provider.id, assignment.epgSourceId) },
+                                                            enabled = assignmentIndex > 0,
+                                                            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(6.dp)),
+                                                            colors = ClickableSurfaceDefaults.colors(
+                                                                containerColor = Color.White.copy(alpha = 0.08f),
+                                                                focusedContainerColor = Color.White.copy(alpha = 0.16f),
+                                                                disabledContainerColor = Color.White.copy(alpha = 0.04f)
+                                                            ),
+                                                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                                                        ) {
+                                                            Text("Up", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                                        }
+                                                        TvClickableSurface(
+                                                            onClick = { viewModel.moveEpgSourceAssignmentDown(provider.id, assignment.epgSourceId) },
+                                                            enabled = assignmentIndex < assignments.lastIndex,
+                                                            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(6.dp)),
+                                                            colors = ClickableSurfaceDefaults.colors(
+                                                                containerColor = Color.White.copy(alpha = 0.08f),
+                                                                focusedContainerColor = Color.White.copy(alpha = 0.16f),
+                                                                disabledContainerColor = Color.White.copy(alpha = 0.04f)
+                                                            ),
+                                                            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
+                                                        ) {
+                                                            Text("Down", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = Color.White)
+                                                        }
+                                                    }
+                                                    Spacer(modifier = Modifier.width(6.dp))
                                                     TvClickableSurface(
                                                         onClick = { viewModel.unassignEpgSourceFromProvider(provider.id, assignment.epgSourceId) },
                                                         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(6.dp)),

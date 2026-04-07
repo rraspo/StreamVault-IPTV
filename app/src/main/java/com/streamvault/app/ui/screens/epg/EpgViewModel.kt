@@ -6,16 +6,20 @@ import androidx.lifecycle.viewModelScope
 import com.streamvault.app.ui.model.applyProviderCategoryDisplayPreferences
 import com.streamvault.domain.manager.ParentalControlManager
 import com.streamvault.domain.model.Category
+import com.streamvault.domain.model.ChannelEpgMapping
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.model.EpgOverrideCandidate
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.repository.ChannelRepository
 import com.streamvault.domain.repository.EpgRepository
+import com.streamvault.domain.repository.EpgSourceRepository
 import com.streamvault.domain.repository.FavoriteRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.data.preferences.PreferencesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -56,6 +60,16 @@ data class EpgUiState(
     val guideAnchorTime: Long = System.currentTimeMillis(),
     val guideWindowStart: Long = System.currentTimeMillis() - EpgViewModel.LOOKBACK_MS,
     val guideWindowEnd: Long = System.currentTimeMillis() + EpgViewModel.LOOKAHEAD_MS
+)
+
+data class EpgOverrideUiState(
+    val channel: Channel? = null,
+    val currentMapping: ChannelEpgMapping? = null,
+    val searchQuery: String = "",
+    val candidates: List<EpgOverrideCandidate> = emptyList(),
+    val isLoading: Boolean = false,
+    val isSaving: Boolean = false,
+    val error: String? = null
 )
 
 enum class GuideChannelMode {
@@ -141,6 +155,7 @@ class EpgViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
     private val channelRepository: ChannelRepository,
     private val epgRepository: EpgRepository,
+    private val epgSourceRepository: EpgSourceRepository,
     private val favoriteRepository: FavoriteRepository,
     private val preferencesRepository: PreferencesRepository,
     private val parentalControlManager: ParentalControlManager
@@ -171,6 +186,9 @@ class EpgViewModel @Inject constructor(
     private val programSearchQuery = MutableStateFlow("")
     private val refreshNonce = MutableStateFlow(0)
     private val baseGuideSnapshot = MutableStateFlow<GuideBaseSnapshot?>(null)
+    private val _overrideUiState = MutableStateFlow(EpgOverrideUiState())
+    val overrideUiState: StateFlow<EpgOverrideUiState> = _overrideUiState.asStateFlow()
+    private var overrideSearchJob: Job? = null
 
     init {
         restoreGuidePreferences()
@@ -208,6 +226,68 @@ class EpgViewModel @Inject constructor(
 
     fun refresh() {
         refreshNonce.update { it + 1 }
+    }
+
+    fun openEpgOverride(channel: Channel) {
+        _overrideUiState.value = EpgOverrideUiState(
+            channel = channel,
+            isLoading = true
+        )
+        loadEpgOverrideCandidates(channel = channel, query = "", refreshMapping = true)
+    }
+
+    fun dismissEpgOverride() {
+        overrideSearchJob?.cancel()
+        _overrideUiState.value = EpgOverrideUiState()
+    }
+
+    fun updateEpgOverrideSearch(query: String) {
+        val channel = _overrideUiState.value.channel ?: return
+        _overrideUiState.update {
+            it.copy(
+                searchQuery = query,
+                isLoading = true,
+                error = null
+            )
+        }
+        loadEpgOverrideCandidates(channel = channel, query = query, refreshMapping = false)
+    }
+
+    fun applyEpgOverride(candidate: EpgOverrideCandidate) {
+        val channel = _overrideUiState.value.channel ?: return
+        viewModelScope.launch {
+            _overrideUiState.update { it.copy(isSaving = true, error = null) }
+            when (val result = epgSourceRepository.applyManualOverride(
+                providerId = channel.providerId,
+                channelId = channel.id,
+                epgSourceId = candidate.epgSourceId,
+                xmltvChannelId = candidate.xmltvChannelId
+            )) {
+                is com.streamvault.domain.model.Result.Error -> {
+                    _overrideUiState.update { it.copy(isSaving = false, error = result.message) }
+                }
+                else -> {
+                    dismissEpgOverride()
+                    refresh()
+                }
+            }
+        }
+    }
+
+    fun clearEpgOverride() {
+        val channel = _overrideUiState.value.channel ?: return
+        viewModelScope.launch {
+            _overrideUiState.update { it.copy(isSaving = true, error = null) }
+            when (val result = epgSourceRepository.clearManualOverride(channel.providerId, channel.id)) {
+                is com.streamvault.domain.model.Result.Error -> {
+                    _overrideUiState.update { it.copy(isSaving = false, error = result.message) }
+                }
+                else -> {
+                    dismissEpgOverride()
+                    refresh()
+                }
+            }
+        }
     }
 
     fun jumpToNow() {
@@ -488,6 +568,32 @@ class EpgViewModel @Inject constructor(
                         )
                     }
                 }
+            }
+        }
+    }
+
+    private fun loadEpgOverrideCandidates(channel: Channel, query: String, refreshMapping: Boolean) {
+        overrideSearchJob?.cancel()
+        overrideSearchJob = viewModelScope.launch {
+            val mapping = if (refreshMapping) {
+                epgSourceRepository.getChannelMapping(channel.providerId, channel.id)
+            } else {
+                _overrideUiState.value.currentMapping
+            }
+            val candidates = epgSourceRepository.getOverrideCandidates(
+                providerId = channel.providerId,
+                query = query
+            )
+            _overrideUiState.update {
+                it.copy(
+                    channel = channel,
+                    currentMapping = mapping,
+                    searchQuery = query,
+                    candidates = candidates,
+                    isLoading = false,
+                    isSaving = false,
+                    error = null
+                )
             }
         }
     }

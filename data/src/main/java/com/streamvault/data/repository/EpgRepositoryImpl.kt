@@ -17,6 +17,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -203,11 +204,13 @@ class EpgRepositoryImpl @Inject constructor(
                                 return super.read(b, off, len).also { if (it > 0) bytesRead += it }
                             }
                         }
-                        xmltvParser.parseStreaming(limitedStream) { program ->
-                            batch.add(program.copy(providerId = stagingProviderId).toEntity())
-                            if (batch.size >= 500) {
-                                programDao.insertAll(batch.toList())
-                                batch.clear()
+                        xmltvParser.maybeDecompressGzip(epgUrl, limitedStream).use { xmlInput ->
+                            xmltvParser.parseStreaming(xmlInput) { program ->
+                                batch.add(program.copy(providerId = stagingProviderId).toEntity())
+                                if (batch.size >= 500) {
+                                    programDao.insertAll(batch.toList())
+                                    batch.clear()
+                                }
                             }
                         }
                     }
@@ -241,6 +244,38 @@ class EpgRepositoryImpl @Inject constructor(
         endTime: Long
     ): Map<String, List<Program>> =
         epgSourceRepository.getResolvedProgramsForChannels(providerId, channelIds, startTime, endTime)
+
+    override suspend fun getResolvedProgramsForPlaybackChannel(
+        providerId: Long,
+        internalChannelId: Long,
+        epgChannelId: String?,
+        streamId: Long,
+        startTime: Long,
+        endTime: Long
+    ): List<Program> {
+        val normalizedChannelId = epgChannelId?.trim()?.takeIf { it.isNotEmpty() }
+        val lookupKey = normalizedChannelId ?: streamId.takeIf { it > 0L }?.toString()
+
+        if (internalChannelId > 0L && lookupKey != null) {
+            val resolvedPrograms = epgSourceRepository.getResolvedProgramsForChannels(
+                providerId = providerId,
+                channelIds = listOf(internalChannelId),
+                startTime = startTime,
+                endTime = endTime
+            )[lookupKey].orEmpty()
+            if (resolvedPrograms.isNotEmpty()) {
+                return resolvedPrograms.sortedBy { it.startTime }
+            }
+        }
+
+        if (normalizedChannelId != null) {
+            return getProgramsForChannel(providerId, normalizedChannelId, startTime, endTime)
+                .first()
+                .sortedBy { it.startTime }
+        }
+
+        return emptyList()
+    }
 
     private fun nowTicker(): Flow<Long> = flow {
         while (true) {

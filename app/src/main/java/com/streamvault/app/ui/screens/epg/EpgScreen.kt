@@ -105,6 +105,9 @@ import com.streamvault.app.ui.theme.TextPrimary
 import com.streamvault.app.ui.theme.TextSecondary
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
+import com.streamvault.domain.model.EpgMatchType
+import com.streamvault.domain.model.EpgOverrideCandidate
+import com.streamvault.domain.model.EpgSourceType
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.repository.ChannelRepository
 import java.text.SimpleDateFormat
@@ -137,6 +140,7 @@ fun FullEpgScreen(
     viewModel: EpgViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val overrideUiState by viewModel.overrideUiState.collectAsStateWithLifecycle()
     var selectedProgram by remember { mutableStateOf<Pair<Channel, Program>?>(null) }
     var focusedChannel by remember { mutableStateOf<Channel?>(null) }
     var focusedProgram by remember { mutableStateOf<Program?>(null) }
@@ -503,7 +507,25 @@ fun FullEpgScreen(
                 }
             } else {
                 null
+            },
+            onManageEpgMatch = if (channel.providerId > 0L) {
+                {
+                    selectedProgram = null
+                    viewModel.openEpgOverride(channel)
+                }
+            } else {
+                null
             }
+        )
+    }
+
+    if (overrideUiState.channel != null) {
+        EpgOverrideDialog(
+            state = overrideUiState,
+            onDismiss = viewModel::dismissEpgOverride,
+            onQueryChange = viewModel::updateEpgOverrideSearch,
+            onCandidateSelected = viewModel::applyEpgOverride,
+            onClearOverride = viewModel::clearEpgOverride
         )
     }
 }
@@ -1959,7 +1981,8 @@ private fun CompactGuideProgramDialog(
     now: Long,
     onDismiss: () -> Unit,
     onWatchLive: () -> Unit,
-    onWatchArchive: (() -> Unit)?
+    onWatchArchive: (() -> Unit)?,
+    onManageEpgMatch: (() -> Unit)?
 ) {
     var showDetails by rememberSaveable(program.startTime, program.endTime, program.title) { mutableStateOf(false) }
     val format = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
@@ -2034,6 +2057,18 @@ private fun CompactGuideProgramDialog(
                             Text(stringResource(R.string.epg_watch_archive))
                         }
                     }
+                    if (onManageEpgMatch != null) {
+                        TvButton(
+                            onClick = onManageEpgMatch,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.colors(
+                                containerColor = SurfaceHighlight,
+                                contentColor = OnSurface
+                            )
+                        ) {
+                            Text(stringResource(R.string.epg_override_manage))
+                        }
+                    }
                     TvButton(
                         onClick = { showDetails = !showDetails },
                         modifier = Modifier.fillMaxWidth(),
@@ -2046,6 +2081,195 @@ private fun CompactGuideProgramDialog(
                             if (showDetails) stringResource(R.string.epg_program_details_hide)
                             else stringResource(R.string.epg_program_details_show)
                         )
+                    }
+                    TextButton(onClick = onDismiss) {
+                        Text(stringResource(R.string.settings_cancel))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EpgOverrideDialog(
+    state: EpgOverrideUiState,
+    onDismiss: () -> Unit,
+    onQueryChange: (String) -> Unit,
+    onCandidateSelected: (EpgOverrideCandidate) -> Unit,
+    onClearOverride: () -> Unit
+) {
+    val channel = state.channel ?: return
+    val unknownValue = stringResource(R.string.epg_program_unknown_value)
+    val currentCandidate = remember(state.currentMapping, state.candidates) {
+        state.candidates.firstOrNull {
+            it.epgSourceId == state.currentMapping?.epgSourceId &&
+                it.xmltvChannelId == state.currentMapping?.xmltvChannelId
+        }
+    }
+    val currentDescriptor = currentCandidate?.let {
+        "${it.displayName}  •  ${it.epgSourceName}  •  ${it.xmltvChannelId}"
+    } ?: (state.currentMapping?.xmltvChannelId ?: unknownValue)
+    val currentSummary = when {
+        state.currentMapping == null || state.currentMapping.sourceType == EpgSourceType.NONE ->
+            stringResource(R.string.epg_override_current_none)
+        state.currentMapping.isManualOverride || state.currentMapping.matchType == EpgMatchType.MANUAL ->
+            stringResource(R.string.epg_override_current_manual, currentDescriptor)
+        state.currentMapping.sourceType == EpgSourceType.PROVIDER ->
+            stringResource(R.string.epg_override_current_provider, currentDescriptor)
+        else ->
+            stringResource(R.string.epg_override_current_external, currentDescriptor)
+    }
+
+    GuideModalDialog(onDismiss = onDismiss) {
+        Surface(
+            modifier = Modifier.widthIn(min = 560.dp, max = 760.dp),
+            colors = SurfaceDefaults.colors(containerColor = SurfaceElevated),
+            shape = RoundedCornerShape(20.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.epg_override_title),
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = OnSurface
+                )
+                Text(
+                    text = "${channel.number}. ${channel.name}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = OnSurfaceDim
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = stringResource(R.string.epg_override_current_label),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Primary
+                    )
+                    Text(
+                        text = currentSummary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = OnSurface
+                    )
+                }
+                if (!state.error.isNullOrBlank()) {
+                    Text(
+                        text = state.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                if (state.isLoading || state.isSaving) {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = Primary,
+                        trackColor = SurfaceHighlight
+                    )
+                }
+                GuideSearchField(
+                    value = state.searchQuery,
+                    onValueChange = onQueryChange,
+                    placeholder = stringResource(R.string.epg_override_search_placeholder),
+                    modifier = Modifier.fillMaxWidth(),
+                    onSearch = { onQueryChange(it) }
+                )
+                if (state.candidates.isEmpty()) {
+                    Text(
+                        text = if (state.searchQuery.isBlank()) {
+                            stringResource(R.string.epg_override_no_candidates)
+                        } else {
+                            stringResource(R.string.epg_override_no_search_results)
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = OnSurfaceDim
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        items(state.candidates) { candidate ->
+                            val isCurrent = state.currentMapping?.epgSourceId == candidate.epgSourceId &&
+                                state.currentMapping?.xmltvChannelId == candidate.xmltvChannelId
+                            TvClickableSurface(
+                                onClick = {
+                                    if (!state.isSaving) {
+                                        onCandidateSelected(candidate)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ClickableSurfaceDefaults.colors(
+                                    containerColor = if (isCurrent) SurfaceHighlight else SurfaceElevated,
+                                    focusedContainerColor = SurfaceHighlight,
+                                    contentColor = OnSurface,
+                                    focusedContentColor = OnSurface
+                                ),
+                                shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(14.dp)),
+                                border = ClickableSurfaceDefaults.border(
+                                    focusedBorder = Border(
+                                        border = BorderStroke(2.dp, FocusBorder),
+                                        shape = RoundedCornerShape(14.dp)
+                                    )
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = candidate.displayName,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = OnSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (isCurrent) {
+                                            Text(
+                                                text = stringResource(R.string.epg_override_selected_badge),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = Primary
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = "${candidate.epgSourceName}  •  ${candidate.xmltvChannelId}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = OnSurfaceDim,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (state.currentMapping?.isManualOverride == true) {
+                        TvButton(
+                            onClick = onClearOverride,
+                            enabled = !state.isSaving,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.colors(
+                                containerColor = SurfaceHighlight,
+                                contentColor = OnSurface
+                            )
+                        ) {
+                            Text(stringResource(R.string.epg_override_clear))
+                        }
                     }
                     TextButton(onClick = onDismiss) {
                         Text(stringResource(R.string.settings_cancel))

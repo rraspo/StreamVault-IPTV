@@ -721,16 +721,20 @@ class HomeViewModel @Inject constructor(
     private fun fetchEpgForChannels(providerId: Long, channels: List<Channel>) {
         epgJob?.cancel()
         val lookupKeys = channels.mapNotNull(Channel::guideLookupKey).distinct()
-        val xmltvKeys = channels.mapNotNull { it.epgChannelId?.trim()?.takeIf { value -> value.isNotEmpty() } }.distinct()
 
         epgJob = viewModelScope.launch {
-            val freshProgramMap = if (xmltvKeys.isNotEmpty()) {
-                epgRepository.getNowPlayingForChannelsSnapshot(providerId, xmltvKeys)
-                    .mapNotNull { (epgId, program) -> program?.let { epgId to it } }
-                    .toMap()
-            } else {
-                emptyMap()
-            }
+            val now = System.currentTimeMillis()
+            val freshProgramMap = epgRepository.getResolvedProgramsForChannels(
+                providerId = providerId,
+                channelIds = channels.map { it.id },
+                startTime = now - (60L * 60L * 1000L),
+                endTime = now + (2L * 60L * 60L * 1000L)
+            ).mapValues { (_, programs) ->
+                programs.firstOrNull { it.startTime <= now && it.endTime > now }
+                    ?: programs.firstOrNull()
+            }.mapNotNull { (lookupKey, program) ->
+                program?.let { lookupKey to it }
+            }.toMap()
             val fallbackProgramMap = fetchXtreamNowPlayingFallback(
                 providerId = providerId,
                 channels = channels,

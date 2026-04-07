@@ -1774,6 +1774,9 @@ interface ProviderEpgSourceDao {
     """)
     suspend fun getForProviderSync(providerId: Long): List<ProviderEpgSourceEntity>
 
+    @Query("SELECT DISTINCT provider_id FROM provider_epg_sources WHERE epg_source_id = :epgSourceId")
+    suspend fun getProviderIdsForSourceSync(epgSourceId: Long): List<Long>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(assignment: ProviderEpgSourceEntity): Long
 
@@ -1875,6 +1878,9 @@ abstract class ChannelEpgMappingDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     abstract suspend fun insertAll(mappings: List<ChannelEpgMappingEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract suspend fun upsert(mapping: ChannelEpgMappingEntity)
 
     @Query("DELETE FROM channel_epg_mappings WHERE provider_id = :providerId")
     abstract suspend fun deleteByProvider(providerId: Long)

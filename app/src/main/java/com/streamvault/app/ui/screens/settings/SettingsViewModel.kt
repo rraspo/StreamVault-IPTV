@@ -25,6 +25,7 @@ import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.RecordingItem
 import com.streamvault.domain.model.RecordingStorageState
+import com.streamvault.domain.model.EpgResolutionSummary
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.VodSyncMode
 import com.streamvault.domain.usecase.ExportBackup
@@ -924,8 +925,12 @@ class SettingsViewModel @Inject constructor(
     fun loadEpgAssignments(providerId: Long) {
         viewModelScope.launch {
             epgSourceRepository.getAssignmentsForProvider(providerId).collect { assignments ->
+                val summary = epgSourceRepository.getResolutionSummary(providerId)
                 _uiState.update {
-                    it.copy(epgSourceAssignments = it.epgSourceAssignments + (providerId to assignments))
+                    it.copy(
+                        epgSourceAssignments = it.epgSourceAssignments + (providerId to assignments),
+                        epgResolutionSummaries = it.epgResolutionSummaries + (providerId to summary)
+                    )
                 }
             }
         }
@@ -942,20 +947,28 @@ class SettingsViewModel @Inject constructor(
 
     fun deleteEpgSource(sourceId: Long) {
         viewModelScope.launch {
+            val affectedProviders = loadedProvidersForSource(sourceId)
             epgSourceRepository.deleteSource(sourceId)
+            refreshLoadedResolutionSummaries(affectedProviders)
         }
     }
 
     fun toggleEpgSourceEnabled(sourceId: Long, enabled: Boolean) {
         viewModelScope.launch {
+            val affectedProviders = loadedProvidersForSource(sourceId)
             epgSourceRepository.setSourceEnabled(sourceId, enabled)
+            refreshLoadedResolutionSummaries(affectedProviders)
         }
     }
 
     fun refreshEpgSource(sourceId: Long) {
         viewModelScope.launch {
             _uiState.update { it.copy(isSyncing = true) }
+            val affectedProviders = loadedProvidersForSource(sourceId)
             val result = epgSourceRepository.refreshSource(sourceId)
+            if (result !is Result.Error) {
+                refreshLoadedResolutionSummaries(affectedProviders)
+            }
             _uiState.update {
                 it.copy(
                     isSyncing = false,
@@ -972,6 +985,8 @@ class SettingsViewModel @Inject constructor(
             val result = epgSourceRepository.assignSourceToProvider(providerId, epgSourceId, nextPriority)
             if (result is Result.Error) {
                 _uiState.update { it.copy(userMessage = result.message) }
+            } else {
+                refreshProviderEpgSummary(providerId)
             }
         }
     }
@@ -979,7 +994,58 @@ class SettingsViewModel @Inject constructor(
     fun unassignEpgSourceFromProvider(providerId: Long, epgSourceId: Long) {
         viewModelScope.launch {
             epgSourceRepository.unassignSourceFromProvider(providerId, epgSourceId)
+            refreshProviderEpgSummary(providerId)
         }
+    }
+
+    fun moveEpgSourceAssignmentUp(providerId: Long, epgSourceId: Long) {
+        viewModelScope.launch {
+            val assignments = _uiState.value.epgSourceAssignments[providerId].orEmpty()
+                .sortedBy { it.priority }
+            val index = assignments.indexOfFirst { it.epgSourceId == epgSourceId }
+            if (index <= 0) return@launch
+            val current = assignments[index]
+            val previous = assignments[index - 1]
+            epgSourceRepository.updateAssignmentPriority(providerId, current.epgSourceId, previous.priority)
+            epgSourceRepository.updateAssignmentPriority(providerId, previous.epgSourceId, current.priority)
+            refreshProviderEpgSummary(providerId)
+        }
+    }
+
+    fun moveEpgSourceAssignmentDown(providerId: Long, epgSourceId: Long) {
+        viewModelScope.launch {
+            val assignments = _uiState.value.epgSourceAssignments[providerId].orEmpty()
+                .sortedBy { it.priority }
+            val index = assignments.indexOfFirst { it.epgSourceId == epgSourceId }
+            if (index == -1 || index >= assignments.lastIndex) return@launch
+            val current = assignments[index]
+            val next = assignments[index + 1]
+            epgSourceRepository.updateAssignmentPriority(providerId, current.epgSourceId, next.priority)
+            epgSourceRepository.updateAssignmentPriority(providerId, next.epgSourceId, current.priority)
+            refreshProviderEpgSummary(providerId)
+        }
+    }
+
+    private suspend fun refreshProviderEpgSummary(providerId: Long) {
+        val summary = epgSourceRepository.getResolutionSummary(providerId)
+        _uiState.update {
+            it.copy(epgResolutionSummaries = it.epgResolutionSummaries + (providerId to summary))
+        }
+    }
+
+    private fun loadedProvidersForSource(sourceId: Long): List<Long> =
+        _uiState.value.epgSourceAssignments
+            .filterValues { assignments -> assignments.any { it.epgSourceId == sourceId } }
+            .keys
+            .toList()
+
+    private suspend fun refreshLoadedResolutionSummaries(providerIds: Iterable<Long>) {
+        providerIds
+            .asSequence()
+            .distinct()
+            .forEach { providerId ->
+                refreshProviderEpgSummary(providerId)
+            }
     }
 
     private fun buildCapabilitySummary(provider: Provider): String {
@@ -1060,7 +1126,8 @@ data class SettingsUiState(
     val categorySortModes: Map<ContentType, CategorySortMode> = emptyMap(),
     val hiddenCategories: List<Category> = emptyList(),
     val epgSources: List<com.streamvault.domain.model.EpgSource> = emptyList(),
-    val epgSourceAssignments: Map<Long, List<com.streamvault.domain.model.ProviderEpgSourceAssignment>> = emptyMap()
+    val epgSourceAssignments: Map<Long, List<com.streamvault.domain.model.ProviderEpgSourceAssignment>> = emptyMap(),
+    val epgResolutionSummaries: Map<Long, EpgResolutionSummary> = emptyMap()
 )
 
 private fun ProviderSyncSelection.label(application: Application): String = when (this) {

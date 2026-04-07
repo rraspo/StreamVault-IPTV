@@ -144,6 +144,7 @@ class PlayerViewModel @Inject constructor(
         private const val MUTE_TOGGLE_DEBOUNCE_MS = 250L
         private const val MAX_PROGRAM_HISTORY_ITEMS = 18
         private const val MAX_UPCOMING_PROGRAM_ITEMS = 24
+        private const val PLAYER_EPG_REFRESH_INTERVAL_MS = 30_000L
     }
 
     private val _showControls = MutableStateFlow(false)
@@ -235,7 +236,6 @@ class PlayerViewModel @Inject constructor(
     private var channelInfoHideJob: Job? = null
     private var liveOverlayHideJob: Job? = null
     private var diagnosticsHideJob: Job? = null
-    private var remoteEpgFallbackJob: Job? = null
     private var numericInputCommitJob: Job? = null
     private var numericInputFeedbackJob: Job? = null
     private var playerNoticeHideJob: Job? = null
@@ -256,6 +256,7 @@ class PlayerViewModel @Inject constructor(
 
     private data class EpgRequestKey(
         val providerId: Long,
+        val internalChannelId: Long,
         val epgChannelId: String?,
         val streamId: Long
     )
@@ -803,16 +804,22 @@ class PlayerViewModel @Inject constructor(
         return activeUrl.isBlank() || activeUrl == expectedUrl || currentStreamUrl == expectedUrl
     }
 
-    private fun requestEpg(providerId: Long, epgChannelId: String?, streamId: Long = 0L) {
+    private fun requestEpg(
+        providerId: Long,
+        epgChannelId: String?,
+        streamId: Long = 0L,
+        internalChannelId: Long = 0L
+    ) {
         val normalizedChannelId = epgChannelId?.trim()?.takeIf { it.isNotEmpty() }
-        if (providerId <= 0L || (normalizedChannelId == null && streamId <= 0L)) {
+        if (providerId <= 0L || (internalChannelId <= 0L && normalizedChannelId == null && streamId <= 0L)) {
             activeEpgRequestKey = null
-            fetchEpg(providerId = -1L, epgChannelId = null)
+            fetchEpg(providerId = -1L, internalChannelId = 0L, epgChannelId = null)
             return
         }
 
         val key = EpgRequestKey(
             providerId = providerId,
+            internalChannelId = internalChannelId,
             epgChannelId = normalizedChannelId,
             streamId = streamId.takeIf { it > 0L } ?: 0L
         )
@@ -820,6 +827,7 @@ class PlayerViewModel @Inject constructor(
         activeEpgRequestKey = key
         fetchEpg(
             providerId = key.providerId,
+            internalChannelId = key.internalChannelId,
             epgChannelId = key.epgChannelId,
             streamId = key.streamId
         )
@@ -1039,7 +1047,11 @@ class PlayerViewModel @Inject constructor(
 
         // Fetch EPG if ID provided
         if (currentContentType == ContentType.LIVE) {
-            requestEpg(currentProviderId, epgChannelId)
+            requestEpg(
+                providerId = currentProviderId,
+                epgChannelId = epgChannelId,
+                internalChannelId = internalChannelId
+            )
         } else {
             requestEpg(providerId = -1L, epgChannelId = null)
         }
@@ -1080,7 +1092,12 @@ class PlayerViewModel @Inject constructor(
                     )
                     if (currentContentType == ContentType.LIVE) {
                         recordLivePlayback(channel)
-                        requestEpg(currentProviderId, channel.epgChannelId, channel.streamId)
+                        requestEpg(
+                            providerId = currentProviderId,
+                            epgChannelId = channel.epgChannelId,
+                            streamId = channel.streamId,
+                            internalChannelId = channel.id
+                        )
                     }
                     updateChannelDiagnostics(channel)
                 }
@@ -1196,87 +1213,93 @@ class PlayerViewModel @Inject constructor(
         )
     }
 
-    private fun fetchEpg(providerId: Long, epgChannelId: String?, streamId: Long = 0L) {
+    private fun fetchEpg(
+        providerId: Long,
+        internalChannelId: Long,
+        epgChannelId: String?,
+        streamId: Long = 0L
+    ) {
         epgJob?.cancel()
-        remoteEpgFallbackJob?.cancel()
-        if (providerId > 0 && (epgChannelId != null || streamId > 0L)) {
-            epgJob = viewModelScope.launch {
-                if (epgChannelId != null) {
-                    launch {
-                        epgRepository.getNowAndNext(providerId, epgChannelId).collect { (now, next) ->
-                            _currentProgram.value = now
-                            _nextProgram.value = next
-                        }
-                    }
-                    launch {
-                        // Fetch last 24 hours.
-                        val now = System.currentTimeMillis()
-                        val start = now - (24 * 60 * 60 * 1000L)
-                        epgRepository.getProgramsForChannel(providerId, epgChannelId, start, now).collect { programs ->
-                            val catchUpSupported = _currentChannel.value?.catchUpSupported == true
-                            _programHistory.value = programs
-                                .filter { it.hasArchive || catchUpSupported }
-                                .sortedByDescending { it.startTime }
-                                .take(MAX_PROGRAM_HISTORY_ITEMS)
-                        }
-                    }
-                    launch {
-                        // Fetch next 6 hours.
-                        val now = System.currentTimeMillis()
-                        val end = now + (6 * 60 * 60 * 1000L)
-                        epgRepository.getProgramsForChannel(providerId, epgChannelId, now, end).collect { programs ->
-                            _upcomingPrograms.value = programs
-                                .sortedBy { it.startTime }
-                                .take(MAX_UPCOMING_PROGRAM_ITEMS)
-                        }
-                    }
-                }
-            }
-            if (streamId > 0L) {
-                remoteEpgFallbackJob = viewModelScope.launch {
-                    delay(250)
-                    if (
-                        _currentProgram.value != null ||
-                        _nextProgram.value != null ||
-                        _programHistory.value.isNotEmpty() ||
-                        _upcomingPrograms.value.isNotEmpty()
-                    ) {
-                        return@launch
-                    }
-
-                    val result = providerRepository.getProgramsForLiveStream(
-                        providerId = providerId,
-                        streamId = streamId,
-                        epgChannelId = epgChannelId,
-                        limit = 12
-                    )
-                    val programs = (result as? com.streamvault.domain.model.Result.Success)?.data
-                        ?.sortedBy { it.startTime }
-                        .orEmpty()
-                    if (programs.isEmpty()) {
-                        return@launch
-                    }
-
-                    val now = System.currentTimeMillis()
-                    val catchUpSupported = _currentChannel.value?.catchUpSupported == true
-                    _currentProgram.value = programs.firstOrNull { it.startTime <= now && it.endTime > now }
-                    _nextProgram.value = programs.firstOrNull { it.startTime > now }
-                    _programHistory.value = programs
-                        .filter { it.endTime <= now && (it.hasArchive || catchUpSupported) }
-                        .sortedByDescending { it.startTime }
-                        .take(MAX_PROGRAM_HISTORY_ITEMS)
-                    _upcomingPrograms.value = programs
-                        .filter { it.endTime > now || it == _currentProgram.value }
-                        .sortedBy { it.startTime }
-                        .take(MAX_UPCOMING_PROGRAM_ITEMS)
-                }
-            }
-        } else {
-            _currentProgram.value = null
-            _nextProgram.value = null
-            _programHistory.value = emptyList()
-            _upcomingPrograms.value = emptyList()
+        if (providerId <= 0L || (internalChannelId <= 0L && epgChannelId == null && streamId <= 0L)) {
+            clearEpgState()
+            return
         }
+
+        epgJob = viewModelScope.launch {
+            while (true) {
+                val now = System.currentTimeMillis()
+                val start = now - (24 * 60 * 60 * 1000L)
+                val end = now + (6 * 60 * 60 * 1000L)
+                val programs = epgRepository.getResolvedProgramsForPlaybackChannel(
+                    providerId = providerId,
+                    internalChannelId = internalChannelId,
+                    epgChannelId = epgChannelId,
+                    streamId = streamId,
+                    startTime = start,
+                    endTime = end
+                )
+
+                if (programs.isNotEmpty()) {
+                    applyProgramTimeline(programs, now)
+                } else {
+                    applyRemoteProgramFallback(providerId, epgChannelId, streamId, now)
+                }
+
+                delay(PLAYER_EPG_REFRESH_INTERVAL_MS)
+            }
+        }
+    }
+
+    private fun applyProgramTimeline(programs: List<Program>, now: Long) {
+        val catchUpSupported = _currentChannel.value?.catchUpSupported == true
+        val sortedPrograms = programs.sortedBy { it.startTime }
+        val current = sortedPrograms.firstOrNull { it.startTime <= now && it.endTime > now }
+        _currentProgram.value = current
+        _nextProgram.value = sortedPrograms.firstOrNull { it.startTime > now }
+        _programHistory.value = sortedPrograms
+            .filter { it.endTime <= now && (it.hasArchive || catchUpSupported) }
+            .sortedByDescending { it.startTime }
+            .take(MAX_PROGRAM_HISTORY_ITEMS)
+        _upcomingPrograms.value = sortedPrograms
+            .filter { it.endTime > now || it == current }
+            .sortedBy { it.startTime }
+            .take(MAX_UPCOMING_PROGRAM_ITEMS)
+    }
+
+    private suspend fun applyRemoteProgramFallback(
+        providerId: Long,
+        epgChannelId: String?,
+        streamId: Long,
+        now: Long
+    ) {
+        if (streamId <= 0L) {
+            clearEpgState()
+            return
+        }
+
+        val result = providerRepository.getProgramsForLiveStream(
+            providerId = providerId,
+            streamId = streamId,
+            epgChannelId = epgChannelId,
+            limit = 12
+        )
+        val programs = (result as? com.streamvault.domain.model.Result.Success)?.data
+            ?.sortedBy { it.startTime }
+            .orEmpty()
+
+        if (programs.isEmpty()) {
+            clearEpgState()
+            return
+        }
+
+        applyProgramTimeline(programs, now)
+    }
+
+    private fun clearEpgState() {
+        _currentProgram.value = null
+        _nextProgram.value = null
+        _programHistory.value = emptyList()
+        _upcomingPrograms.value = emptyList()
     }
 
     private fun loadPlaylist(categoryId: Long, providerId: Long, isVirtual: Boolean, initialChannelId: Long) {
@@ -1626,7 +1649,12 @@ class PlayerViewModel @Inject constructor(
         // Pre-warm the next channel in sequence so the subsequent zap is near-instant
         preloadAdjacentChannel(index)
         
-        requestEpg(currentProviderId, channel.epgChannelId, channel.streamId)
+        requestEpg(
+            providerId = currentProviderId,
+            epgChannelId = channel.epgChannelId,
+            streamId = channel.streamId,
+            internalChannelId = channel.id
+        )
         
         // Show bottom live info overlay
         _showZapOverlay.value = false
@@ -2495,7 +2523,6 @@ class PlayerViewModel @Inject constructor(
         numericInputFeedbackJob?.cancel()
         playerNoticeHideJob?.cancel()
         epgJob?.cancel()
-        remoteEpgFallbackJob?.cancel()
         playlistJob?.cancel()
         controlsHideJob?.cancel()
         zapOverlayJob?.cancel()

@@ -20,6 +20,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Protocol
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
@@ -30,7 +31,9 @@ import org.mockito.kotlin.times
 import com.streamvault.domain.repository.EpgSourceRepository
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.zip.GZIPOutputStream
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class EpgRepositoryImplTest {
@@ -40,6 +43,13 @@ class EpgRepositoryImplTest {
     private val epgSourceRepository: EpgSourceRepository = mock()
     private val transactionRunner = object : DatabaseTransactionRunner {
         override suspend fun <T> inTransaction(block: suspend () -> T): T = block()
+    }
+
+    @Before
+    fun setUp() {
+        whenever(xmltvParser.maybeDecompressGzip(any(), any())).thenAnswer { invocation ->
+            invocation.getArgument(1)
+        }
     }
 
     @Test
@@ -78,6 +88,92 @@ class EpgRepositoryImplTest {
         val result = repository.searchPrograms(7L, "sports", 0L, 100L).first()
 
         assertThat(result.map { it.title }).containsExactly("Sports", "Late Sports Replay").inOrder()
+    }
+
+    @Test
+    fun `getResolvedProgramsForPlaybackChannel_prefersResolvedPrograms`() = runTest {
+        val resolvedPrograms = listOf(
+            Program(
+                id = 1L,
+                providerId = 7L,
+                channelId = "bbc1.uk",
+                title = "Resolved News",
+                startTime = 100L,
+                endTime = 200L
+            )
+        )
+        whenever(
+            epgSourceRepository.getResolvedProgramsForChannels(
+                providerId = 7L,
+                channelIds = listOf(101L),
+                startTime = 0L,
+                endTime = 500L
+            )
+        ).thenReturn(mapOf("bbc1.uk" to resolvedPrograms))
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = xmltvParser,
+            okHttpClient = okHttpClientReturningXml(),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.getResolvedProgramsForPlaybackChannel(
+            providerId = 7L,
+            internalChannelId = 101L,
+            epgChannelId = "bbc1.uk",
+            streamId = 0L,
+            startTime = 0L,
+            endTime = 500L
+        )
+
+        assertThat(result.map { it.title }).containsExactly("Resolved News")
+    }
+
+    @Test
+    fun `getResolvedProgramsForPlaybackChannel_fallsBackToProviderPrograms`() = runTest {
+        whenever(
+            epgSourceRepository.getResolvedProgramsForChannels(
+                providerId = 7L,
+                channelIds = listOf(101L),
+                startTime = 0L,
+                endTime = 500L
+            )
+        ).thenReturn(emptyMap())
+        whenever(programDao.getForChannel(7L, "bbc1.uk", 0L, 500L)).thenReturn(
+            flowOf(
+                listOf(
+                    ProgramBrowseEntity(
+                        id = 2L,
+                        providerId = 7L,
+                        channelId = "bbc1.uk",
+                        title = "Provider News",
+                        startTime = 150L,
+                        endTime = 250L
+                    )
+                )
+            )
+        )
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = xmltvParser,
+            okHttpClient = okHttpClientReturningXml(),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.getResolvedProgramsForPlaybackChannel(
+            providerId = 7L,
+            internalChannelId = 101L,
+            epgChannelId = "bbc1.uk",
+            streamId = 0L,
+            startTime = 0L,
+            endTime = 500L
+        )
+
+        assertThat(result.map { it.title }).containsExactly("Provider News")
     }
 
     @Test
@@ -149,7 +245,42 @@ class EpgRepositoryImplTest {
         verify(programDao, times(2)).moveToProvider(-7L, 7L)
     }
 
+    @Test
+    fun `refreshEpg decompresses gzip xmltv responses`() = runTest {
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            xmltvParser = XmltvParser(),
+            okHttpClient = okHttpClientReturningBody(
+                gzip(
+                    """
+                    <tv>
+                      <programme channel="bbc1.uk" start="20260101000000 +0000" stop="20260101010000 +0000">
+                        <title>Morning News</title>
+                      </programme>
+                    </tv>
+                    """.trimIndent().toByteArray(Charsets.UTF_8)
+                ),
+                contentType = "application/gzip"
+            ),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml.gz")
+
+        assertThat(result.isSuccess).isTrue()
+        val insertedPrograms = argumentCaptor<List<ProgramEntity>>()
+        verify(programDao, atLeastOnce()).insertAll(insertedPrograms.capture())
+        assertThat(insertedPrograms.allValues.flatten().map { it.title }).contains("Morning News")
+    }
+
     private fun okHttpClientReturningXml(): OkHttpClient =
+        okHttpClientReturningBody("<tv></tv>".toByteArray(Charsets.UTF_8))
+
+    private fun okHttpClientReturningBody(
+        body: ByteArray,
+        contentType: String = "application/xml"
+    ): OkHttpClient =
         OkHttpClient.Builder()
             .addInterceptor { chain ->
                 Response.Builder()
@@ -157,8 +288,14 @@ class EpgRepositoryImplTest {
                     .protocol(Protocol.HTTP_1_1)
                     .code(200)
                     .message("OK")
-                    .body("<tv></tv>".toResponseBody("application/xml".toMediaType()))
+                    .body(body.toResponseBody(contentType.toMediaType()))
                     .build()
             }
             .build()
+
+    private fun gzip(bytes: ByteArray): ByteArray {
+        val output = ByteArrayOutputStream()
+        GZIPOutputStream(output).use { it.write(bytes) }
+        return output.toByteArray()
+    }
 }

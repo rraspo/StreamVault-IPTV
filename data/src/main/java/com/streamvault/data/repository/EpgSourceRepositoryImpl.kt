@@ -5,17 +5,23 @@ import android.net.Uri
 import android.util.Log
 import com.streamvault.data.epg.EpgNameNormalizer
 import com.streamvault.data.epg.EpgResolutionEngine
+import com.streamvault.data.local.dao.ChannelEpgMappingDao
 import com.streamvault.data.local.dao.EpgChannelDao
 import com.streamvault.data.local.dao.EpgProgrammeDao
 import com.streamvault.data.local.dao.EpgSourceDao
 import com.streamvault.data.local.dao.ProviderEpgSourceDao
+import com.streamvault.data.local.entity.ChannelEpgMappingEntity
 import com.streamvault.data.local.entity.EpgChannelEntity
 import com.streamvault.data.local.entity.EpgProgrammeEntity
 import com.streamvault.data.local.entity.EpgSourceEntity
 import com.streamvault.data.local.entity.ProviderEpgSourceEntity
 import com.streamvault.data.mapper.toDomain
+import com.streamvault.domain.model.EpgMatchType
+import com.streamvault.domain.model.EpgOverrideCandidate
+import com.streamvault.domain.model.EpgSourceType
 import com.streamvault.data.parser.XmltvParser
 import com.streamvault.data.util.UrlSecurityPolicy
+import com.streamvault.domain.model.ChannelEpgMapping
 import com.streamvault.domain.model.EpgResolutionSummary
 import com.streamvault.domain.model.EpgSource
 import com.streamvault.domain.model.Program
@@ -42,6 +48,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val epgSourceDao: EpgSourceDao,
     private val providerEpgSourceDao: ProviderEpgSourceDao,
+    private val channelEpgMappingDao: ChannelEpgMappingDao,
     private val epgChannelDao: EpgChannelDao,
     private val epgProgrammeDao: EpgProgrammeDao,
     private val xmltvParser: XmltvParser,
@@ -106,14 +113,17 @@ class EpgSourceRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteSource(id: Long) {
+        val affectedProviderIds = providerEpgSourceDao.getProviderIdsForSourceSync(id)
         // Cascade: delete channels + programmes for this source, then the source itself
         epgProgrammeDao.deleteBySource(id)
         epgChannelDao.deleteBySource(id)
         epgSourceDao.delete(id)
+        resolveAffectedProviders(affectedProviderIds)
     }
 
     override suspend fun setSourceEnabled(id: Long, enabled: Boolean) {
         epgSourceDao.setEnabled(id, enabled)
+        resolveAffectedProviders(providerEpgSourceDao.getProviderIdsForSourceSync(id))
     }
 
     // ── Provider ↔ Source assignment ───────────────────────────────
@@ -135,22 +145,31 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 priority = priority
             )
         )
+        resolveForProvider(providerId)
         return Result.success(Unit)
     }
 
     override suspend fun unassignSourceFromProvider(providerId: Long, epgSourceId: Long) {
         providerEpgSourceDao.delete(providerId, epgSourceId)
+        resolveForProvider(providerId)
     }
 
     override suspend fun updateAssignmentPriority(providerId: Long, epgSourceId: Long, priority: Int) {
         val assignments = providerEpgSourceDao.getForProviderSync(providerId)
         val target = assignments.find { it.epgSourceId == epgSourceId } ?: return
         providerEpgSourceDao.update(target.copy(priority = priority))
+        resolveForProvider(providerId)
     }
 
     // ── Refresh / Ingestion ────────────────────────────────────────
 
-    override suspend fun refreshSource(sourceId: Long): Result<Unit> = withContext(Dispatchers.IO) {
+    override suspend fun refreshSource(sourceId: Long): Result<Unit> =
+        refreshSourceInternal(sourceId, resolveAffectedProviders = true)
+
+    private suspend fun refreshSourceInternal(
+        sourceId: Long,
+        resolveAffectedProviders: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         val mutex = sourceRefreshMutexes.computeIfAbsent(sourceId) { Mutex() }
         mutex.withLock {
             val source = epgSourceDao.getById(sourceId)
@@ -268,6 +287,9 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 }
 
                 epgSourceDao.updateRefreshSuccess(sourceId, System.currentTimeMillis())
+                if (resolveAffectedProviders) {
+                    resolveAffectedProviders(providerEpgSourceDao.getProviderIdsForSourceSync(sourceId))
+                }
                 Log.d(TAG, "Refreshed source $sourceId: $channelCount channels, $programmeCount programmes")
                 Result.success(Unit)
             } catch (e: Exception) {
@@ -282,7 +304,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
         val assignments = providerEpgSourceDao.getEnabledForProviderSync(providerId)
         val errors = mutableListOf<String>()
         for (assignment in assignments) {
-            val result = refreshSource(assignment.epgSourceId)
+            val result = refreshSourceInternal(assignment.epgSourceId, resolveAffectedProviders = false)
             if (result is Result.Error) {
                 errors.add("Source ${assignment.epgSourceId}: ${result.message}")
             }
@@ -302,6 +324,89 @@ class EpgSourceRepositoryImpl @Inject constructor(
     override suspend fun getResolutionSummary(providerId: Long): EpgResolutionSummary =
         resolutionEngine.getResolutionSummary(providerId)
 
+    override suspend fun getChannelMapping(providerId: Long, channelId: Long): ChannelEpgMapping? =
+        channelEpgMappingDao.getForChannel(providerId, channelId)?.toDomain()
+
+    override suspend fun getOverrideCandidates(
+        providerId: Long,
+        query: String,
+        limit: Int
+    ): List<EpgOverrideCandidate> {
+        val assignments = providerEpgSourceDao.getEnabledForProviderSync(providerId)
+        if (assignments.isEmpty()) return emptyList()
+
+        val sourceNamesById = epgSourceDao.getAllSync().associate { it.id to it.name }
+        val normalizedQuery = EpgNameNormalizer.normalize(query)
+        val trimmedQuery = query.trim()
+
+        return assignments.flatMap { assignment ->
+            val sourceName = sourceNamesById[assignment.epgSourceId].orEmpty()
+            epgChannelDao.getBySource(assignment.epgSourceId)
+                .asSequence()
+                .filter { candidate ->
+                    if (trimmedQuery.isBlank()) {
+                        true
+                    } else {
+                        candidate.xmltvChannelId.contains(trimmedQuery, ignoreCase = true) ||
+                            candidate.displayName.contains(trimmedQuery, ignoreCase = true) ||
+                            candidate.normalizedName.contains(normalizedQuery, ignoreCase = true)
+                    }
+                }
+                .map { candidate ->
+                    EpgOverrideCandidate(
+                        epgSourceId = assignment.epgSourceId,
+                        epgSourceName = sourceName,
+                        xmltvChannelId = candidate.xmltvChannelId,
+                        displayName = candidate.displayName,
+                        iconUrl = candidate.iconUrl
+                    )
+                }
+                .toList()
+        }.sortedWith(compareBy<EpgOverrideCandidate>({ it.epgSourceName.lowercase() }, { it.displayName.lowercase() }, { it.xmltvChannelId.lowercase() }))
+            .take(limit)
+    }
+
+    override suspend fun applyManualOverride(
+        providerId: Long,
+        channelId: Long,
+        epgSourceId: Long,
+        xmltvChannelId: String
+    ): Result<Unit> {
+        val assignment = providerEpgSourceDao.getEnabledForProviderSync(providerId)
+            .firstOrNull { it.epgSourceId == epgSourceId }
+            ?: return Result.error("Assign and enable this EPG source before using it as an override")
+
+        val candidate = epgChannelDao.getBySourceAndChannelId(assignment.epgSourceId, xmltvChannelId)
+            ?: return Result.error("Selected XMLTV channel was not found in the assigned source")
+
+        val existing = channelEpgMappingDao.getForChannel(providerId, channelId)
+        channelEpgMappingDao.upsert(
+            ChannelEpgMappingEntity(
+                id = existing?.id ?: 0,
+                providerChannelId = channelId,
+                providerId = providerId,
+                sourceType = EpgSourceType.EXTERNAL.name,
+                epgSourceId = assignment.epgSourceId,
+                xmltvChannelId = candidate.xmltvChannelId,
+                matchType = EpgMatchType.MANUAL.name,
+                confidence = 1.0f,
+                isManualOverride = true,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+        return Result.success(Unit)
+    }
+
+    override suspend fun clearManualOverride(providerId: Long, channelId: Long): Result<Unit> {
+        val existing = channelEpgMappingDao.getForChannel(providerId, channelId)
+            ?: return Result.success(Unit)
+        if (!existing.isManualOverride) {
+            return Result.success(Unit)
+        }
+        resolveForProvider(providerId)
+        return Result.success(Unit)
+    }
+
     // ── Resolved query ─────────────────────────────────────────────
 
     override suspend fun getResolvedProgramsForChannels(
@@ -311,4 +416,14 @@ class EpgSourceRepositoryImpl @Inject constructor(
         endTime: Long
     ): Map<String, List<Program>> =
         resolutionEngine.getResolvedProgrammes(providerId, channelIds, startTime, endTime)
+
+    private suspend fun resolveAffectedProviders(providerIds: Iterable<Long>) {
+        providerIds
+            .asSequence()
+            .filter { it > 0L }
+            .distinct()
+            .forEach { providerId ->
+                resolveForProvider(providerId)
+            }
+    }
 }

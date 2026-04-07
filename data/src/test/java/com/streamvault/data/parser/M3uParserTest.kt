@@ -123,6 +123,20 @@ class M3uParserTest {
     }
 
     @Test
+    fun `parse_headerUrlTvg_extractsGuideUrl`() {
+        val result = parser.parse(
+            """
+            #EXTM3U url-tvg="https://epg.example.com/guide.xml.gz"
+            #EXTINF:-1 tvg-id="cnn" group-title="News",CNN
+            http://stream.example.com/cnn.m3u8
+            """.trimIndent().byteInputStream()
+        )
+
+        assertThat(result.header.tvgUrl).isEqualTo("https://epg.example.com/guide.xml.gz")
+        assertThat(result.entries.single().tvgId).isEqualTo("cnn")
+    }
+
+    @Test
     fun `parse_catchUpAttributes_extracted`() {
         val m3u = """
             #EXTM3U

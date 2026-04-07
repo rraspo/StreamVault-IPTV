@@ -85,6 +85,14 @@ data class ChannelEpgMapping(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+data class EpgOverrideCandidate(
+    val epgSourceId: Long,
+    val epgSourceName: String,
+    val xmltvChannelId: String,
+    val displayName: String,
+    val iconUrl: String? = null
+)
+
 /**
  * Summary statistics from an EPG resolution pass.
  */
