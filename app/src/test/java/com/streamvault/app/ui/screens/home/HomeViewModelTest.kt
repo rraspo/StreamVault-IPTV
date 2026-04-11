@@ -1,6 +1,7 @@
 package com.streamvault.app.ui.screens.home
 
 import android.app.Application
+import androidx.lifecycle.ViewModel
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.screens.multiview.MultiViewManager
 import com.streamvault.data.preferences.PreferencesRepository
@@ -53,6 +54,7 @@ class HomeViewModelTest {
     private val playerEngine: PlayerEngine = mock()
     private val playerEngineProvider: InjectProvider<PlayerEngine> = mock()
     private val application: Application = mock()
+    private val createdViewModels = mutableListOf<HomeViewModel>()
 
     private lateinit var viewModel: HomeViewModel
 
@@ -61,6 +63,7 @@ class HomeViewModelTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+        whenever(application.getString(any())).thenReturn("test-message")
 
         // Mock default flows to prevent exceptions during init
         whenever(providerRepository.getProviders()).thenReturn(flowOf(emptyList()))
@@ -87,6 +90,7 @@ class HomeViewModelTest {
         whenever(syncManager.syncStateForProvider(any())).thenReturn(flowOf(SyncState.Idle))
         runBlocking {
             whenever(epgRepository.getResolvedProgramsForChannels(any(), any(), any(), any())).thenReturn(emptyMap())
+            whenever(preferencesRepository.setLastActiveProviderId(any())).thenReturn(Unit)
         }
         whenever(playerEngineProvider.get()).thenReturn(playerEngine)
 
@@ -95,6 +99,8 @@ class HomeViewModelTest {
 
     @After
     fun tearDown() {
+        createdViewModels.asReversed().forEach(::clearViewModel)
+        createdViewModels.clear()
         testDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
     }
@@ -117,7 +123,15 @@ class HomeViewModelTest {
             tvInputChannelSyncManager = tvInputChannelSyncManager,
             multiViewManager = multiViewManager,
             playerEngineProvider = playerEngineProvider
-        )
+        ).also(createdViewModels::add)
+
+    private fun clearViewModel(viewModel: HomeViewModel) {
+        val clearMethod = ViewModel::class.java.declaredMethods.firstOrNull {
+            it.parameterCount == 0 && it.name.startsWith("clear")
+        } ?: error("Unable to find ViewModel clear method")
+        clearMethod.isAccessible = true
+        clearMethod.invoke(viewModel)
+    }
 
     @Test
     fun `when switchProvider is called, it delegates to repository`() = runTest {

@@ -1,6 +1,7 @@
 package com.streamvault.app.ui.screens.epg
 
 import com.google.common.truth.Truth.assertThat
+import androidx.lifecycle.ViewModel
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.manager.ParentalControlManager
 import com.streamvault.domain.model.Category
@@ -49,6 +50,7 @@ class EpgViewModelTest {
     private val preferencesRepository: PreferencesRepository = mock()
     private val parentalControlManager: ParentalControlManager = mock()
     private val getCustomCategories by lazy { GetCustomCategories(favoriteRepository) }
+    private val createdViewModels = mutableListOf<EpgViewModel>()
 
     private val testDispatcher = StandardTestDispatcher()
 
@@ -65,21 +67,42 @@ class EpgViewModelTest {
 
     @After
     fun tearDown() {
+        createdViewModels.asReversed().forEach(::clearViewModel)
+        createdViewModels.clear()
         testDispatcher.scheduler.advanceUntilIdle()
         Dispatchers.resetMain()
     }
 
-    private fun waitForUiState(timeoutMs: Long = 5_000L, condition: () -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeoutMs
-        while (System.currentTimeMillis() < deadline) {
+    private fun waitForUiState(maxAttempts: Int = 200, condition: () -> Boolean) {
+        repeat(maxAttempts) {
             testDispatcher.scheduler.advanceUntilIdle()
             if (condition()) {
                 return
             }
-            Thread.sleep(10L)
         }
         testDispatcher.scheduler.advanceUntilIdle()
         assertThat(condition()).isTrue()
+    }
+
+    private fun createViewModel(): EpgViewModel =
+        EpgViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            channelRepository = channelRepository,
+            epgRepository = epgRepository,
+            epgSourceRepository = epgSourceRepository,
+            favoriteRepository = favoriteRepository,
+            preferencesRepository = preferencesRepository,
+            parentalControlManager = parentalControlManager,
+            getCustomCategories = getCustomCategories
+        ).also(createdViewModels::add)
+
+    private fun clearViewModel(viewModel: EpgViewModel) {
+        val clearMethod = ViewModel::class.java.declaredMethods.firstOrNull {
+            it.parameterCount == 0 && it.name.startsWith("clear")
+        } ?: error("Unable to find ViewModel clear method")
+        clearMethod.isAccessible = true
+        clearMethod.invoke(viewModel)
     }
 
     @Test
@@ -127,17 +150,7 @@ class EpgViewModelTest {
             )
         )
 
-        val viewModel = EpgViewModel(
-            providerRepository = providerRepository,
-            combinedM3uRepository = combinedM3uRepository,
-            channelRepository = channelRepository,
-            epgRepository = epgRepository,
-            epgSourceRepository = epgSourceRepository,
-            favoriteRepository = favoriteRepository,
-            preferencesRepository = preferencesRepository,
-            parentalControlManager = parentalControlManager,
-            getCustomCategories = getCustomCategories
-        )
+        val viewModel = createViewModel()
 
         advanceUntilIdle()
         waitForUiState { viewModel.uiState.value.programsByChannel.keys.containsAll(listOf("one", "two")) }
@@ -205,17 +218,7 @@ class EpgViewModelTest {
             )
         )
 
-        val viewModel = EpgViewModel(
-            providerRepository = providerRepository,
-            combinedM3uRepository = combinedM3uRepository,
-            channelRepository = channelRepository,
-            epgRepository = epgRepository,
-            epgSourceRepository = epgSourceRepository,
-            favoriteRepository = favoriteRepository,
-            preferencesRepository = preferencesRepository,
-            parentalControlManager = parentalControlManager,
-            getCustomCategories = getCustomCategories
-        )
+        val viewModel = createViewModel()
 
         advanceUntilIdle()
         viewModel.selectCategory(10L)
