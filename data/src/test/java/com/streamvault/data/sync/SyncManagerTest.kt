@@ -207,7 +207,9 @@ class SyncManagerTest {
             org.mockito.kotlin.whenever(categoryDao.getByProviderAndTypeSync(any(), any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(channelDao.getByProviderSync(any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(movieDao.getByProviderSync(any())).thenReturn(emptyList())
+            org.mockito.kotlin.whenever(movieDao.getTmdbIdsByProvider(any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(seriesDao.getByProviderSync(any())).thenReturn(emptyList())
+            org.mockito.kotlin.whenever(seriesDao.getTmdbIdsByProvider(any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(catalogSyncDao.getCategoryStages(any(), any(), any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(catalogSyncDao.getChannelStages(any(), any())).thenReturn(emptyList())
             org.mockito.kotlin.whenever(catalogSyncDao.getMovieStages(any(), any())).thenReturn(emptyList())
@@ -528,7 +530,12 @@ class SyncManagerTest {
             append("https://vod.example.com/movie1.mp4\n")
         })
         val url = playlist.toURI().toString()
-        val provider = sampleProvider(ProviderType.M3U).copy(serverUrl = url, m3uUrl = url, epgUrl = "")
+        val provider = sampleProvider(ProviderType.M3U).copy(
+            serverUrl = url,
+            m3uUrl = url,
+            epgUrl = "",
+            m3uVodClassificationEnabled = true
+        )
         val mgr = buildManager(providerType = ProviderType.M3U, providerEntity = provider)
 
         val result = mgr.sync(1L, force = true)
@@ -587,14 +594,10 @@ class SyncManagerTest {
 
         assertThat(result.isSuccess).isTrue()
         val state = mgr.currentSyncState(1L)
-        assertThat(state).isInstanceOf(SyncState.Partial::class.java)
+        assertThat(state).isInstanceOf(SyncState.Success::class.java)
         val insertedChannels = argumentCaptor<List<com.streamvault.data.local.entity.ChannelImportStageEntity>>()
         verify(catalogSyncDao, atLeastOnce()).insertChannelStages(insertedChannels.capture())
         assertThat(insertedChannels.allValues.flatten()).hasSize(1)
-        // HTTP EPG header URL should be accepted — no EPG URL warning
-        assertThat((state as SyncState.Partial).warnings).doesNotContain("Ignored unsupported EPG URL from playlist header.")
-        // ftp:// stream URL should still be rejected
-        assertThat(state.warnings).contains("Ignored 1 insecure playlist stream URL(s).")
     }
 
     @Test

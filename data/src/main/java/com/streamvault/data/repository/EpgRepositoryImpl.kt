@@ -47,7 +47,8 @@ class EpgRepositoryImpl @Inject constructor(
     private val xmltvParser: XmltvParser,
     private val okHttpClient: OkHttpClient,
     private val transactionRunner: DatabaseTransactionRunner,
-    private val epgSourceRepository: EpgSourceRepository
+    private val epgSourceRepository: EpgSourceRepository,
+    private val externalScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) : EpgRepository {
 
     private val providerRefreshMutexes = ConcurrentHashMap<Long, Mutex>()
@@ -346,14 +347,12 @@ class EpgRepositoryImpl @Inject constructor(
         return emptyList()
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     private val nowTicker: Flow<Long> = flow {
         while (true) {
             emit(System.currentTimeMillis())
             delay(NOW_AND_NEXT_REFRESH_INTERVAL_MS)
         }
-    }.shareIn(scope, SharingStarted.WhileSubscribed(), replay = 1)
+    }.shareIn(externalScope, SharingStarted.WhileSubscribed(), replay = 1)
 
     private fun providerRefreshMutex(providerId: Long): Mutex =
         providerRefreshMutexes.computeIfAbsent(providerId) { Mutex() }

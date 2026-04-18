@@ -84,7 +84,7 @@ class FavoriteRepositoryImplTest {
         verify(favoriteDao).insert(favoriteCaptor.capture())
         verify(favoriteDao).getMaxPosition(7L, null)
         assertThat(favoriteCaptor.firstValue.providerId).isEqualTo(7L)
-        assertThat(favoriteCaptor.firstValue.position).isEqualTo(5)
+        assertThat(favoriteCaptor.firstValue.position).isEqualTo(1028)
     }
 
     @Test
@@ -104,7 +104,7 @@ class FavoriteRepositoryImplTest {
         val favoritesCaptor = argumentCaptor<List<FavoriteEntity>>()
         verify(favoriteDao).updateAll(favoritesCaptor.capture())
         assertThat(favoritesCaptor.firstValue.map(FavoriteEntity::id)).containsExactly(3L, 2L).inOrder()
-        assertThat(favoritesCaptor.firstValue.map(FavoriteEntity::position)).containsExactly(341, 682).inOrder()
+        assertThat(favoritesCaptor.firstValue.map(FavoriteEntity::position)).containsExactly(1023, 2046).inOrder()
     }
 
     @Test

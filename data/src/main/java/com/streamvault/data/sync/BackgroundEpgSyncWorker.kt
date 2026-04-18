@@ -101,7 +101,11 @@ class BackgroundEpgSyncWorker(
 
         fun cancel(context: Context, providerId: Long) {
             if (providerId <= 0L) return
-            WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(providerId))
+            runCatching {
+                WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName(providerId))
+            }.onFailure { error ->
+                Log.w(TAG, "Skipping background EPG cancellation for provider $providerId", error)
+            }
         }
 
         private fun uniqueWorkName(providerId: Long): String = "$UNIQUE_WORK_PREFIX$providerId"

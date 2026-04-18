@@ -26,6 +26,7 @@ import okhttp3.OkHttpClient
 import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
@@ -170,10 +171,9 @@ class EpgSourceRepositoryImplTest {
         whenever(epgSourceDao.getAllSync()).thenReturn(
             listOf(EpgSourceEntity(id = 10L, name = "Primary", url = "https://example.com/epg.xml"))
         )
-        whenever(epgChannelDao.getBySource(10L)).thenReturn(
+        whenever(epgChannelDao.searchBySource(10L, "%bbc%", 150)).thenReturn(
             listOf(
-                EpgChannelEntity(id = 1L, epgSourceId = 10L, xmltvChannelId = "bbc.one", displayName = "BBC One"),
-                EpgChannelEntity(id = 2L, epgSourceId = 10L, xmltvChannelId = "cnn.intl", displayName = "CNN International")
+                EpgChannelEntity(id = 1L, epgSourceId = 10L, xmltvChannelId = "bbc.one", displayName = "BBC One")
             )
         )
 
@@ -214,13 +214,15 @@ class EpgSourceRepositoryImplTest {
         whenever(epgSourceDao.getById(10L)).thenReturn(source)
         whenever(contentResolver.openInputStream(Uri.parse(source.url))).thenReturn(ByteArrayInputStream("<tv/>".toByteArray()))
         whenever(xmltvParser.maybeDecompressGzip(eq(source.url), any())).thenAnswer { it.arguments[1] }
-        whenever(xmltvParser.parseStreamingWithChannels(any(), any(), any())).thenThrow(IOException("EPG response too large (>200 MB)"))
+        doAnswer { throw IOException("EPG response too large (>200 MB)") }
+            .whenever(xmltvParser)
+            .parseStreamingWithChannels(any(), any(), any())
 
         val result = repository.refreshSource(10L)
 
         assertThat(result is Result.Error).isTrue()
         assertThat((result as Result.Error).message).isEqualTo("EPG response exceeded 200 MB limit")
-        verify(epgSourceDao).updateRefreshStatus(eq(10L), any(), eq("EPG response exceeded 200 MB limit"))
+        verify(epgSourceDao).updateRefreshError(eq(10L), eq("EPG response exceeded 200 MB limit"), any())
     }
 
     private class CloseTrackingInputStream : ByteArrayInputStream(byteArrayOf()) {

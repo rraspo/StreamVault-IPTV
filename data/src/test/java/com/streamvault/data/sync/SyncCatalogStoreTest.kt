@@ -17,7 +17,9 @@ import com.streamvault.data.local.entity.MovieImportStageEntity
 import com.streamvault.data.local.entity.SeriesEntity
 import com.streamvault.data.local.entity.SeriesImportStageEntity
 import com.streamvault.domain.model.ContentType
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
@@ -49,6 +51,14 @@ class SyncCatalogStoreTest {
         transactionRunner = transactionRunner,
         sizeLimits = sizeLimits
     )
+
+    @Before
+    fun setup() {
+        runBlocking {
+            whenever(movieDao.getTmdbIdsByProvider(any())).thenReturn(emptyList())
+            whenever(seriesDao.getTmdbIdsByProvider(any())).thenReturn(emptyList())
+        }
+    }
 
     @Test
     fun `replaceLiveCatalog batches changed category and channel updates`() = runTest {

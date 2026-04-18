@@ -341,7 +341,8 @@ class EpgRepositoryImplTest {
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
-            epgSourceRepository = epgSourceRepository
+            epgSourceRepository = epgSourceRepository,
+            externalScope = backgroundScope
         )
 
         val emissions = mutableListOf<Program?>()

@@ -9,6 +9,7 @@ import com.streamvault.domain.model.Program
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
@@ -47,7 +48,7 @@ class ProgramReminderManagerImplTest {
 
         assertThat(result).isInstanceOf(com.streamvault.domain.model.Result.Success::class.java)
         verify(dao).insert(org.mockito.kotlin.any())
-        verify(alarmScheduler).schedule(42L, org.mockito.kotlin.any())
+        verify(alarmScheduler).schedule(eq(42L), org.mockito.kotlin.any())
     }
 
     @Test
