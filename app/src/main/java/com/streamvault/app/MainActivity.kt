@@ -3,6 +3,7 @@ package com.streamvault.app
 import android.app.SearchManager
 import android.content.Intent
 import android.app.PictureInPictureParams
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
 import android.os.StrictMode
@@ -54,6 +55,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PLAYER_REQUEST = "com.streamvault.app.extra.PLAYER_REQUEST"
         const val EXTRA_EXTERNAL_ROUTE = "com.streamvault.app.extra.EXTERNAL_ROUTE"
+        private const val MAX_PIP_ASPECT_RATIO = 2.39f
+        private const val MIN_PIP_ASPECT_RATIO = 1f / MAX_PIP_ASPECT_RATIO
     }
 
     private data class PlayerPictureInPictureState(
@@ -184,6 +187,7 @@ class MainActivity : ComponentActivity() {
         videoHeight: Int,
         pixelWidthHeightRatio: Float = 1f
     ) {
+        if (!supportsPictureInPicture()) return
         playerPictureInPictureState = PlayerPictureInPictureState(
             enabled = enabled,
             isPlaying = isPlaying,
@@ -193,6 +197,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun clearPlayerPictureInPictureState() {
+        if (!supportsPictureInPicture()) return
         playerPictureInPictureState = PlayerPictureInPictureState()
         applyPlayerPictureInPictureParams()
     }
@@ -214,7 +219,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enterPlayerPictureInPictureModeIfEligible(requirePlaying: Boolean = true): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || isInPictureInPictureMode) {
+        if (!supportsPictureInPicture() || isInPictureInPictureMode) {
             return false
         }
         val state = playerPictureInPictureState
@@ -222,13 +227,17 @@ class MainActivity : ComponentActivity() {
             return false
         }
         val params = buildPlayerPictureInPictureParams(state)
-        setPictureInPictureParams(params)
-        return enterPictureInPictureMode(params)
+        return runCatching {
+            setPictureInPictureParams(params)
+            enterPictureInPictureMode(params)
+        }.getOrDefault(false)
     }
 
     private fun applyPlayerPictureInPictureParams() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        setPictureInPictureParams(buildPlayerPictureInPictureParams(playerPictureInPictureState))
+        if (!supportsPictureInPicture()) return
+        runCatching {
+            setPictureInPictureParams(buildPlayerPictureInPictureParams(playerPictureInPictureState))
+        }
     }
 
     private fun buildPlayerPictureInPictureParams(
@@ -242,10 +251,23 @@ class MainActivity : ComponentActivity() {
         return builder.build()
     }
 
-    private fun videoAspectRatioOrNull(videoWidth: Int, videoHeight: Int, pixelWidthHeightRatio: Float = 1f): Rational? {
+    private fun videoAspectRatioOrNull(
+        videoWidth: Int,
+        videoHeight: Int,
+        pixelWidthHeightRatio: Float = 1f
+    ): Rational? {
         if (videoWidth <= 0 || videoHeight <= 0) return null
-        val displayWidth = (videoWidth * pixelWidthHeightRatio).toInt().coerceAtLeast(1)
-        return Rational(displayWidth, videoHeight)
+        val safePixelRatio = pixelWidthHeightRatio.takeIf { it.isFinite() && it > 0f } ?: 1f
+        val rawAspectRatio = (videoWidth * safePixelRatio) / videoHeight.toFloat()
+        val clampedAspectRatio = rawAspectRatio
+            .coerceIn(MIN_PIP_ASPECT_RATIO, MAX_PIP_ASPECT_RATIO)
+        val numerator = (clampedAspectRatio * 10_000).toInt().coerceAtLeast(1)
+        return Rational(numerator, 10_000)
+    }
+
+    private fun supportsPictureInPicture(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
     }
 
     private fun handleExternalIntent(intent: Intent?) {
