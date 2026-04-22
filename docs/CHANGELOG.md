@@ -10,6 +10,8 @@ All notable product changes are recorded in this document.
 ### Fixed
 
 - Fixed Pro-mode Live TV preview to fullscreen handoff so live playback can continue more smoothly without media-session crashes.
+- Fixed manual EPG add flow crashing instead of showing a proper error.
+- Fixed M3U/M3U8 playlists using `#EXTGRP` loading all Live TV channels into one group.
 - Fixed Stalker live sync over-requesting channels on provider add.
 - Fixed Stalker EPG sync making redundant requests for duplicate or placeholder guide keys.
 - Fixed Stalker background EPG sync skipping the bulk portal request and going straight to per-channel fetches.
@@ -20,6 +22,7 @@ All notable product changes are recorded in this document.
 - Fixed VOD browse pagination skipping items or leaving groups incomplete.
 - Fixed VOD resume position, episode progress, and continue-watching state not updating reliably.
 - Fixed silent audio when a stream's codec (e.g. EAC3, AC3) is unsupported — player now surfaces a clear error.
+- Fixed Xtream Live TV taking a very long time to load on first sync with large providers (50k+ channels).
 
 ---
 
