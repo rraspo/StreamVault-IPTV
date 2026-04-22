@@ -186,15 +186,19 @@ class SyncManager @Inject constructor(
     private val xtreamLiveStrategy: SyncManagerXtreamLiveStrategy by lazy {
         SyncManagerXtreamLiveStrategy(
             xtreamCatalogApiService = xtreamCatalogApiService,
+            xtreamCatalogHttpService = xtreamCatalogHttpService,
             xtreamAdaptiveSyncPolicy = xtreamAdaptiveSyncPolicy,
             xtreamSupport = xtreamSupport,
             xtreamFetcher = xtreamFetcher,
             catalogStrategySupport = catalogStrategySupport,
+            syncCatalogStore = syncCatalogStore,
             progress = ::progress,
             sanitizeThrowableMessage = ::sanitizeThrowableMessage,
             fullCatalogFallbackWarning = ::fullCatalogFallbackWarning,
             categoryFailureWarning = ::categoryFailureWarning,
-            liveCategorySequentialModeWarning = LIVE_CATEGORY_SEQUENTIAL_MODE_WARNING
+            liveCategorySequentialModeWarning = LIVE_CATEGORY_SEQUENTIAL_MODE_WARNING,
+            stageChannelItems = catalogStager::stageChannelItems,
+            fallbackStageBatchSize = XTREAM_FALLBACK_STAGE_BATCH_SIZE
         )
     }
     private val xtreamMovieStrategy: SyncManagerXtreamMovieStrategy by lazy {
@@ -478,17 +482,29 @@ class SyncManager @Inject constructor(
 
             when (val liveResult = liveSyncResult.catalogResult) {
                 is CatalogStrategyResult.Success -> {
-                    val liveCatalog = mergeVisibleLiveSyncWithHiddenStoredContent(
-                        providerId = provider.id,
-                        visibleCategories = liveSyncResult.categories,
-                        visibleChannels = liveResult.items.map { it.toEntity() },
-                        hiddenLiveCategoryIds = hiddenLiveCategoryIds
-                    )
-                    val acceptedCount = syncCatalogStore.replaceLiveCatalog(
-                        providerId = provider.id,
-                        categories = liveCatalog.categories,
-                        channels = liveCatalog.channels
-                    )
+                    val acceptedCount = liveSyncResult.stagedSessionId?.let { sessionId ->
+                        if (hiddenLiveCategoryIds.isNotEmpty()) {
+                            mergeHiddenChannelsIntoStaging(provider.id, sessionId, hiddenLiveCategoryIds)
+                        }
+                        syncCatalogStore.applyStagedLiveCatalog(
+                            provider.id,
+                            sessionId,
+                            liveSyncResult.categories
+                        )
+                        liveSyncResult.stagedAcceptedCount
+                    } ?: run {
+                        val liveCatalog = mergeVisibleLiveSyncWithHiddenStoredContent(
+                            providerId = provider.id,
+                            visibleCategories = liveSyncResult.categories,
+                            visibleChannels = liveResult.items.map { it.toEntity() },
+                            hiddenLiveCategoryIds = hiddenLiveCategoryIds
+                        )
+                        syncCatalogStore.replaceLiveCatalog(
+                            providerId = provider.id,
+                            categories = liveCatalog.categories,
+                            channels = liveCatalog.channels
+                        )
+                    }
                     metadata = metadata.copy(
                         lastLiveSync = now,
                         lastLiveSuccess = now,
@@ -1856,7 +1872,7 @@ class SyncManager @Inject constructor(
     private suspend fun loadXtreamLiveFull(
         provider: Provider,
         api: XtreamProvider
-    ): CatalogStrategyResult<Channel> = xtreamLiveStrategy.loadXtreamLiveFull(provider, api)
+    ): CatalogSyncPayload<Channel> = xtreamLiveStrategy.loadXtreamLiveFull(provider, api)
 
     private suspend fun loadXtreamLiveByCategory(
         provider: Provider,
@@ -2012,6 +2028,18 @@ class SyncManager @Inject constructor(
         preferred: List<CategoryEntity>?,
         fallback: List<CategoryEntity>?
     ): List<CategoryEntity>? = catalogStrategySupport.mergePreferredAndFallbackCategories(preferred, fallback)
+
+    private suspend fun mergeHiddenChannelsIntoStaging(
+        providerId: Long,
+        sessionId: Long,
+        hiddenLiveCategoryIds: Set<Long>
+    ) {
+        val hiddenChannels = channelDao.getByProviderSync(providerId)
+            .filter { channel -> channel.categoryId != null && channel.categoryId in hiddenLiveCategoryIds }
+        if (hiddenChannels.isNotEmpty()) {
+            syncCatalogStore.stageChannelBatch(providerId, sessionId, hiddenChannels)
+        }
+    }
 
     private suspend fun mergeVisibleLiveSyncWithHiddenStoredContent(
         providerId: Long,
