@@ -13,6 +13,7 @@ import com.streamvault.app.ui.model.orderedByRequestedRawIds
 import com.streamvault.app.util.isPlaybackComplete
 import com.streamvault.app.tv.LauncherRecommendationsManager
 import com.streamvault.app.tv.WatchNextManager
+import com.streamvault.data.remote.stalker.StalkerUrlFactory
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialDecryptionException
 import com.streamvault.domain.manager.RecordingManager
@@ -151,8 +152,8 @@ class PlayerViewModel @Inject constructor(
     private val _nextEpisode = MutableStateFlow<Episode?>(null)
     val nextEpisode: StateFlow<Episode?> = _nextEpisode.asStateFlow()
 
-    private val _autoPlayCountdown = MutableStateFlow<Int?>(null)
-    val autoPlayCountdown: StateFlow<Int?> = _autoPlayCountdown.asStateFlow()
+    private val _autoPlayCountdown = MutableStateFlow<AutoPlayCountdownUiState?>(null)
+    val autoPlayCountdown: StateFlow<AutoPlayCountdownUiState?> = _autoPlayCountdown.asStateFlow()
 
     internal val playbackTitleFlow = MutableStateFlow("")
     val playbackTitle: StateFlow<String> = playbackTitleFlow.asStateFlow()
@@ -1118,7 +1119,9 @@ class PlayerViewModel @Inject constructor(
             .sanitizedForPlayer()
             .sortedBy { it.seasonNumber }
             .flatMap { season -> season.episodes.sortedBy { it.episodeNumber } }
-        return episodes.firstOrNull { it.id == episodeId }
+        return episodes.firstOrNull {
+            it.id == episodeId || it.matchesPlaybackEpisode(episodeId, seasonNumber, episodeNumber)
+        }
             ?: episodes.firstOrNull { it.seasonNumber == seasonNumber && it.episodeNumber == episodeNumber }
     }
 
@@ -1127,8 +1130,28 @@ class PlayerViewModel @Inject constructor(
             .sanitizedForPlayer()
             .sortedBy { it.seasonNumber }
             .flatMap { season -> season.episodes.sortedBy { it.episodeNumber } }
-        val currentIndex = orderedEpisodes.indexOfFirst { it.id == episode.id }
+        val currentIndex = orderedEpisodes.indexOfFirst {
+            it.id == episode.id ||
+                it.playbackEpisodeIdentity() == episode.playbackEpisodeIdentity() ||
+                (it.seasonNumber == episode.seasonNumber && it.episodeNumber == episode.episodeNumber)
+        }
         return orderedEpisodes.getOrNull(currentIndex + 1)
+    }
+
+    private fun Episode.playbackEpisodeIdentity(): Long =
+        episodeId.takeIf { it > 0L } ?: id
+
+    private fun Episode.matchesPlaybackEpisode(
+        requestedEpisodeId: Long,
+        requestedSeasonNumber: Int?,
+        requestedEpisodeNumber: Int?
+    ): Boolean {
+        val identity = playbackEpisodeIdentity()
+        return (requestedEpisodeId > 0L && identity == requestedEpisodeId) ||
+            (requestedSeasonNumber != null &&
+                requestedEpisodeNumber != null &&
+                seasonNumber == requestedSeasonNumber &&
+                episodeNumber == requestedEpisodeNumber)
     }
 
     private fun buildEpisodePlaybackTitle(episode: Episode): String =
@@ -1235,7 +1258,10 @@ class PlayerViewModel @Inject constructor(
         autoPlayCountdownJob?.cancel()
         autoPlayCountdownJob = viewModelScope.launch {
             for (remaining in AUTO_PLAY_COUNTDOWN_SECONDS downTo 1) {
-                _autoPlayCountdown.value = remaining
+                _autoPlayCountdown.value = AutoPlayCountdownUiState(
+                    episode = episode,
+                    secondsRemaining = remaining
+                )
                 delay(1_000L)
             }
             _autoPlayCountdown.value = null
@@ -1250,7 +1276,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun playNextEpisodeNow() {
-        val episode = _nextEpisode.value ?: return
+        val episode = _autoPlayCountdown.value?.episode ?: _nextEpisode.value ?: return
         cancelAutoPlay()
         playEpisode(episode, showResumePrompt = false)
     }
@@ -1566,21 +1592,37 @@ class PlayerViewModel @Inject constructor(
                 var playbackLogicalUrl = streamUrl
                 var playbackContentId = internalChannelId
                 if (currentContentType == ContentType.SERIES_EPISODE && providerId > 0 && currentSeriesId != null) {
-                    val resolvedEpisode = loadSeriesEpisodeContext(
-                        requestVersion = requestVersion,
-                        providerId = providerId,
-                        seriesId = currentSeriesId ?: -1L,
-                        episodeId = internalChannelId,
-                        seasonNumber = seasonNumber,
-                        episodeNumber = episodeNumber
-                    )
-                    if (!isActivePlaybackSession(requestVersion, streamUrl)) return@launch
-                    resolvedEpisode?.streamUrl
-                        ?.takeIf { it.isNotBlank() }
-                        ?.let { refreshedUrl -> playbackLogicalUrl = refreshedUrl }
-                    resolvedEpisode?.id
-                        ?.takeIf { it > 0L }
-                        ?.let { resolvedId -> playbackContentId = resolvedId }
+                    val providerType = providerRepository.getProvider(providerId)?.type
+                    val shouldAwaitRefreshedEpisode = providerType == ProviderType.STALKER_PORTAL ||
+                        StalkerUrlFactory.isInternalStreamUrl(streamUrl)
+                    if (shouldAwaitRefreshedEpisode) {
+                        val resolvedEpisode = loadSeriesEpisodeContext(
+                            requestVersion = requestVersion,
+                            providerId = providerId,
+                            seriesId = currentSeriesId ?: -1L,
+                            episodeId = internalChannelId,
+                            seasonNumber = seasonNumber,
+                            episodeNumber = episodeNumber
+                        )
+                        if (!isActivePlaybackSession(requestVersion, streamUrl)) return@launch
+                        resolvedEpisode?.streamUrl
+                            ?.takeIf { it.isNotBlank() }
+                            ?.let { refreshedUrl -> playbackLogicalUrl = refreshedUrl }
+                        resolvedEpisode?.id
+                            ?.takeIf { it > 0L }
+                            ?.let { resolvedId -> playbackContentId = resolvedId }
+                    } else {
+                        launch {
+                            loadSeriesEpisodeContext(
+                                requestVersion = requestVersion,
+                                providerId = providerId,
+                                seriesId = currentSeriesId ?: -1L,
+                                episodeId = internalChannelId,
+                                seasonNumber = seasonNumber,
+                                episodeNumber = episodeNumber
+                            )
+                        }
+                    }
                 }
                 val streamInfo = resolvePlaybackStreamInfo(
                     playbackLogicalUrl,

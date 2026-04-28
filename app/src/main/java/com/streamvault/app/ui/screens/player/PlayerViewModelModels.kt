@@ -3,6 +3,7 @@ package com.streamvault.app.ui.screens.player
 import android.graphics.Bitmap
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ChannelQualityOption
+import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.Season
 import com.streamvault.domain.model.Series
 import com.streamvault.domain.model.DecoderMode
@@ -96,6 +97,11 @@ data class SleepTimerUiState(
     val idleTimerWarningVisible: Boolean
         get() = idleTimerActive && idleRemainingMs <= 60_000L
 }
+
+data class AutoPlayCountdownUiState(
+    val episode: Episode,
+    val secondsRemaining: Int
+)
 
 enum class PlayerRecoveryType {
     NETWORK,

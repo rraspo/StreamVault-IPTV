@@ -166,7 +166,6 @@ fun PlayerScreen(
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
     val currentSeries by viewModel.currentSeries.collectAsStateWithLifecycle()
     val currentEpisode by viewModel.currentEpisode.collectAsStateWithLifecycle()
-    val nextEpisodeForAutoPlay by viewModel.nextEpisode.collectAsStateWithLifecycle()
     val autoPlayCountdown by viewModel.autoPlayCountdown.collectAsStateWithLifecycle()
     val playbackTitle by viewModel.playbackTitle.collectAsStateWithLifecycle()
     val resumePrompt by viewModel.resumePrompt.collectAsStateWithLifecycle()
@@ -305,7 +304,8 @@ fun PlayerScreen(
 
     // Consolidated focus management for all overlays
     val liveOverlayVisible = contentType == "LIVE" && (showChannelListOverlay || showCategoryListOverlay || showEpgOverlay || showChannelInfoOverlay)
-    val anyOverlayVisible = liveOverlayVisible || showTrackSelection != null || showVariantSelection || showSpeedSelection || showAudioVideoOffsetDialog || showStopPlaybackTimerDialog || showIdleStandbyTimerDialog || showProgramHistory || showSplitDialog || showEpisodePicker || showDiagnostics
+    val nextEpisodeCountdownVisible = !isInPictureInPictureMode && autoPlayCountdown != null
+    val anyOverlayVisible = liveOverlayVisible || nextEpisodeCountdownVisible || showTrackSelection != null || showVariantSelection || showSpeedSelection || showAudioVideoOffsetDialog || showStopPlaybackTimerDialog || showIdleStandbyTimerDialog || showProgramHistory || showSplitDialog || showEpisodePicker || showDiagnostics
 
     LaunchedEffect(contentType, showCategoryListOverlay, showChannelListOverlay, showEpgOverlay, showChannelInfoOverlay) {
         if (contentType == "LIVE" && (showCategoryListOverlay || showChannelListOverlay || showEpgOverlay || showChannelInfoOverlay)) {
@@ -446,6 +446,7 @@ fun PlayerScreen(
     }
 
     val handleBackPress = remember(
+        autoPlayCountdown,
         playerNotice,
         showProgramHistory,
         showSplitDialog,
@@ -467,6 +468,7 @@ fun PlayerScreen(
         {
             when {
                 viewModel.hasPendingNumericChannelInput() -> viewModel.clearNumericChannelInput()
+                autoPlayCountdown != null -> viewModel.cancelAutoPlay()
                 playerNotice != null -> viewModel.dismissPlayerNotice()
                 showProgramHistory -> showProgramHistory = false
                 showSplitDialog -> showSplitDialog = false
@@ -531,6 +533,9 @@ fun PlayerScreen(
                     return@onPreviewKeyEvent false
                 }
                 viewModel.notifyUserActivity()
+                if (nextEpisodeCountdownVisible) {
+                    return@onPreviewKeyEvent false
+                }
                 if (contentType != "LIVE") {
                     return@onPreviewKeyEvent false
                 }
@@ -570,6 +575,15 @@ fun PlayerScreen(
                 // Only handle KeyDown to avoid double actions
                 if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
                     viewModel.notifyUserActivity()
+                    if (nextEpisodeCountdownVisible) {
+                        return@onKeyEvent when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_BACK -> {
+                                viewModel.cancelAutoPlay()
+                                true
+                            }
+                            else -> true
+                        }
+                    }
                     if (showTrackSelection != null || showVariantSelection || showSpeedSelection || showAudioVideoOffsetDialog || showStopPlaybackTimerDialog || showIdleStandbyTimerDialog) {
                         if (showAudioVideoOffsetDialog) {
                             return@onKeyEvent when (event.nativeKeyEvent.keyCode) {
@@ -1014,17 +1028,16 @@ fun PlayerScreen(
         }
 
         // Auto-Play Next Episode countdown overlay
-        val countdownSeconds = autoPlayCountdown
-        val countdownEpisode = nextEpisodeForAutoPlay
-        if (!isInPictureInPictureMode && countdownSeconds != null && countdownEpisode != null) {
+        val countdownState = autoPlayCountdown
+        if (!isInPictureInPictureMode && countdownState != null) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = 32.dp, bottom = 32.dp)
             ) {
                 NextEpisodeCountdownOverlay(
-                    nextEpisode = countdownEpisode,
-                    secondsRemaining = countdownSeconds,
+                    nextEpisode = countdownState.episode,
+                    secondsRemaining = countdownState.secondsRemaining,
                     onPlayNow = { viewModel.playNextEpisodeNow() },
                     onCancel = { viewModel.cancelAutoPlay() }
                 )

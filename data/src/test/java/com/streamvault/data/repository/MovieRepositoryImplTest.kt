@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import org.mockito.Mockito.timeout
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.argumentCaptor
@@ -347,7 +348,7 @@ class MovieRepositoryImplTest {
 
         repository.getCategoryPreviewRows(7L, listOf(42L), 18).first()
 
-        verify(stalkerApiService).getVodStreamsPage(any(), any(), anyOrNull(), eq(1))
+        verify(stalkerApiService, timeout(1_000)).getVodStreamsPage(any(), any(), anyOrNull(), eq(1))
         verify(stalkerApiService, never()).getVodStreamsPage(any(), any(), anyOrNull(), eq(2))
     }
 

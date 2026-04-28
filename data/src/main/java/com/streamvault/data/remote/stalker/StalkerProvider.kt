@@ -750,7 +750,7 @@ class StalkerProvider(
             )
         } ?: directStreamUrl.orEmpty()
         return Episode(
-            id = 0L,
+            id = numericId,
             title = title.ifBlank { "Episode $fallbackEpisodeNumber" },
             episodeNumber = episodeNumber.coerceAtLeast(1),
             seasonNumber = seasonNumber.takeIf { it > 0 } ?: fallbackSeasonNumber.coerceAtLeast(1),
