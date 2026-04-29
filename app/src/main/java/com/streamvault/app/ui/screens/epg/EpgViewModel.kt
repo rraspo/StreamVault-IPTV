@@ -44,6 +44,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -829,22 +830,9 @@ class EpgViewModel @Inject constructor(
             data.copy(showAllChannels = showAll)
         }
             .combine(
-                combine(
-                    selectedCategoryId,
-                    startupCategoryId,
-                    guideAnchorTime,
-                    showFavoritesOnly,
-                    refreshNonce
-                ) { requestedCategoryId, startupSelectionId, anchorTime, favoritesOnly, _ ->
-                    GuideSelectionSeed(
-                        requestedCategoryId = startupSelectionId ?: requestedCategoryId,
-                        anchorTime = anchorTime,
-                        favoritesOnly = favoritesOnly,
-                        isStartupSelection = startupSelectionId != null
-                    )
-                }.combine(preferencesRepository.parentalControlLevel) { selection, parentalControlLevel ->
-                    selection to parentalControlLevel
-                }.combine(parentalControlManager.unlockedCategoriesForProvider(provider.id)) { (selection, parentalControlLevel), unlockedCategoryIds ->
+                guideSelectionStateFlow().combine(
+                    parentalControlManager.unlockedCategoriesForProvider(provider.id)
+                ) { (selection, parentalControlLevel), unlockedCategoryIds ->
                     GuideSelectionRequest(
                         requestedCategoryId = selection.requestedCategoryId,
                         anchorTime = selection.anchorTime,
@@ -885,15 +873,13 @@ class EpgViewModel @Inject constructor(
             }.collectLatest { request ->
                 val categories = request.categories
                 val hasVisibleGuide = _uiState.value.channels.isNotEmpty() || _uiState.value.programsByChannel.isNotEmpty()
+                val providerSourceLabel = buildProviderSourceLabel(provider)
+                val providerArchiveSummary = buildProviderArchiveSummary(provider)
                 _uiState.update {
                     it.copy(
                         currentProviderName = provider.name,
-                        providerSourceLabel = when (provider.type) {
-                            com.streamvault.domain.model.ProviderType.XTREAM_CODES -> "Xtream Codes"
-                            com.streamvault.domain.model.ProviderType.M3U -> "M3U Playlist"
-                            com.streamvault.domain.model.ProviderType.STALKER_PORTAL -> "Stalker/MAG Portal"
-                        },
-                        providerArchiveSummary = buildProviderArchiveSummary(provider),
+                        providerSourceLabel = providerSourceLabel,
+                        providerArchiveSummary = providerArchiveSummary,
                         categories = categories,
                         parentalControlLevel = request.parentalControlLevel,
                         showFavoritesOnly = request.favoritesOnly,
@@ -924,12 +910,8 @@ class EpgViewModel @Inject constructor(
                     publishGuideSnapshot(
                         providerId = provider.id,
                         providerName = provider.name,
-                        providerSourceLabel = when (provider.type) {
-                            com.streamvault.domain.model.ProviderType.XTREAM_CODES -> "Xtream Codes"
-                            com.streamvault.domain.model.ProviderType.M3U -> "M3U Playlist"
-                            com.streamvault.domain.model.ProviderType.STALKER_PORTAL -> "Stalker/MAG Portal"
-                        },
-                        providerArchiveSummary = buildProviderArchiveSummary(provider),
+                        providerSourceLabel = providerSourceLabel,
+                        providerArchiveSummary = providerArchiveSummary,
                         categories = categories,
                         request = request,
                         channelSelection = channelSelection,
@@ -961,22 +943,7 @@ class EpgViewModel @Inject constructor(
             providerIdsFlow.flatMapLatest { providerIds ->
                 getCustomCategories(providerIds, ContentType.LIVE)
             },
-            combine(
-                selectedCategoryId,
-                startupCategoryId,
-                guideAnchorTime,
-                showFavoritesOnly,
-                refreshNonce
-            ) { requestedCategoryId, startupSelectionId, anchorTime, favoritesOnly, _ ->
-                GuideSelectionSeed(
-                    requestedCategoryId = startupSelectionId ?: requestedCategoryId,
-                    anchorTime = anchorTime,
-                    favoritesOnly = favoritesOnly,
-                    isStartupSelection = startupSelectionId != null
-                )
-            }.combine(preferencesRepository.parentalControlLevel) { selection, parentalControlLevel ->
-                selection to parentalControlLevel
-            }
+            guideSelectionStateFlow()
         ) { combinedCategories, providerIds, customCategories, selection ->
             combinedCategoriesById = combinedCategories.associateBy { it.category.id }
             CombinedGuideDependencies(
@@ -1097,6 +1064,27 @@ class EpgViewModel @Inject constructor(
             val combinedCategory = combinedCategoriesById[categoryId]
             if (combinedCategory == null) kotlinx.coroutines.flow.flowOf(emptyList())
             else combinedM3uRepository.getCombinedChannels(profileId, combinedCategory)
+        }
+
+    private fun guideSelectionSeedFlow(): Flow<GuideSelectionSeed> =
+        combine(
+            selectedCategoryId,
+            startupCategoryId,
+            guideAnchorTime,
+            showFavoritesOnly,
+            refreshNonce
+        ) { requestedCategoryId, startupSelectionId, anchorTime, favoritesOnly, _ ->
+            GuideSelectionSeed(
+                requestedCategoryId = startupSelectionId ?: requestedCategoryId,
+                anchorTime = anchorTime,
+                favoritesOnly = favoritesOnly,
+                isStartupSelection = startupSelectionId != null
+            )
+        }
+
+    private fun guideSelectionStateFlow(): Flow<Pair<GuideSelectionSeed, Int>> =
+        guideSelectionSeedFlow().combine(preferencesRepository.parentalControlLevel) { selection, parentalControlLevel ->
+            selection to parentalControlLevel
         }
 
     private suspend fun publishGuideSnapshot(
@@ -1275,6 +1263,14 @@ class EpgViewModel @Inject constructor(
         }
     }
 
+    private fun buildProviderSourceLabel(provider: com.streamvault.domain.model.Provider): String {
+        return when (provider.type) {
+            com.streamvault.domain.model.ProviderType.XTREAM_CODES -> "Xtream Codes"
+            com.streamvault.domain.model.ProviderType.M3U -> "M3U Playlist"
+            com.streamvault.domain.model.ProviderType.STALKER_PORTAL -> "Stalker/MAG Portal"
+        }
+    }
+
     private fun buildProviderArchiveSummary(provider: com.streamvault.domain.model.Provider): String {
         return when (provider.type) {
             com.streamvault.domain.model.ProviderType.XTREAM_CODES ->
@@ -1330,19 +1326,11 @@ class EpgViewModel @Inject constructor(
         providerId: Long,
         request: GuideBaseRequest
     ) = when (request.resolvedCategoryId) {
-        ChannelRepository.ALL_CHANNELS_ID -> combine(
-            channelRepository.getChannelsByCategoryPage(providerId, request.resolvedCategoryId, MAX_CHANNELS),
-            channelRepository.getChannelsWithoutErrorsPage(providerId, request.resolvedCategoryId, MAX_CHANNELS),
-            favoriteRepository.getFavorites(providerId, ContentType.LIVE)
-        ) { channelsByNumber, healthyChannels, favorites ->
-            val favoriteIds = favorites.map { it.contentId }.toSet()
-            if (request.favoritesOnly) {
-                healthyChannels.filter { it.id in favoriteIds }
-                    .ifEmpty { channelsByNumber.filter { it.id in favoriteIds } }
-            } else {
-                healthyChannels.ifEmpty { channelsByNumber }
-            }
-        }
+        ChannelRepository.ALL_CHANNELS_ID -> loadPreferredGuideChannelsPage(
+            providerId = providerId,
+            categoryId = request.resolvedCategoryId,
+            favoritesOnly = request.favoritesOnly
+        )
 
         VirtualCategoryIds.FAVORITES -> favoriteRepository.getFavorites(providerId, ContentType.LIVE)
             .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
@@ -1352,18 +1340,28 @@ class EpgViewModel @Inject constructor(
             .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
             .flatMapLatest { ids -> loadGuideChannelsByOrderedIds(ids, providerId) }
 
-        else -> combine(
-            channelRepository.getChannelsByCategoryPage(providerId, request.resolvedCategoryId, MAX_CHANNELS),
-            channelRepository.getChannelsWithoutErrorsPage(providerId, request.resolvedCategoryId, MAX_CHANNELS),
-            favoriteRepository.getFavorites(providerId, ContentType.LIVE)
-        ) { channelsByNumber, healthyChannels, favorites ->
-            val favoriteIds = favorites.map { it.contentId }.toSet()
-            if (request.favoritesOnly) {
-                healthyChannels.filter { it.id in favoriteIds }
-                    .ifEmpty { channelsByNumber.filter { it.id in favoriteIds } }
-            } else {
-                healthyChannels.ifEmpty { channelsByNumber }
-            }
+        else -> loadPreferredGuideChannelsPage(
+            providerId = providerId,
+            categoryId = request.resolvedCategoryId,
+            favoritesOnly = request.favoritesOnly
+        )
+    }
+
+    private fun loadPreferredGuideChannelsPage(
+        providerId: Long,
+        categoryId: Long,
+        favoritesOnly: Boolean
+    ): Flow<List<Channel>> = combine(
+        channelRepository.getChannelsByCategoryPage(providerId, categoryId, MAX_CHANNELS),
+        channelRepository.getChannelsWithoutErrorsPage(providerId, categoryId, MAX_CHANNELS),
+        favoriteRepository.getFavorites(providerId, ContentType.LIVE)
+    ) { channelsByNumber, healthyChannels, favorites ->
+        val favoriteIds = favorites.map { it.contentId }.toSet()
+        if (favoritesOnly) {
+            healthyChannels.filter { it.id in favoriteIds }
+                .ifEmpty { channelsByNumber.filter { it.id in favoriteIds } }
+        } else {
+            healthyChannels.ifEmpty { channelsByNumber }
         }
     }
 
