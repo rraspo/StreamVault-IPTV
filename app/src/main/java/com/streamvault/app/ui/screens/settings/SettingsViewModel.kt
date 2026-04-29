@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.streamvault.app.R
 import com.streamvault.app.BuildConfig
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
-import com.streamvault.app.ui.model.applyProviderCategoryDisplayPreferences
 import com.streamvault.app.ui.model.LiveTvChannelMode
 import com.streamvault.app.ui.model.LiveTvQuickFilterVisibilityMode
 import com.streamvault.app.ui.model.VodViewMode
@@ -136,6 +135,46 @@ class SettingsViewModel @Inject constructor(
     )
 
     init {
+        registerPreferenceObservers()
+        registerSettingsAppUpdateObservers(
+            scope = viewModelScope,
+            preferencesRepository = preferencesRepository,
+            appUpdateActions = appUpdateActions,
+            appUpdateInstaller = appUpdateInstaller,
+            uiState = _uiState
+        )
+        registerCombinedProfileObservers(
+            scope = viewModelScope,
+            combinedM3uRepository = combinedM3uRepository,
+            uiState = _uiState
+        )
+        registerDerivedStateObservers(
+            scope = viewModelScope,
+            providerRepository = providerRepository,
+            syncMetadataRepository = syncMetadataRepository,
+            application = appContext,
+            preferencesRepository = preferencesRepository,
+            activeProviderIdFlow = activeProviderIdFlow,
+            categoryRepository = categoryRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            channelRepository = channelRepository,
+            getCustomCategories = getCustomCategories,
+            uiState = _uiState
+        )
+        registerRecordingObservers(
+            scope = viewModelScope,
+            recordingManager = recordingManager,
+            preferencesRepository = preferencesRepository,
+            uiState = _uiState
+        )
+        registerEpgObservers(
+            scope = viewModelScope,
+            epgSourceRepository = epgSourceRepository,
+            uiState = _uiState
+        )
+    }
+
+    private fun registerPreferenceObservers() {
         viewModelScope.launch {
             observeSettingsPreferenceSnapshot(
                 providerRepository = providerRepository,
@@ -143,128 +182,6 @@ class SettingsViewModel @Inject constructor(
                 preferencesRepository = preferencesRepository
             ).collect { snapshot ->
                 _uiState.update { it.applyPreferenceSnapshot(snapshot) }
-            }
-        }
-
-        viewModelScope.launch {
-            combine(
-                preferencesRepository.autoCheckAppUpdates,
-                preferencesRepository.lastAppUpdateCheckTimestamp,
-                preferencesRepository.autoDownloadAppUpdates
-            ) { autoCheckEnabled, lastCheckedAt, autoDownload ->
-                Triple(autoCheckEnabled, lastCheckedAt, autoDownload)
-            }.distinctUntilChanged().collect { (autoCheckEnabled, lastCheckedAt, autoDownload) ->
-                if (autoCheckEnabled && appUpdateActions.shouldAutoCheckForUpdates(lastCheckedAt)) {
-                    appUpdateActions.checkForAppUpdates(
-                        scope = viewModelScope,
-                        manual = false,
-                        isRemoteVersionNewer = ::isRemoteVersionNewer,
-                        autoDownload = autoDownload
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            appUpdateInstaller.downloadState.collect { downloadState ->
-                _uiState.update {
-                    it.copy(appUpdate = it.appUpdate.withDownloadState(downloadState))
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            appUpdateInstaller.refreshState()
-        }
-
-        viewModelScope.launch {
-            combinedM3uRepository.getProfiles().collect { profiles ->
-                _uiState.update { it.copy(combinedProfiles = profiles) }
-            }
-        }
-
-        viewModelScope.launch {
-            combinedM3uRepository.getAvailableM3uProviders().collect { providers ->
-                _uiState.update { it.copy(availableM3uProviders = providers) }
-            }
-        }
-
-        viewModelScope.launch {
-            combinedM3uRepository.getActiveLiveSource().collect { activeSource ->
-                _uiState.update { it.copy(activeLiveSource = activeSource) }
-            }
-        }
-
-        viewModelScope.launch {
-            observeProviderDiagnostics(
-                providerRepository = providerRepository,
-                syncMetadataRepository = syncMetadataRepository,
-                application = appContext
-            ).collect { diagnosticsByProvider ->
-                _uiState.update { it.copy(diagnosticsByProvider = diagnosticsByProvider) }
-            }
-        }
-
-        viewModelScope.launch {
-            preferencesRepository.lastMaintenanceSnapshot.collect { snapshot ->
-                _uiState.update { it.copy(databaseMaintenance = snapshot?.toUiModel()) }
-            }
-        }
-
-        viewModelScope.launch {
-            observeCategoryManagement(
-                activeProviderIdFlow = activeProviderIdFlow,
-                preferencesRepository = preferencesRepository,
-                categoryRepository = categoryRepository
-            ).collect { snapshot ->
-                _uiState.update {
-                    it.copy(
-                        categorySortModes = snapshot.categorySortModes,
-                        hiddenCategories = snapshot.hiddenCategories
-                    )
-                }
-            }
-        }
-
-        viewModelScope.launch {
-            observeGuideDefaultCategoryOptions().collect { categories ->
-                _uiState.update { it.copy(guideDefaultCategoryOptions = categories) }
-            }
-        }
-
-        viewModelScope.launch {
-            recordingManager.observeRecordingItems().collect { items ->
-                _uiState.update { it.copy(recordingItems = items.sortedByDescending(RecordingItem::scheduledStartMs)) }
-            }
-        }
-
-        viewModelScope.launch {
-            recordingManager.observeStorageState().collect { storage ->
-                _uiState.update { it.copy(recordingStorageState = storage) }
-            }
-        }
-
-        viewModelScope.launch {
-            preferencesRepository.recordingWifiOnly.collect { wifiOnly ->
-                _uiState.update { it.copy(wifiOnlyRecording = wifiOnly) }
-            }
-        }
-
-        viewModelScope.launch {
-            preferencesRepository.recordingPaddingBeforeMinutes.collect { minutes ->
-                _uiState.update { it.copy(recordingPaddingBeforeMinutes = minutes) }
-            }
-        }
-
-        viewModelScope.launch {
-            preferencesRepository.recordingPaddingAfterMinutes.collect { minutes ->
-                _uiState.update { it.copy(recordingPaddingAfterMinutes = minutes) }
-            }
-        }
-
-        viewModelScope.launch {
-            epgSourceRepository.getAllSources().collect { sources ->
-                _uiState.update { it.copy(epgSources = sources) }
             }
         }
     }
@@ -778,27 +695,6 @@ class SettingsViewModel @Inject constructor(
         _uiState.update { it.copy(userMessage = null) }
     }
 
-    private fun isRemoteVersionNewer(remoteVersionCode: Int?, remoteVersionName: String): Boolean {
-        if (remoteVersionCode != null && remoteVersionCode > BuildConfig.VERSION_CODE) {
-            return true
-        }
-        return compareVersionNames(remoteVersionName, BuildConfig.VERSION_NAME) > 0
-    }
-
-    private fun compareVersionNames(left: String, right: String): Int {
-        val leftParts = left.removePrefix("v").split('.')
-        val rightParts = right.removePrefix("v").split('.')
-        val length = max(leftParts.size, rightParts.size)
-        for (index in 0 until length) {
-            val leftValue = leftParts.getOrNull(index)?.toIntOrNull() ?: 0
-            val rightValue = rightParts.getOrNull(index)?.toIntOrNull() ?: 0
-            if (leftValue != rightValue) {
-                return leftValue.compareTo(rightValue)
-            }
-        }
-        return 0
-    }
-
     fun exportConfig(uriString: String) {
         backupActions.exportConfig(viewModelScope, uriString)
     }
@@ -929,83 +825,4 @@ class SettingsViewModel @Inject constructor(
         epgActions.moveEpgSourceAssignmentDown(viewModelScope, providerId, epgSourceId)
     }
 
-    private fun observeGuideDefaultCategoryOptions(): Flow<List<Category>> {
-        return combinedM3uRepository.getActiveLiveSource().flatMapLatest { activeSource ->
-            when (activeSource) {
-                is ActiveLiveSource.CombinedM3uSource -> {
-                    combine(
-                        combinedM3uRepository.getCombinedCategories(activeSource.profileId),
-                        flow {
-                            emit(combinedM3uRepository.getProfile(activeSource.profileId)?.members.orEmpty())
-                        }.flatMapLatest { members ->
-                            getCustomCategories(
-                                members.filter { it.enabled }.map { it.providerId },
-                                ContentType.LIVE
-                            )
-                        }
-                    ) { combinedCategories, customCategories ->
-                        buildGuideDefaultCategoryOptions(
-                            physicalCategories = combinedCategories.map { it.category },
-                            customCategories = customCategories
-                        )
-                    }
-                }
-                is ActiveLiveSource.ProviderSource -> {
-                    combine(
-                        channelRepository.getCategories(activeSource.providerId),
-                        getCustomCategories(activeSource.providerId, ContentType.LIVE),
-                        preferencesRepository.getHiddenCategoryIds(activeSource.providerId, ContentType.LIVE),
-                        preferencesRepository.getCategorySortMode(activeSource.providerId, ContentType.LIVE)
-                    ) { categories, customCategories, hiddenCategoryIds, sortMode ->
-                        val visibleProviderCategories = applyProviderCategoryDisplayPreferences(
-                            categories = categories.filter { it.id != ChannelRepository.ALL_CHANNELS_ID },
-                            hiddenCategoryIds = hiddenCategoryIds,
-                            sortMode = sortMode
-                        )
-                        buildGuideDefaultCategoryOptions(
-                            physicalCategories = visibleProviderCategories,
-                            customCategories = customCategories
-                        )
-                    }
-                }
-                null -> flowOf(
-                    listOf(
-                        Category(
-                            id = VirtualCategoryIds.FAVORITES,
-                            name = "Favorites",
-                            type = ContentType.LIVE,
-                            isVirtual = true
-                        ),
-                        Category(
-                            id = ChannelRepository.ALL_CHANNELS_ID,
-                            name = "All Channels",
-                            type = ContentType.LIVE
-                        )
-                    )
-                )
-            }
-        }
-    }
-
-    private fun buildGuideDefaultCategoryOptions(
-        physicalCategories: List<Category>,
-        customCategories: List<Category>
-    ): List<Category> {
-        val favorites = customCategories.find { it.id == VirtualCategoryIds.FAVORITES }
-        return buildList {
-            if (favorites != null) {
-                add(favorites)
-            }
-            addAll(customCategories.filter { it.id != VirtualCategoryIds.FAVORITES })
-            add(
-                Category(
-                    id = ChannelRepository.ALL_CHANNELS_ID,
-                    name = "All Channels",
-                    type = ContentType.LIVE,
-                    count = physicalCategories.sumOf(Category::count)
-                )
-            )
-            addAll(physicalCategories)
-        }
-    }
 }

@@ -523,12 +523,12 @@ class PlayerViewModel @Inject constructor(
         }
         viewModelScope.launch {
             preferencesRepository.defaultStopPlaybackTimerMinutes.collect {
-                defaultStopPlaybackTimerMinutes = sanitizePlaybackTimerMinutes(it)
+                defaultStopPlaybackTimerMinutes = sanitizePlaybackTimerMinutes(it, PLAYBACK_TIMER_PRESETS_MINUTES)
             }
         }
         viewModelScope.launch {
             preferencesRepository.defaultIdleStandbyTimerMinutes.collect {
-                defaultIdleStandbyTimerMinutes = sanitizePlaybackTimerMinutes(it)
+                defaultIdleStandbyTimerMinutes = sanitizePlaybackTimerMinutes(it, PLAYBACK_TIMER_PRESETS_MINUTES)
             }
         }
         viewModelScope.launch {
@@ -2743,7 +2743,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun setStopPlaybackTimer(minutes: Int) {
-        val normalized = sanitizePlaybackTimerMinutes(minutes)
+        val normalized = sanitizePlaybackTimerMinutes(minutes, PLAYBACK_TIMER_PRESETS_MINUTES)
         if (normalized == 0) {
             disableStopPlaybackTimer()
             return
@@ -2756,7 +2756,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun setIdleStandbyTimer(minutes: Int) {
-        val normalized = sanitizePlaybackTimerMinutes(minutes)
+        val normalized = sanitizePlaybackTimerMinutes(minutes, PLAYBACK_TIMER_PRESETS_MINUTES)
         if (normalized == 0) {
             disableIdleStandbyTimer()
             return
@@ -2814,8 +2814,14 @@ class PlayerViewModel @Inject constructor(
         playbackTimerDefaultsApplied = true
         sleepTimerExitEmitted = false
         viewModelScope.launch {
-            val stopMinutes = sanitizePlaybackTimerMinutes(preferencesRepository.defaultStopPlaybackTimerMinutes.first())
-            val idleMinutes = sanitizePlaybackTimerMinutes(preferencesRepository.defaultIdleStandbyTimerMinutes.first())
+            val stopMinutes = sanitizePlaybackTimerMinutes(
+                preferencesRepository.defaultStopPlaybackTimerMinutes.first(),
+                PLAYBACK_TIMER_PRESETS_MINUTES
+            )
+            val idleMinutes = sanitizePlaybackTimerMinutes(
+                preferencesRepository.defaultIdleStandbyTimerMinutes.first(),
+                PLAYBACK_TIMER_PRESETS_MINUTES
+            )
             if (!playbackTimerDefaultsApplied || _sleepTimerUiState.value.stopTimerActive || _sleepTimerUiState.value.idleTimerActive) {
                 return@launch
             }
@@ -2860,12 +2866,13 @@ class PlayerViewModel @Inject constructor(
         stopMinutes: Int = _sleepTimerUiState.value.stopTimerMinutes,
         idleMinutes: Int = _sleepTimerUiState.value.idleTimerMinutes
     ): SleepTimerUiState {
-        val now = SystemClock.elapsedRealtime()
-        val next = _sleepTimerUiState.value.copy(
-            stopTimerMinutes = stopMinutes,
-            stopRemainingMs = if (stopPlaybackTimerEndsAtMs > 0L) (stopPlaybackTimerEndsAtMs - now).coerceAtLeast(0L) else 0L,
-            idleTimerMinutes = idleMinutes,
-            idleRemainingMs = if (idleStandbyTimerEndsAtMs > 0L) (idleStandbyTimerEndsAtMs - now).coerceAtLeast(0L) else 0L
+        val next = computeSleepTimerUiState(
+            current = _sleepTimerUiState.value,
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+            stopPlaybackTimerEndsAtMs = stopPlaybackTimerEndsAtMs,
+            idleStandbyTimerEndsAtMs = idleStandbyTimerEndsAtMs,
+            stopMinutes = stopMinutes,
+            idleMinutes = idleMinutes
         )
         _sleepTimerUiState.value = next
         return next
@@ -2895,12 +2902,6 @@ class PlayerViewModel @Inject constructor(
         sleepTimerExitEmitted = false
         _sleepTimerUiState.value = SleepTimerUiState()
     }
-
-    private fun sanitizePlaybackTimerMinutes(minutes: Int): Int =
-        minutes.takeIf { it in PLAYBACK_TIMER_PRESETS_MINUTES } ?: 0
-
-    private fun formatTimerMinutesNotice(minutes: Int): String =
-        if (minutes == 1) "1 minute" else "$minutes minutes"
 
     fun seekForward() {
         notifyUserActivity()
