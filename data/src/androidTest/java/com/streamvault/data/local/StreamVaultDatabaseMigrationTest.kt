@@ -393,6 +393,181 @@ class StreamVaultDatabaseMigrationTest {
     }
 
     @Test
+    fun migrate44To45_dedupesGlobalFavoritesAndAddsNullSafeUniqueKey() {
+        migrationTestHelper.createDatabase("streamvault-44-45-test", 44).apply {
+            execSQL(
+                """
+                INSERT INTO providers (
+                    id, name, type, server_url, username, password, m3u_url, epg_url,
+                    is_active, max_connections, allowed_output_formats_json, epg_sync_mode,
+                    xtream_fast_sync_enabled, m3u_vod_classification_enabled, status,
+                    last_synced_at, created_at
+                ) VALUES (1, 'Provider', 'M3U', 'https://provider.example.com', '', '', '', '', 1, 1, '[]', 'UPFRONT', 0, 0, 'ACTIVE', 0, 0)
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO favorites (id, provider_id, content_id, content_type, position, group_id, added_at)
+                VALUES (1, 1, 10, 'MOVIE', 400, NULL, 200)
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO favorites (id, provider_id, content_id, content_type, position, group_id, added_at)
+                VALUES (2, 1, 10, 'MOVIE', 100, NULL, 100)
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            "streamvault-44-45-test",
+            45,
+            true,
+            StreamVaultDatabase.MIGRATION_44_45
+        )
+
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM favorites WHERE provider_id = 1 AND content_id = 10 AND content_type = 'MOVIE' AND group_id IS NULL"))
+        assertEquals(100, countRows(migratedDb, "SELECT position FROM favorites WHERE provider_id = 1 AND content_id = 10 AND content_type = 'MOVIE' AND group_id IS NULL"))
+        assertEquals(100, countRows(migratedDb, "SELECT added_at FROM favorites WHERE provider_id = 1 AND content_id = 10 AND content_type = 'MOVIE' AND group_id IS NULL"))
+        assertEquals(0, countRows(migratedDb, "SELECT group_key FROM favorites WHERE provider_id = 1 AND content_id = 10 AND content_type = 'MOVIE' AND group_id IS NULL"))
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_favorites_provider_id_content_id_content_type_group_key'"
+            )
+        )
+
+        migratedDb.close()
+    }
+
+    @Test
+    fun migrate45To46_rebuildsSeriesStageWithProviderSeriesKey() {
+        migrationTestHelper.createDatabase("streamvault-45-46-test", 45).apply {
+            execSQL(
+                """
+                INSERT INTO providers (
+                    id, name, type, server_url, username, password, m3u_url, epg_url,
+                    is_active, max_connections, allowed_output_formats_json, epg_sync_mode,
+                    xtream_fast_sync_enabled, m3u_vod_classification_enabled, status,
+                    last_synced_at, created_at
+                ) VALUES (1, 'Provider', 'STALKER_PORTAL', 'https://provider.example.com', '', '', '', '', 1, 1, '[]', 'UPFRONT', 0, 0, 'ACTIVE', 0, 0)
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO series_import_stage (
+                    session_id, provider_id, series_id, name, poster_url, backdrop_url,
+                    category_id, category_name, plot, cast, director, genre, release_date,
+                    rating, tmdb_id, youtube_trailer, episode_run_time, last_modified,
+                    is_adult, sync_fingerprint
+                ) VALUES (10, 1, 256103980, 'Series', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, 0, 0, 'fp')
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            "streamvault-45-46-test",
+            46,
+            true,
+            StreamVaultDatabase.MIGRATION_45_46
+        )
+
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM pragma_table_info('series_import_stage') WHERE name = 'provider_series_id'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM pragma_table_info('series_import_stage') WHERE name = 'provider_series_key'"))
+        assertEquals(256103980, countRows(migratedDb, "SELECT CAST(provider_series_key AS INTEGER) FROM series_import_stage WHERE session_id = 10 AND provider_id = 1"))
+
+        migratedDb.close()
+    }
+
+    @Test
+    fun migrate46To47_createsBrowseQueryIndexes() {
+        migrationTestHelper.createDatabase("streamvault-46-47-test", 46).close()
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            "streamvault-46-47-test",
+            47,
+            true,
+            StreamVaultDatabase.MIGRATION_46_47
+        )
+
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_movies_provider_id_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_movies_provider_id_category_id_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_movies_provider_id_rating_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_movies_provider_id_added_at_release_date_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_series_provider_id_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_series_provider_id_category_id_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_series_provider_id_rating_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_series_provider_id_last_modified_name_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_playback_history_provider_id_content_type_content_id'"
+            )
+        )
+        assertEquals(
+            1,
+            countRows(
+                migratedDb,
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_playback_history_provider_id_content_type_last_watched_at'"
+            )
+        )
+
+        migratedDb.close()
+    }
+
+    @Test
     fun migrate34To35_createsSearchHistoryTable() {
         migrationTestHelper.createDatabase("streamvault-34-35-test", 34).close()
 

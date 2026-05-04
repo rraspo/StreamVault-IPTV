@@ -13,15 +13,22 @@ import android.util.Log
 import com.streamvault.app.MainActivity
 import com.streamvault.app.R
 import com.streamvault.app.device.isTelevisionDevice
+import com.streamvault.app.navigation.ExternalDestination
 import com.streamvault.app.navigation.PlayerNavigationRequest
+import com.streamvault.app.navigation.toPlayerNavigationRequest
+import com.streamvault.domain.model.ActiveLiveSource
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.Provider
+import com.streamvault.domain.repository.CombinedM3uRepository
 import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
 import com.streamvault.domain.usecase.GetRecommendations
+import com.streamvault.domain.usecase.GetContinueWatching
+import com.streamvault.domain.usecase.ContinueWatchingResult
+import com.streamvault.domain.usecase.RecommendationsResult
 import kotlinx.coroutines.Dispatchers
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
@@ -36,11 +43,13 @@ import javax.inject.Singleton
 class LauncherRecommendationsManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val providerRepository: ProviderRepository,
+    private val combinedM3uRepository: CombinedM3uRepository,
     private val playbackHistoryRepository: PlaybackHistoryRepository,
     movieRepository: MovieRepository,
     private val seriesRepository: SeriesRepository
 ) {
     private val getRecommendations = GetRecommendations(movieRepository)
+    private val getContinueWatching = GetContinueWatching(playbackHistoryRepository)
     private val refreshMutex = Mutex()
     @Volatile
     private var lastRefreshAtMs: Long = 0L
@@ -54,7 +63,7 @@ class LauncherRecommendationsManager @Inject constructor(
                 return@withLock
             }
 
-            val provider = providerRepository.getActiveProvider().first()
+            val provider = resolveActiveProvider()
             if (provider == null) {
                 deleteAllManagedChannels()
                 lastRefreshAtMs = now
@@ -72,6 +81,10 @@ class LauncherRecommendationsManager @Inject constructor(
                     .forEach(::deleteChannel)
 
                 specs.forEach { spec ->
+                    if (spec.isDegraded) {
+                        // Transient failure — preserve existing channel and programs unchanged.
+                        return@forEach
+                    }
                     if (spec.programs.isEmpty()) {
                         existingChannels[spec.key]?.let(::deleteChannel)
                         return@forEach
@@ -89,54 +102,86 @@ class LauncherRecommendationsManager @Inject constructor(
         }
     }
 
+    /**
+     * Resolves the provider that should drive launcher recommendation channels.
+     * In single-provider mode, returns the active provider directly.
+     * In combined-live mode, prefers the globally active provider only when it is a
+     * member of the active combined profile; otherwise falls back to the first enabled member.
+     */
+    private suspend fun resolveActiveProvider(): Provider? {
+        val activeSource = combinedM3uRepository.getActiveLiveSource().first()
+        return when (activeSource) {
+            is ActiveLiveSource.CombinedM3uSource -> {
+                val memberIds = combinedM3uRepository.getProfile(activeSource.profileId)
+                    ?.members.orEmpty()
+                    .filter { it.enabled }
+                    .map { it.providerId }
+                val activeProvider = providerRepository.getActiveProvider().first()
+                activeProvider?.takeIf { it.id in memberIds }
+                    ?: memberIds.firstOrNull()?.let { providerRepository.getProvider(it) }
+            }
+            is ActiveLiveSource.ProviderSource -> {
+                providerRepository.getActiveProvider().first()
+                    ?.takeIf { it.id == activeSource.providerId }
+                    ?: providerRepository.getProvider(activeSource.providerId)
+            }
+            null -> providerRepository.getActiveProvider().first()
+        }
+    }
+
     private suspend fun buildChannelSpecs(provider: Provider): List<RecommendationChannelSpec> {
-        val continueWatching = playbackHistoryRepository.getRecentlyWatchedByProvider(provider.id, limit = 12)
-            .first()
-            .asSequence()
-            .filter { it.contentType == ContentType.MOVIE || it.contentType == ContentType.SERIES_EPISODE }
-            .filter { it.resumePositionMs > 0L && it.totalDurationMs > 0L }
-            .distinctBy { it.contentType to it.contentId }
-            .sortedByDescending { it.lastWatchedAt }
-            .map { history ->
+        val continueWatching = when (val result = getContinueWatching(provider.id, limit = 12, requireResumePosition = true).first()) {
+            is ContinueWatchingResult.Items -> result.items
+            ContinueWatchingResult.Degraded -> emptyList()
+        }.map { history ->
                 RecommendationProgramSpec(
                     key = "cw:${history.contentType.name}:${history.contentId}",
                     title = history.title,
                     description = context.getString(R.string.saved_preset_watch_next),
                     posterArtUri = artworkUri(history.posterUrl),
-                    intentUri = buildPlayerIntent(history.toPlayerRequest()).toUri(Intent.URI_INTENT_SCHEME),
+                    intentUri = buildPlayerIntent(history.toPlayerNavigationRequest()).toUri(Intent.URI_INTENT_SCHEME),
                     weight = history.lastWatchedAt.toInt().coerceAtLeast(0),
                     durationMillis = history.totalDurationMs,
                     playbackPositionMillis = history.resumePositionMs,
                     contentType = history.contentType
                 )
             }
-            .toList()
 
-        val recommendedMovies = getRecommendations(provider.id, limit = 12)
-            .first()
-            .mapIndexed { index, movie ->
-                RecommendationProgramSpec(
-                    key = "movie:${movie.id}",
-                    title = movie.name,
-                    description = movie.plot ?: movie.genre ?: provider.name,
-                    posterArtUri = artworkUri(movie.posterUrl ?: movie.backdropUrl),
-                    intentUri = buildPlayerIntent(
-                        PlayerNavigationRequest(
-                            streamUrl = movie.streamUrl,
-                            title = movie.name,
-                            internalId = movie.id,
-                            categoryId = movie.categoryId,
-                            providerId = movie.providerId,
-                            contentType = ContentType.MOVIE.name,
-                            artworkUrl = movie.posterUrl ?: movie.backdropUrl
-                        )
-                    ).toUri(Intent.URI_INTENT_SCHEME),
-                    weight = (TOP_MOVIE_WEIGHT_BASE - index).coerceAtLeast(0),
-                    durationMillis = movie.durationSeconds.toLong() * 1000L,
-                    playbackPositionMillis = movie.watchProgress,
-                    contentType = ContentType.MOVIE
-                )
+        val recommendationsResult = getRecommendations(provider.id, limit = 12).first()
+        val recommendedMovies: List<RecommendationProgramSpec>?
+        val recommendationsDegraded: Boolean
+        when (recommendationsResult) {
+            is RecommendationsResult.Success -> {
+                recommendedMovies = recommendationsResult.movies.mapIndexed { index, movie ->
+                    RecommendationProgramSpec(
+                        key = "movie:${movie.id}",
+                        title = movie.name,
+                        description = movie.plot ?: movie.genre ?: provider.name,
+                        posterArtUri = artworkUri(movie.posterUrl ?: movie.backdropUrl),
+                        intentUri = buildPlayerIntent(
+                            PlayerNavigationRequest(
+                                streamUrl = movie.streamUrl,
+                                title = movie.name,
+                                internalId = movie.id,
+                                categoryId = movie.categoryId,
+                                providerId = movie.providerId,
+                                contentType = ContentType.MOVIE.name,
+                                artworkUrl = movie.posterUrl ?: movie.backdropUrl
+                            )
+                        ).toUri(Intent.URI_INTENT_SCHEME),
+                        weight = (TOP_MOVIE_WEIGHT_BASE - index).coerceAtLeast(0),
+                        durationMillis = movie.durationSeconds.toLong() * 1000L,
+                        playbackPositionMillis = movie.watchProgress,
+                        contentType = ContentType.MOVIE
+                    )
+                }
+                recommendationsDegraded = false
             }
+            RecommendationsResult.Degraded -> {
+                recommendedMovies = emptyList()
+                recommendationsDegraded = true
+            }
+        }
 
         val freshSeries = seriesRepository.getFreshPreview(provider.id, limit = 12)
             .first()
@@ -146,7 +191,9 @@ class LauncherRecommendationsManager @Inject constructor(
                     title = series.name,
                     description = series.plot ?: series.genre ?: provider.name,
                     posterArtUri = artworkUri(series.posterUrl ?: series.backdropUrl),
-                    intentUri = buildRouteIntent("series_detail/${series.id}").toUri(Intent.URI_INTENT_SCHEME),
+                    intentUri = buildDestinationIntent(
+                        ExternalDestination.SeriesDetail(series.id)
+                    ).toUri(Intent.URI_INTENT_SCHEME),
                     weight = (FRESH_SERIES_WEIGHT_BASE - index).coerceAtLeast(0),
                     durationMillis = 0L,
                     playbackPositionMillis = 0L,
@@ -165,7 +212,8 @@ class LauncherRecommendationsManager @Inject constructor(
                 key = CHANNEL_TOP_MOVIES,
                 title = context.getString(R.string.tv_channel_recommended_movies_title),
                 description = context.getString(R.string.tv_channel_recommended_movies_description, provider.name),
-                programs = recommendedMovies
+                programs = recommendedMovies,
+                isDegraded = recommendationsDegraded
             ),
             RecommendationChannelSpec(
                 key = CHANNEL_FRESH_SERIES,
@@ -304,16 +352,14 @@ class LauncherRecommendationsManager @Inject constructor(
             .putExtra(MainActivity.EXTRA_PLAYER_REQUEST, request)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
-    private fun buildRouteIntent(route: String): Intent =
+    private fun buildDestinationIntent(destination: ExternalDestination): Intent =
         Intent(context, MainActivity::class.java)
             .setAction(Intent.ACTION_VIEW)
-            .putExtra(MainActivity.EXTRA_EXTERNAL_ROUTE, route)
+            .putExtra(MainActivity.EXTRA_EXTERNAL_DESTINATION, destination)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
     private fun buildBrowseIntent(): Intent =
-        Intent(context, MainActivity::class.java)
-            .setAction(Intent.ACTION_VIEW)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        buildDestinationIntent(ExternalDestination.Home)
 
     private fun requestChannelBrowsable(channelId: Long) {
         runCatching {
@@ -357,21 +403,12 @@ class LauncherRecommendationsManager @Inject constructor(
         return Uri.parse("android.resource://${context.packageName}/${R.mipmap.ic_launcher_vault}")
     }
 
-    private fun PlaybackHistory.toPlayerRequest(): PlayerNavigationRequest =
-        PlayerNavigationRequest(
-            streamUrl = streamUrl,
-            title = title,
-            internalId = contentId,
-            providerId = providerId,
-            contentType = contentType.name,
-            artworkUrl = posterUrl
-        )
-
     private data class RecommendationChannelSpec(
         val key: String,
         val title: String,
         val description: String,
-        val programs: List<RecommendationProgramSpec>
+        val programs: List<RecommendationProgramSpec>,
+        val isDegraded: Boolean = false
     )
 
     private data class RecommendationProgramSpec(

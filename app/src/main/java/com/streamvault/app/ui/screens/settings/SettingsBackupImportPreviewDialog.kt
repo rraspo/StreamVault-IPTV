@@ -40,12 +40,15 @@ internal fun BackupImportPreviewDialog(
     onImportPlaybackHistoryChanged: (Boolean) -> Unit,
     onImportMultiViewChanged: (Boolean) -> Unit,
     onImportRecordingSchedulesChanged: (Boolean) -> Unit,
+    isImporting: Boolean = false,
     onConfirm: () -> Unit
 ) {
+    val anyEnabled = plan.importPreferences || plan.importProviders || plan.importSavedLibrary ||
+        plan.importPlaybackHistory || plan.importMultiViewPresets || plan.importRecordingSchedules
     PremiumDialog(
         title = stringResource(R.string.settings_backup_preview_title),
         subtitle = stringResource(R.string.settings_backup_preview_subtitle, preview.version),
-        onDismissRequest = onDismiss,
+        onDismissRequest = if (isImporting) ({}) else onDismiss,
         widthFraction = 0.58f,
         content = {
             BackupPreviewRow(stringResource(R.string.settings_backup_section_preferences), preview.preferenceCount, 0)
@@ -86,12 +89,14 @@ internal fun BackupImportPreviewDialog(
         footer = {
             PremiumDialogFooterButton(
                 label = stringResource(R.string.settings_cancel),
-                onClick = onDismiss
+                onClick = onDismiss,
+                enabled = !isImporting
             )
             PremiumDialogFooterButton(
                 label = stringResource(R.string.settings_backup_import_confirm),
                 onClick = onConfirm,
-                emphasized = true
+                emphasized = true,
+                enabled = anyEnabled && !isImporting
             )
         }
     )

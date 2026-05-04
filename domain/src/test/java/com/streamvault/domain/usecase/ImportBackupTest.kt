@@ -5,6 +5,9 @@ import com.streamvault.domain.manager.BackupConflictStrategy
 import com.streamvault.domain.manager.BackupImportPlan
 import com.streamvault.domain.manager.BackupImportResult
 import com.streamvault.domain.manager.BackupPreview
+import com.streamvault.domain.manager.RecordingScheduleImportDisposition
+import com.streamvault.domain.manager.RecordingScheduleImportOutcome
+import com.streamvault.domain.manager.RecordingScheduleImportSummary
 import com.streamvault.domain.model.Result
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -76,6 +79,44 @@ class ImportBackupTest {
 
         assertThat(result).isInstanceOf(ImportBackupResult.Error::class.java)
         assertThat((result as ImportBackupResult.Error).message).isEqualTo("Backup source is unavailable.")
+    }
+
+    @Test
+    fun import_summary_includes_recording_schedule_failures() = runTest {
+        val manager = FakeImportBackupManager(
+            importResult = Result.success(
+                BackupImportResult(
+                    importedSections = listOf("Providers", "Recording Schedules"),
+                    recordingScheduleImport = RecordingScheduleImportSummary(
+                        outcomes = listOf(
+                            RecordingScheduleImportOutcome(
+                                channelName = "BBC One",
+                                programTitle = "World News",
+                                scheduledStartMs = 1_000L,
+                                scheduledEndMs = 2_000L,
+                                disposition = RecordingScheduleImportDisposition.REPLACED_EXISTING
+                            ),
+                            RecordingScheduleImportOutcome(
+                                channelName = "BBC Two",
+                                programTitle = "Documentary",
+                                scheduledStartMs = 3_000L,
+                                scheduledEndMs = 4_000L,
+                                disposition = RecordingScheduleImportDisposition.FAILED,
+                                reason = "Provider connection limit reached."
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        val useCase = ImportBackup(manager)
+
+        val result = useCase.confirm(ImportBackupCommand(uriString = "content://backup.json"))
+
+        assertThat(result).isInstanceOf(ImportBackupResult.Success::class.java)
+        val success = result as ImportBackupResult.Success
+        assertThat(success.importedSummary)
+            .isEqualTo("Providers, Recording Schedules. Recording schedules: 1 imported, 0 skipped, 1 failed")
     }
 }
 

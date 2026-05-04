@@ -19,8 +19,8 @@ interface ProviderRepository {
     suspend fun updateProvider(provider: Provider): Result<Unit>
     suspend fun deleteProvider(id: Long): Result<Unit>
     suspend fun setActiveProvider(id: Long): Result<Unit>
-    suspend fun loginXtream(serverUrl: String, username: String, password: String, name: String, xtreamFastSyncEnabled: Boolean, epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.UPFRONT, onProgress: ((String) -> Unit)? = null, id: Long? = null): Result<Provider>
-    suspend fun validateM3u(url: String, name: String, epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.UPFRONT, m3uVodClassificationEnabled: Boolean = false, onProgress: ((String) -> Unit)? = null, id: Long? = null): Result<Provider>
+    suspend fun loginXtream(serverUrl: String, username: String, password: String, name: String, xtreamFastSyncEnabled: Boolean, epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND, onProgress: ((String) -> Unit)? = null, id: Long? = null): Result<Provider>
+    suspend fun validateM3u(url: String, name: String, epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND, m3uVodClassificationEnabled: Boolean = false, onProgress: ((String) -> Unit)? = null, id: Long? = null): Result<Provider>
     suspend fun loginStalker(
         portalUrl: String,
         macAddress: String,
@@ -28,7 +28,7 @@ interface ProviderRepository {
         deviceProfile: String = "",
         timezone: String = "",
         locale: String = "",
-        epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.UPFRONT,
+        epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND,
         onProgress: ((String) -> Unit)? = null,
         id: Long? = null
     ): Result<Provider>

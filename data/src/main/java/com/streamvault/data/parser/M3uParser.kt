@@ -3,6 +3,7 @@ package com.streamvault.data.parser
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.util.ChannelNormalizer
+import com.streamvault.domain.util.StreamEntryUrlPolicy
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -160,11 +161,11 @@ class M3uParser {
             tvgId = extinf.tvgId,
             tvgName = extinf.tvgName,
             tvgLogo = extinf.tvgLogo,
-            tvgChno = extinf.tvgChno?.toIntOrNull(),
+            tvgChno = extinf.tvgChno?.toIntOrNull()?.takeIf { it in 1..99999 },
             tvgLanguage = extinf.tvgLanguage,
             tvgCountry = extinf.tvgCountry,
             catchUp = extinf.catchUp,
-            catchUpDays = extinf.catchUpDays?.toIntOrNull(),
+            catchUpDays = extinf.catchUpDays?.toIntOrNull()?.takeIf { it in 0..365 },
             catchUpSource = extinf.catchUpSource,
             timeshift = extinf.timeshift,
             url = url,
@@ -293,11 +294,15 @@ class M3uParser {
 
     private fun findFirstUnquotedComma(value: String): Int {
         var inQuotes = false
-        for (i in value.indices) {
-            when (value[i]) {
-                '"' -> inQuotes = !inQuotes
-                ',' -> if (!inQuotes) return i
+        var i = 0
+        while (i < value.length) {
+            when {
+                // Backslash escape inside a quoted string: skip the next character entirely
+                value[i] == '\\' && inQuotes && i + 1 < value.length -> i++
+                value[i] == '"' -> inQuotes = !inQuotes
+                value[i] == ',' && !inQuotes -> return i
             }
+            i++
         }
         return -1
     }
@@ -354,15 +359,21 @@ class M3uParser {
 
             val value = if (content[index] == '"') {
                 index++
-                val valueStart = index
+                val sb = StringBuilder()
                 while (index < length && content[index] != '"') {
+                    if (content[index] == '\\' && index + 1 < length) {
+                        // Consume the backslash and include the next character literally
+                        index++
+                        sb.append(content[index])
+                    } else {
+                        sb.append(content[index])
+                    }
                     index++
                 }
-                val parsed = content.substring(valueStart, minOf(index, length))
                 if (index < length && content[index] == '"') {
                     index++
                 }
-                parsed
+                sb.toString()
             } else {
                 // Unquoted value — consume until the next known attribute key or end
                 val valueStart = index
@@ -395,13 +406,17 @@ class M3uParser {
         return attributes
     }
 
+    /**
+     * Returns true if [url] is an acceptable stream entry URL.
+     *
+     * Delegates to the shared [StreamEntryUrlPolicy] (which detects control-separator
+     * injection up to two encoding layers and enforces the allowed-scheme set) and
+     * additionally rejects URLs that exceed the maximum safe length.
+     */
     private fun isAllowedStreamUrl(url: String): Boolean {
         val trimmed = url.trim()
         if (trimmed.length > 8192) return false
-        val lower = trimmed.lowercase()
-        if (lower.contains("%0a") || lower.contains("%0d")) return false
-        val allowedPrefixes = listOf("http://", "https://", "rtsp://", "rtmp://", "mms://")
-        return allowedPrefixes.any { lower.startsWith(it) }
+        return StreamEntryUrlPolicy.isAllowed(trimmed)
     }
 
     companion object {

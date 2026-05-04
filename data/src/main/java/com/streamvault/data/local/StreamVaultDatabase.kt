@@ -46,7 +46,7 @@ import com.streamvault.data.local.entity.*
         RecordingStorageEntity::class,
         PlaybackCompatibilityRecordEntity::class
     ],
-    version = 44,
+    version = 47,
     exportSchema = true   // ← was false; schema JSON now tracked in version control
 )
 @TypeConverters(RoomEnumConverters::class)
@@ -1978,6 +1978,177 @@ abstract class StreamVaultDatabase : RoomDatabase() {
                         END
                     """.trimIndent()
                 )
+            }
+        }
+
+        /**
+         * Migration 44 -> 45: make favorite uniqueness null-safe by materializing a non-null
+         * group scope key and deduping any pre-existing global favorite collisions.
+         */
+        val MIGRATION_44_45 = object : Migration(44, 45) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE favorites ADD COLUMN group_key INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("UPDATE favorites SET group_key = COALESCE(group_id, 0)")
+                database.execSQL(
+                    """
+                    UPDATE favorites
+                    SET position = (
+                            SELECT MIN(dupe.position)
+                            FROM favorites AS dupe
+                            WHERE dupe.group_id IS NULL
+                              AND dupe.provider_id = favorites.provider_id
+                              AND dupe.content_id = favorites.content_id
+                              AND dupe.content_type = favorites.content_type
+                        ),
+                        added_at = (
+                            SELECT MIN(dupe.added_at)
+                            FROM favorites AS dupe
+                            WHERE dupe.group_id IS NULL
+                              AND dupe.provider_id = favorites.provider_id
+                              AND dupe.content_id = favorites.content_id
+                              AND dupe.content_type = favorites.content_type
+                        )
+                    WHERE favorites.group_id IS NULL
+                      AND favorites.id IN (
+                          SELECT MIN(id)
+                          FROM favorites
+                          WHERE group_id IS NULL
+                          GROUP BY provider_id, content_id, content_type
+                          HAVING COUNT(*) > 1
+                      )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    """
+                    DELETE FROM favorites
+                    WHERE group_id IS NULL
+                      AND id NOT IN (
+                          SELECT MIN(id)
+                          FROM favorites
+                          WHERE group_id IS NULL
+                          GROUP BY provider_id, content_id, content_type
+                      )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS index_favorites_provider_id_content_id_content_type_group_key ON favorites(provider_id, content_id, content_type, group_key)"
+                )
+                validateForeignKeys(database, "favorites")
+            }
+        }
+
+        /**
+         * Migration 45 -> 46: preserve provider-native series IDs through staging by storing both
+         * the raw provider ID and a non-null remote key used for staged apply matching.
+         */
+        val MIGRATION_45_46 = object : Migration(45, 46) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS series_import_stage_new (
+                        session_id INTEGER NOT NULL,
+                        provider_id INTEGER NOT NULL,
+                        series_id INTEGER NOT NULL,
+                        provider_series_id TEXT,
+                        provider_series_key TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        poster_url TEXT,
+                        backdrop_url TEXT,
+                        category_id INTEGER,
+                        category_name TEXT,
+                        plot TEXT,
+                        cast TEXT,
+                        director TEXT,
+                        genre TEXT,
+                        release_date TEXT,
+                        rating REAL NOT NULL,
+                        tmdb_id INTEGER,
+                        youtube_trailer TEXT,
+                        episode_run_time TEXT,
+                        last_modified INTEGER NOT NULL,
+                        is_adult INTEGER NOT NULL,
+                        sync_fingerprint TEXT NOT NULL,
+                        PRIMARY KEY(session_id, provider_id, provider_series_key),
+                        FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    """
+                    INSERT INTO series_import_stage_new (
+                        session_id,
+                        provider_id,
+                        series_id,
+                        provider_series_id,
+                        provider_series_key,
+                        name,
+                        poster_url,
+                        backdrop_url,
+                        category_id,
+                        category_name,
+                        plot,
+                        cast,
+                        director,
+                        genre,
+                        release_date,
+                        rating,
+                        tmdb_id,
+                        youtube_trailer,
+                        episode_run_time,
+                        last_modified,
+                        is_adult,
+                        sync_fingerprint
+                    )
+                    SELECT
+                        session_id,
+                        provider_id,
+                        series_id,
+                        NULL,
+                        CAST(series_id AS TEXT),
+                        name,
+                        poster_url,
+                        backdrop_url,
+                        category_id,
+                        category_name,
+                        plot,
+                        cast,
+                        director,
+                        genre,
+                        release_date,
+                        rating,
+                        tmdb_id,
+                        youtube_trailer,
+                        episode_run_time,
+                        last_modified,
+                        is_adult,
+                        sync_fingerprint
+                    FROM series_import_stage
+                    """.trimIndent()
+                )
+                database.execSQL("DROP TABLE series_import_stage")
+                database.execSQL("ALTER TABLE series_import_stage_new RENAME TO series_import_stage")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_import_stage_provider_id ON series_import_stage(provider_id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_import_stage_session_id_provider_id ON series_import_stage(session_id, provider_id)")
+                validateForeignKeys(database, "series_import_stage")
+            }
+        }
+
+        /**
+         * Migration 46 -> 47: add provider-leading browse indexes so large-provider cursor pages,
+         * category/rating sorts, and correlated playback-history filters avoid wide scans.
+         */
+        val MIGRATION_46_47 = object : Migration(46, 47) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_movies_provider_id_name_id ON movies(provider_id, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_movies_provider_id_category_id_name_id ON movies(provider_id, category_id, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_movies_provider_id_rating_name_id ON movies(provider_id, rating, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_movies_provider_id_added_at_release_date_name_id ON movies(provider_id, added_at, release_date, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_provider_id_name_id ON series(provider_id, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_provider_id_category_id_name_id ON series(provider_id, category_id, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_provider_id_rating_name_id ON series(provider_id, rating, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_series_provider_id_last_modified_name_id ON series(provider_id, last_modified, name, id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_playback_history_provider_id_content_type_content_id ON playback_history(provider_id, content_type, content_id)")
+                database.execSQL("CREATE INDEX IF NOT EXISTS index_playback_history_provider_id_content_type_last_watched_at ON playback_history(provider_id, content_type, last_watched_at)")
             }
         }
     }

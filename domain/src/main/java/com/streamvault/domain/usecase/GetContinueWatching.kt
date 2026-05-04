@@ -8,6 +8,7 @@ import com.streamvault.domain.util.shouldRethrowDomainFlowFailure
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -16,6 +17,11 @@ enum class ContinueWatchingScope {
     ALL_VOD,
     MOVIES,
     SERIES
+}
+
+sealed class ContinueWatchingResult {
+    data class Items(val items: List<PlaybackHistory>) : ContinueWatchingResult()
+    data object Degraded : ContinueWatchingResult()
 }
 
 class GetContinueWatching @Inject constructor(
@@ -28,26 +34,60 @@ class GetContinueWatching @Inject constructor(
         limit: Int = 24,
         scope: ContinueWatchingScope = ContinueWatchingScope.ALL_VOD,
         requireResumePosition: Boolean = false
-    ): Flow<List<PlaybackHistory>> {
-        val upstreamLimit = maxOf(limit * 4, limit)
-        return playbackHistoryRepository.getRecentlyWatchedByProvider(providerId, upstreamLimit)
-            .map { history ->
-                history.asSequence()
-                    .filter { entry -> scope.matches(entry.contentType) }
-                    .filterNot { entry -> entry.isCompleted() }
-                    .filter { entry -> !requireResumePosition || entry.isResumeEligible() }
-                    .distinctBy(::continueWatchingKey)
-                    .take(limit)
-                    .toList()
+    ): Flow<ContinueWatchingResult> = invoke(
+        providerIds = setOf(providerId),
+        limit = limit,
+        scope = scope,
+        requireResumePosition = requireResumePosition
+    )
+
+    operator fun invoke(
+        providerIds: Set<Long>,
+        limit: Int = 24,
+        scope: ContinueWatchingScope = ContinueWatchingScope.ALL_VOD,
+        requireResumePosition: Boolean = false
+    ): Flow<ContinueWatchingResult> {
+        val normalizedProviderIds = providerIds.filterTo(linkedSetOf()) { it > 0L }
+        if (normalizedProviderIds.isEmpty()) {
+            return flowOf(ContinueWatchingResult.Items(emptyList()))
+        }
+
+        val historyFlow = if (normalizedProviderIds.size == 1) {
+            playbackHistoryRepository.getRecentlyWatchedByProvider(normalizedProviderIds.first(), limit)
+        } else {
+            playbackHistoryRepository.getRecentlyWatchedByProviders(normalizedProviderIds, limit)
+        }
+
+        return historyFlow
+            .map<List<PlaybackHistory>, ContinueWatchingResult> { history ->
+                ContinueWatchingResult.Items(
+                    history.toContinueWatching(
+                        limit = limit,
+                        scope = scope,
+                        requireResumePosition = requireResumePosition
+                    )
+                )
             }
             .catch { error ->
                 if (error.shouldRethrowDomainFlowFailure()) {
                     throw error
                 }
                 logger.log(Level.WARNING, "Failed to build continue watching list", error)
-                emit(emptyList())
+                emit(ContinueWatchingResult.Degraded)
             }
     }
+
+    private fun List<PlaybackHistory>.toContinueWatching(
+        limit: Int,
+        scope: ContinueWatchingScope,
+        requireResumePosition: Boolean
+    ): List<PlaybackHistory> = asSequence()
+        .filter { entry -> scope.matches(entry.contentType) }
+        .filterNot { entry -> entry.isCompleted() }
+        .filter { entry -> !requireResumePosition || entry.isResumeEligible() }
+        .distinctBy(::continueWatchingKey)
+        .take(limit)
+        .toList()
 
     private fun ContinueWatchingScope.matches(contentType: ContentType): Boolean = when (this) {
         ContinueWatchingScope.ALL_VOD -> contentType != ContentType.LIVE

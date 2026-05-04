@@ -1,6 +1,7 @@
 package com.streamvault.data.remote.xtream
 
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.util.StreamEntryUrlPolicy
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -413,12 +414,17 @@ object XtreamUrlFactory {
             ?.trim()
             ?.removePrefix(".")
             ?.lowercase(Locale.ROOT)
-            ?.takeIf { it.isNotEmpty() }
+            // Allow-list: lowercase alphanumeric only, 1–12 chars.
+            // Rejects path traversal chars, query chars, and control characters.
+            ?.takeIf { it.matches(Regex("[a-z0-9]{1,12}")) }
     }
 
     private fun normalizeDirectSource(directSource: String?): String? {
-        return directSource
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
+        val trimmed = directSource?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        // Cap length before storing in internal URLs/database to prevent oversized tokens.
+        if (trimmed.length > 8192) return null
+        // Validate the value is a permitted stream URL; rejected values are dropped here
+        // rather than surfaced as a playback error later.
+        return trimmed.takeIf { StreamEntryUrlPolicy.isAllowed(it) }
     }
 }

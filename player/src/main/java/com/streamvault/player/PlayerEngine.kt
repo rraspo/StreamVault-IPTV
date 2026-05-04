@@ -85,6 +85,7 @@ interface PlayerEngine {
     fun selectSubtitleTrack(trackId: String?) // null to disable subtitles
     fun addExternalSubtitle(subtitleUri: android.net.Uri, language: String)
     fun release()
+    fun resetForReuse() = release()
 
     /** Toggle mute without losing the remembered volume level. */
     fun toggleMute()

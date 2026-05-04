@@ -44,6 +44,9 @@ class EpgResolutionEngineTest {
 
     @Before
     fun setup() {
+        runTest {
+            whenever(programDao.getChannelIdsWithPrograms(any(), any())).thenReturn(emptyList())
+        }
         engine = EpgResolutionEngine(
             channelDao = channelDao,
             channelEpgMappingDao = channelEpgMappingDao,
@@ -67,7 +70,6 @@ class EpgResolutionEngineTest {
             listOf(EpgChannelEntity(id = 1, epgSourceId = SOURCE_1, xmltvChannelId = "bbc1.uk", displayName = "BBC One", normalizedName = "bbcone"))
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -95,7 +97,6 @@ class EpgResolutionEngineTest {
             listOf(EpgChannelEntity(id = 1, epgSourceId = SOURCE_1, xmltvChannelId = "cnn.intl", displayName = "CNN International", normalizedName = EpgNameNormalizer.normalize("CNN International")))
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -116,7 +117,7 @@ class EpgResolutionEngineTest {
         whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(channel))
         whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(10)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID, listOf("local.ch1"))).thenReturn(listOf("local.ch1"))
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -135,7 +136,6 @@ class EpgResolutionEngineTest {
         whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(channel))
         whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -155,7 +155,7 @@ class EpgResolutionEngineTest {
         whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(channel))
         whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(10)
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID, listOf("local.ch1"))).thenReturn(listOf("local.ch1"))
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -179,7 +179,6 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_2, xmltvChannelId = "bbc1", displayName = "BBC 1", normalizedName = "bbc1")
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -210,7 +209,6 @@ class EpgResolutionEngineTest {
             confidence = 1.0f, isManualOverride = true, updatedAt = 1000L
         )
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(listOf(manualMapping))
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         engine.resolveForProvider(PROVIDER_ID)
 
@@ -248,7 +246,6 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_1, xmltvChannelId = "bbc.one.sd", displayName = "BBC One HD", normalizedName = EpgNameNormalizer.normalize("BBC One HD"))
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -276,7 +273,6 @@ class EpgResolutionEngineTest {
             EpgChannelEntity(id = 2, epgSourceId = SOURCE_1, xmltvChannelId = "ch-b", displayName = "Channel B", normalizedName = "channelb")
         ))
         whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
-        whenever(programDao.countByProvider(PROVIDER_ID)).thenReturn(0)
 
         val summary = engine.resolveForProvider(PROVIDER_ID)
 
@@ -289,6 +285,27 @@ class EpgResolutionEngineTest {
         assertThat(mappings).hasSize(2)
         // Each channel gets exactly one mapping — no duplicates
         assertThat(mappings.map { it.providerChannelId }.toSet()).containsExactly(1L, 2L)
+    }
+
+    @Test
+    fun `resolveForProvider_providerNativeFallback_requiresCoverageForEachChannel`() = runTest {
+        val coveredChannel = makeChannel(id = 1, name = "Local One", epgChannelId = "local.one")
+        val uncoveredChannel = makeChannel(id = 2, name = "Local Two", epgChannelId = "local.two")
+        whenever(channelDao.getByProviderSync(PROVIDER_ID)).thenReturn(listOf(coveredChannel, uncoveredChannel))
+        whenever(providerEpgSourceDao.getEnabledForProviderSync(PROVIDER_ID)).thenReturn(emptyList())
+        whenever(channelEpgMappingDao.getForProvider(PROVIDER_ID)).thenReturn(emptyList())
+        whenever(programDao.getChannelIdsWithPrograms(PROVIDER_ID, listOf("local.one", "local.two"))).thenReturn(listOf("local.one"))
+
+        val summary = engine.resolveForProvider(PROVIDER_ID)
+
+        assertThat(summary.providerNativeMatches).isEqualTo(1)
+        assertThat(summary.unresolvedChannels).isEqualTo(1)
+
+        val captor = argumentCaptor<List<ChannelEpgMappingEntity>>()
+        verify(channelEpgMappingDao).replaceForProvider(any(), captor.capture())
+        val mappings = captor.firstValue.associateBy { it.providerChannelId }
+        assertThat(mappings.getValue(1L).sourceType).isEqualTo(EpgSourceType.PROVIDER.name)
+        assertThat(mappings.getValue(2L).sourceType).isEqualTo(EpgSourceType.NONE.name)
     }
 
     // ── getResolvedProgrammes ──────────────────────────────────────

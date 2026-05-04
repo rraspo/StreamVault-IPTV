@@ -55,3 +55,9 @@ enum class ProviderStatus {
     ERROR,
     UNKNOWN
 }
+
+class ProviderSavedWithSyncErrorException(
+    val provider: Provider,
+    message: String,
+    cause: Throwable? = null
+) : Exception(message, cause)

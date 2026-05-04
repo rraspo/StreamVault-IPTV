@@ -1141,7 +1141,7 @@ private fun SeriesVodClassicContent(
             )
             LazyVerticalGrid(
                 state = classicGridState,
-                columns = GridCells.Adaptive(minSize = 136.dp),
+                columns = GridCells.Adaptive(minSize = 68.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)

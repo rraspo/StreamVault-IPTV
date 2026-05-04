@@ -11,31 +11,37 @@ import android.util.Log
 import com.streamvault.app.MainActivity
 import com.streamvault.app.R
 import com.streamvault.app.device.isTelevisionDevice
-import com.streamvault.app.navigation.PlayerNavigationRequest
+import com.streamvault.app.navigation.toPlayerNavigationRequest
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.repository.PlaybackHistoryRepository
+import com.streamvault.domain.repository.ProviderRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class WatchNextManager @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val playbackHistoryRepository: PlaybackHistoryRepository
+    private val playbackHistoryRepository: PlaybackHistoryRepository,
+    private val providerRepository: ProviderRepository
 ) {
 
-    suspend fun refreshWatchNext() {
-        if (!context.isTelevisionDevice()) return
-        val historyEntries = playbackHistoryRepository.getRecentlyWatched(limit = 40)
-            .first()
-            .asSequence()
-            .filter(::isEligibleForWatchNext)
-            .distinctBy(::watchNextKey)
-            .sortedByDescending { it.lastWatchedAt }
-            .take(MAX_WATCH_NEXT_ITEMS)
-            .toList()
+    suspend fun refreshWatchNext() = withContext(Dispatchers.IO) {
+        if (!context.isTelevisionDevice()) return@withContext
+        val activeProviderId = providerRepository.getActiveProvider().first()?.id
+        val historyEntries = selectWatchNextHistoryEntries(
+            activeProviderId = activeProviderId,
+            historyEntries = when {
+                activeProviderId == null -> emptyList()
+                else -> playbackHistoryRepository
+                    .getRecentlyWatchedByProvider(activeProviderId, limit = 40)
+                    .first()
+            }
+        )
 
         runCatching {
             val existingEntries = loadExistingEntries()
@@ -93,7 +99,7 @@ class WatchNextManager @Inject constructor(
     private fun buildWatchNextValues(history: PlaybackHistory): ContentValues {
         val launchIntent = Intent(context, MainActivity::class.java)
             .setAction(Intent.ACTION_VIEW)
-            .putExtra(MainActivity.EXTRA_PLAYER_REQUEST, history.toPlayerRequest())
+            .putExtra(MainActivity.EXTRA_PLAYER_REQUEST, history.toPlayerNavigationRequest())
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
 
         return ContentValues().apply {
@@ -137,16 +143,6 @@ class WatchNextManager @Inject constructor(
     private fun watchNextKey(history: PlaybackHistory): String =
         "${history.providerId}:${history.contentType.name}:${history.contentId}"
 
-    private fun PlaybackHistory.toPlayerRequest(): PlayerNavigationRequest =
-        PlayerNavigationRequest(
-            streamUrl = streamUrl,
-            title = title,
-            internalId = contentId,
-            providerId = providerId,
-            contentType = contentType.name,
-            artworkUrl = posterUrl
-        )
-
     private companion object {
         const val TAG = "WatchNextManager"
         const val MAX_WATCH_NEXT_ITEMS = 12
@@ -162,4 +158,24 @@ class WatchNextManager @Inject constructor(
         const val COLUMN_LAST_ENGAGEMENT_TIME_UTC_MILLIS = "last_engagement_time_utc_millis"
         const val COLUMN_WATCH_NEXT_TYPE = "watch_next_type"
     }
+}
+
+internal fun selectWatchNextHistoryEntries(
+    activeProviderId: Long?,
+    historyEntries: List<PlaybackHistory>
+): List<PlaybackHistory> {
+    val scopedProviderId = activeProviderId?.takeIf { it > 0L } ?: return emptyList()
+    return historyEntries
+        .asSequence()
+        .filter { it.providerId == scopedProviderId }
+        .filter { history ->
+            history.resumePositionMs > 0L &&
+                history.totalDurationMs > 0L &&
+                (history.contentType == ContentType.MOVIE || history.contentType == ContentType.SERIES_EPISODE) &&
+                history.resumePositionMs < history.totalDurationMs * 0.95f
+        }
+        .distinctBy { history -> "${history.providerId}:${history.contentType.name}:${history.contentId}" }
+        .sortedByDescending { it.lastWatchedAt }
+        .take(12)
+        .toList()
 }

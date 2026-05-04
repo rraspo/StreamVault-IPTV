@@ -4,6 +4,7 @@ import com.streamvault.domain.model.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,25 +24,33 @@ class MultiViewManager @Inject constructor() {
     /** Place a channel in a specific slot index (0–3). Replaces whatever was there. */
     fun setChannel(slotIndex: Int, channel: Channel) {
         if (slotIndex !in 0 until MAX_SLOTS) return
-        _slots.value = _slots.value.toMutableList().also { slots ->
-            slots.indices.forEach { index ->
-                if (index != slotIndex && slots[index]?.id == channel.id) {
-                    slots[index] = null
+        _slots.update { current ->
+            current.toMutableList().also { slots ->
+                slots.indices.forEach { index ->
+                    if (index != slotIndex && slots[index]?.id == channel.id) {
+                        slots[index] = null
+                    }
                 }
+                slots[slotIndex] = channel
             }
-            slots[slotIndex] = channel
         }
     }
 
     /** Clear a specific slot. */
     fun clearSlot(slotIndex: Int) {
         if (slotIndex !in 0 until MAX_SLOTS) return
-        _slots.value = _slots.value.toMutableList().also { it[slotIndex] = null }
+        _slots.update { current -> current.toMutableList().also { it[slotIndex] = null } }
     }
 
     /** Clear all slots. */
     fun clearAll() {
-        _slots.value = List(MAX_SLOTS) { null }
+        _slots.update { List(MAX_SLOTS) { null } }
+    }
+
+    /** Atomically replace all slot assignments. `plan` must have exactly MAX_SLOTS entries. */
+    fun setSlots(plan: List<Channel?>) {
+        require(plan.size == MAX_SLOTS)
+        _slots.update { plan.toList() }
     }
 
     /** Returns true if the given channel is in any slot. */

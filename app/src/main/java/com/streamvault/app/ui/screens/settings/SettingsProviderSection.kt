@@ -104,7 +104,7 @@ internal fun LazyListScope.providerSection(
                     }
                     providerState.showProviderSyncDialog = true
                 },
-                onDelete = { viewModel.deleteProvider(selectedProvider.id) },
+                onDelete = { providerState.pendingDeleteProviderId = selectedProvider.id },
                 onEdit = { onEditProvider(selectedProvider) },
                 onParentalControl = { onNavigateToParentalControl(selectedProvider.id) },
                 onToggleM3uVodClassification = { enabled ->

@@ -15,6 +15,7 @@ internal fun SettingsUiState.applyPreferenceSnapshot(snapshot: SettingsPreferenc
         playerSurfaceMode = snapshot.playerSurfaceMode,
         playerPlaybackSpeed = snapshot.playerPlaybackSpeed,
         playerAudioVideoOffsetMs = snapshot.playerAudioVideoOffsetMs,
+        centerTwoSlotMultiviewLayout = snapshot.centerTwoSlotMultiviewLayout,
         playerControlsTimeoutSeconds = snapshot.playerControlsTimeoutSeconds,
         playerLiveOverlayTimeoutSeconds = snapshot.playerLiveOverlayTimeoutSeconds,
         playerNoticeTimeoutSeconds = snapshot.playerNoticeTimeoutSeconds,

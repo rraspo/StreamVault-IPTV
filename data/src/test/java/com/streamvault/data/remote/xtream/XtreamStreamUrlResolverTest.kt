@@ -361,6 +361,8 @@ class XtreamStreamUrlResolverTest {
         override suspend fun getById(id: Long): ProviderEntity? = provider?.takeIf { it.id == id }
         override suspend fun getByIds(ids: List<Long>): List<ProviderEntity> =
             listOfNotNull(provider).filter { it.id in ids }
+        override suspend fun insertDirect(provider: ProviderEntity): Long = provider.id
+        override suspend fun updateDirect(provider: ProviderEntity) = Unit
         override suspend fun insert(provider: ProviderEntity): Long = provider.id
         override suspend fun update(provider: ProviderEntity) = Unit
         override suspend fun delete(id: Long) = Unit

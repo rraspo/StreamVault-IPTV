@@ -58,7 +58,8 @@ internal class SettingsScreenDialogState(
     private val selectedCategoryState: MutableState<Int>,
     private val pinErrorState: MutableState<String?>,
     private val pendingActionState: MutableState<ParentalAction?>,
-    private val pendingProtectionLevelState: MutableState<Int?>
+    private val pendingProtectionLevelState: MutableState<Int?>,
+    private val pendingDeleteProviderIdState: MutableState<Long?>
 ) {
     var showPinDialog by showPinDialogState
     var showLevelDialog by showLevelDialogState
@@ -110,6 +111,7 @@ internal class SettingsScreenDialogState(
     var pinError by pinErrorState
     var pendingAction by pendingActionState
     var pendingProtectionLevel by pendingProtectionLevelState
+    var pendingDeleteProviderId by pendingDeleteProviderIdState
 }
 
 internal class SettingsProviderSectionState(
@@ -161,6 +163,12 @@ internal class SettingsProviderSectionState(
         get() = dialogState.customSyncSelections
         set(value) {
             dialogState.customSyncSelections = value
+        }
+
+    var pendingDeleteProviderId: Long?
+        get() = dialogState.pendingDeleteProviderId
+        set(value) {
+            dialogState.pendingDeleteProviderId = value
         }
 }
 
@@ -231,6 +239,7 @@ internal fun rememberSettingsScreenDialogState(): SettingsScreenDialogState {
     val pinErrorState = rememberSaveable { mutableStateOf<String?>(null) }
     val pendingActionState = remember { mutableStateOf<ParentalAction?>(null) }
     val pendingProtectionLevelState = rememberSaveable { mutableStateOf<Int?>(null) }
+    val pendingDeleteProviderIdState = rememberSaveable { mutableStateOf<Long?>(null) }
 
     return SettingsScreenDialogState(
         showPinDialogState = showPinDialogState,
@@ -282,6 +291,7 @@ internal fun rememberSettingsScreenDialogState(): SettingsScreenDialogState {
         selectedCategoryState = selectedCategoryState,
         pinErrorState = pinErrorState,
         pendingActionState = pendingActionState,
-        pendingProtectionLevelState = pendingProtectionLevelState
+        pendingProtectionLevelState = pendingProtectionLevelState,
+        pendingDeleteProviderIdState = pendingDeleteProviderIdState
     )
 }

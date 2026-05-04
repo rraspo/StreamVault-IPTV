@@ -148,6 +148,7 @@ internal fun EpgSourceCard(
 internal fun AddEpgSourceCard(viewModel: SettingsViewModel) {
     var newName by remember { mutableStateOf("") }
     var newUrl by remember { mutableStateOf("") }
+    var isSubmitting by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -198,12 +199,21 @@ internal fun AddEpgSourceCard(viewModel: SettingsViewModel) {
             val addSourceShape = RoundedCornerShape(8.dp)
             TvClickableSurface(
                 onClick = {
-                    if (newName.isNotBlank() && newUrl.isNotBlank()) {
-                        viewModel.addEpgSource(newName.trim(), newUrl.trim())
-                        newName = ""
-                        newUrl = ""
+                    if (!isSubmitting && newName.isNotBlank() && newUrl.isNotBlank()) {
+                        val nameToSubmit = newName.trim()
+                        val urlToSubmit = newUrl.trim()
+                        isSubmitting = true
+                        viewModel.addEpgSource(nameToSubmit, urlToSubmit,
+                            onSuccess = {
+                                newName = ""
+                                newUrl = ""
+                                isSubmitting = false
+                            },
+                            onError = { isSubmitting = false }
+                        )
                     }
                 },
+                enabled = newName.isNotBlank() && newUrl.isNotBlank() && !isSubmitting,
                 shape = ClickableSurfaceDefaults.shape(addSourceShape),
                 colors = ClickableSurfaceDefaults.colors(
                     containerColor = Color(0xFF66BB6A).copy(alpha = 0.2f),

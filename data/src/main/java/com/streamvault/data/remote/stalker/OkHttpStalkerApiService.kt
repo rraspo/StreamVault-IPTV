@@ -6,6 +6,8 @@ import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.streamvault.domain.model.Result
+import com.streamvault.domain.util.StreamEntryUrlPolicy
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -510,6 +512,12 @@ class OkHttpStalkerApiService @Inject constructor(
             ?.substringAfter(' ', missingDelimiterValue = payload.findString("cmd").orEmpty())
             ?.trim()
             ?.takeIf { it.isNotBlank() }
+            ?.let { resolved ->
+                if (!StreamEntryUrlPolicy.isAllowed(resolved)) {
+                    throw IOException("Portal returned an unsupported playback URL scheme for create_link.")
+                }
+                resolved
+            }
             ?: throw IOException("Portal did not return a playable URL.")
     }
 
@@ -628,17 +636,74 @@ class OkHttpStalkerApiService @Inject constructor(
 
     private fun executeJsonRequest(request: Request, action: String?): JsonElement {
         return okHttpClient.newCall(request).execute().use { response ->
-            val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
+                response.body?.close()
                 throw IOException("Portal request failed with HTTP ${response.code}.")
             }
-            if (body.isBlank()) {
+            val responseBody = response.body
+                ?: throw IOException("Portal returned an empty response${actionSuffix(action)}.")
+            val charset = responseBody.contentType()?.charset(Charsets.UTF_8) ?: Charsets.UTF_8
+            val raw = readBodyBounded(
+                stream = responseBody.byteStream(),
+                charsetName = charset.name(),
+                maxBytes = maxBodyBytesForAction(action),
+                action = action
+            )
+            if (raw.isBlank()) {
                 throw IOException("Portal returned an empty response${actionSuffix(action)}.")
             }
-            val parsed = parsePortalJson(body, action)
+            val parsed = parsePortalJson(raw, action)
             parsed.ensureNoPortalError()
             parsed
         }
+    }
+
+    /**
+     * Reads [stream] into a String, throwing [IOException] if the body exceeds [maxBytes].
+     * This prevents unbounded heap allocation when portals return unexpectedly large responses.
+     */
+    private fun readBodyBounded(
+        stream: InputStream,
+        charsetName: String,
+        maxBytes: Long,
+        action: String?
+    ): String {
+        val out = ByteArrayOutputStream(16_384)
+        var totalRead = 0L
+        val chunk = ByteArray(8_192)
+        while (true) {
+            val n = stream.read(chunk)
+            if (n < 0) break
+            totalRead += n
+            if (totalRead > maxBytes) {
+                val limitKb = maxBytes / 1024
+                throw IOException(
+                    "Portal response for '${action ?: "request"}' exceeded the ${limitKb}KB limit; " +
+                        "portal may be misbehaving."
+                )
+            }
+            out.write(chunk, 0, n)
+        }
+        return try {
+            out.toString(charsetName)
+        } catch (_: java.io.UnsupportedEncodingException) {
+            out.toString(Charsets.UTF_8.name())
+        }
+    }
+
+    /**
+     * Returns an appropriate response-body size ceiling for the given Stalker [action].
+     * Smaller endpoints (auth, create_link) get tight limits; large catalog endpoints get
+     * a generous but still bounded ceiling to prevent OOM from misbehaving portals.
+     */
+    private fun maxBodyBytesForAction(action: String?): Long = when (action?.trim()) {
+        "handshake", "get_profile", "get_account_info" -> 512L * 1024          // 512 KB
+        "create_link"                                   -> 64L * 1024           // 64 KB
+        "get_genres", "get_vod_categories", "get_series_categories",
+        "get_categories", "get_live_categories"         -> 2L * 1024 * 1024    // 2 MB
+        "get_ordered_list", "get_vod_list", "get_series",
+        "get_seasons", "get_series_info", "get_vod_info" -> 8L * 1024 * 1024  // 8 MB
+        else                                             -> 4L * 1024 * 1024   // 4 MB default
     }
 
     private suspend fun requestStreamingItems(
@@ -693,11 +758,7 @@ class OkHttpStalkerApiService @Inject constructor(
             val reader = JsonReader(InputStreamReader(body.byteStream(), charset))
             reader.isLenient = true
             try {
-                streamStalkerItems(reader, onItem).also { count ->
-                    if (count == 0) {
-                        throw IOException("Portal returned an empty response${actionSuffix(action)}.")
-                    }
-                }
+                streamStalkerItems(reader, onItem)
             } catch (error: IllegalStateException) {
                 throw IOException("Portal returned unreadable JSON${actionSuffix(action)}.", error)
             }
@@ -732,12 +793,30 @@ class OkHttpStalkerApiService @Inject constructor(
             when (reader.nextName()) {
                 "error" -> {
                     val error = reader.nextStringOrSkip()
-                    if (!error.isNullOrBlank() && !error.equals("null", ignoreCase = true)) {
+                    // Use the same placeholder filter as ensureNoPortalError so that
+                    // "null", "0", "false", and "ok" from loose portals are not treated
+                    // as real errors in the streamed item path either.
+                    if (!error.isNullOrBlank() && !isPlaceholderErrorValue(error)) {
                         throw IOException(error)
                     }
                 }
                 "js", "data", "items" -> count += streamStalkerItems(reader, onItem)
-                else -> reader.skipValue()
+                else -> {
+                    // Object-keyed catalogs (e.g. `{"data":{"100":{...},"200":{...}}}`) use
+                    // numeric string keys for each item. Attempt to parse any object value as
+                    // an item record before falling back to skip, so these catalogs are not
+                    // silently dropped on the streaming path.
+                    if (reader.peek() == JsonToken.BEGIN_OBJECT) {
+                        val element = JsonParser.parseReader(reader)
+                        val item = element.asJsonObjectOrNull()?.toItemRecord()
+                        if (item != null) {
+                            onItem(item)
+                            count++
+                        }
+                    } else {
+                        reader.skipValue()
+                    }
+                }
             }
         }
         reader.endObject()
@@ -983,11 +1062,23 @@ class OkHttpStalkerApiService @Inject constructor(
     }
 
     private fun JsonElement.ensureNoPortalError() {
-        val error = rootObjectOrNull()?.findString("error")
+        val raw = rootObjectOrNull()?.findString("error")
             ?: findString("error")
-            ?.takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
             ?: return
-        throw IOException(error)
+        // Ignore well-known placeholder values that some portals emit even on success.
+        if (raw.isBlank() || isPlaceholderErrorValue(raw)) return
+        throw IOException(raw)
+    }
+
+    /**
+     * Returns `true` for portal error strings that are not real errors.
+     * Common examples: `"null"`, `"0"`, `"false"`, `"ok"`, empty strings.
+     */
+    private fun isPlaceholderErrorValue(value: String): Boolean {
+        return when (value.lowercase(Locale.ROOT).trim()) {
+            "null", "0", "false", "ok", "" -> true
+            else -> false
+        }
     }
 
     private suspend inline fun <T> runApiCall(
@@ -1365,6 +1456,9 @@ class OkHttpStalkerApiService @Inject constructor(
             jsValue is JsonArray -> jsValue.toList()
             jsValue is JsonObject && jsValue["data"] is JsonArray -> jsValue["data"]!!.jsonArray.toList()
             jsValue is JsonObject && jsValue["items"] is JsonArray -> jsValue["items"]!!.jsonArray.toList()
+            // Object-keyed catalogs: {"js":{"data":{"100":{...}}}} — use map values
+            jsValue is JsonObject && jsValue["data"] is JsonObject -> jsValue["data"]!!.jsonObject.values.toList()
+            jsValue is JsonObject && jsValue["items"] is JsonObject -> jsValue["items"]!!.jsonObject.values.toList()
             else -> emptyList()
         }
     }

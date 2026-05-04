@@ -71,6 +71,7 @@ data class MultiViewUiState(
     val focusedSlotIndex: Int = 0,
     val isLaunching: Boolean = false,
     val showSelectionBorder: Boolean = true,
+    val centerTwoSlotLayout: Boolean = false,
     val presets: List<MultiViewPresetUiModel> = emptyList(),
     val pinnedAudioSlotIndex: Int? = null,
     val replacementCandidates: List<Channel> = emptyList(),

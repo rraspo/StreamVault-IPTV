@@ -1,6 +1,7 @@
 package com.streamvault.data.repository
 
 import android.database.sqlite.SQLiteException
+import android.util.Log
 import com.streamvault.data.local.dao.*
 import com.streamvault.data.local.entity.*
 import com.streamvault.data.mapper.*
@@ -13,6 +14,7 @@ import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.data.sync.ContentCachePolicy
 import com.streamvault.domain.model.*
 import com.streamvault.domain.model.Result.Success
+import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.SeriesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +52,7 @@ class SeriesRepositoryImpl @Inject constructor(
     private val categoryDao: CategoryDao,
     private val favoriteDao: FavoriteDao,
     private val playbackHistoryDao: PlaybackHistoryDao,
+    private val playbackHistoryRepository: PlaybackHistoryRepository,
     private val providerDao: ProviderDao,
     private val stalkerApiService: StalkerApiService,
     private val xtreamApiService: XtreamApiService,
@@ -59,7 +62,9 @@ class SeriesRepositoryImpl @Inject constructor(
     private val seriesCategoryHydrationDao: SeriesCategoryHydrationDao
 ) : SeriesRepository {
     private companion object {
+        const val TAG = "SeriesRepository"
         const val SEARCH_RESULT_LIMIT = 200
+        const val SEARCH_OVERSAMPLE_LIMIT = 500
         const val MIN_SEARCH_QUERY_LENGTH = 2
         const val BROWSE_WINDOW_BUFFER = 80
         const val XTREAM_SERIES_CATEGORY_TIMEOUT_MILLIS = 60_000L
@@ -282,7 +287,11 @@ class SeriesRepositoryImpl @Inject constructor(
             if (ftsQuery.isNullOrBlank()) {
             flowOf(emptyList())
             } else combine(
-                safeSeriesSearchFlow(seriesDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT)),
+                safeSeriesSearchFlow(
+                    source = seriesDao.search(providerId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
+                    fallback = seriesDao.searchFallback(providerId, query.trim().toSqlLikePattern(), SEARCH_OVERSAMPLE_LIMIT),
+                    rawQuery = query.trim()
+                ),
                 preferencesRepository.parentalControlLevel
             ) { entities, level: Int ->
                 if (level >= 3) {
@@ -301,6 +310,9 @@ class SeriesRepositoryImpl @Inject constructor(
 
     override suspend fun getSeriesById(seriesId: Long): Series? =
         seriesDao.getById(seriesId)?.toDomain()
+
+    override suspend fun getEpisodeById(episodeId: Long): Episode? =
+        episodeDao.getById(episodeId)?.toDomain()
 
     override suspend fun getSeriesDetails(providerId: Long, seriesId: Long): Result<Series> {
         val seriesEntity = seriesDao.getById(seriesId)
@@ -383,14 +395,23 @@ class SeriesRepositoryImpl @Inject constructor(
                     remoteSeries.seasons
                         .sortedBy { it.seasonNumber }
                         .map { remoteSeason ->
-                            val mergedEpisodes = remoteSeason.episodes.map { remoteEpisode ->
-                                val remoteEpisodeId = remoteEpisode.episodeId.takeIf { it > 0 } ?: remoteEpisode.id
-                                persistedByRemoteEpisodeId[remoteEpisodeId] ?: remoteEpisode.copy(
-                                    episodeId = remoteEpisodeId,
-                                    seriesId = seriesEntity.id,
-                                    providerId = providerId
-                                )
-                            }
+                            val seenIds = mutableSetOf<String>()
+                            val mergedEpisodes = remoteSeason.episodes
+                                .mapNotNull { remoteEpisode ->
+                                    val remoteEpisodeId = remoteEpisode.episodeId.takeIf { it > 0 } ?: remoteEpisode.id
+                                    val dedupeKey = if (remoteEpisodeId > 0) remoteEpisodeId.toString()
+                                        else "${remoteEpisode.seasonNumber}-${remoteEpisode.episodeNumber}"
+                                    if (!seenIds.add(dedupeKey)) {
+                                        Log.w(TAG, "Duplicate episode skipped: seriesId=${seriesEntity.id} key=$dedupeKey")
+                                        return@mapNotNull null
+                                    }
+                                    persistedByRemoteEpisodeId[remoteEpisodeId] ?: remoteEpisode.copy(
+                                        episodeId = remoteEpisodeId,
+                                        seriesId = seriesEntity.id,
+                                        providerId = providerId
+                                    )
+                                }
+                                .sortedBy { it.episodeNumber }
                             remoteSeason.copy(
                                 episodes = mergedEpisodes,
                                 episodeCount = mergedEpisodes.size
@@ -450,13 +471,6 @@ class SeriesRepositoryImpl @Inject constructor(
     override suspend fun refreshSeries(providerId: Long): Result<Unit> =
         Result.success(Unit) // Handled by ProviderRepository
 
-    override suspend fun updateEpisodeWatchProgress(episodeId: Long, progress: Long): Result<Unit> = try {
-        episodeDao.updateWatchProgress(episodeId, progress)
-        Result.success(Unit)
-    } catch (e: Exception) {
-        Result.error("Failed to update episode watch progress", e)
-    }
-
     private suspend fun buildSeriesWithPersistedEpisodes(seriesEntity: SeriesEntity): Series {
         val episodes = episodeDao.getBySeriesSync(seriesEntity.id).map { it.toDomain() }
         val seasons = episodes.groupBy { it.seasonNumber }
@@ -481,7 +495,16 @@ class SeriesRepositoryImpl @Inject constructor(
                 val ftsQuery = normalizedSearch.toFtsPrefixQuery() ?: return flowOf(emptyList())
                 query.categoryId?.let { categoryId ->
                     combine(
-                        safeSeriesSearchFlow(seriesDao.searchByCategory(query.providerId, categoryId, ftsQuery, SEARCH_RESULT_LIMIT)),
+                        safeSeriesSearchFlow(
+                            source = seriesDao.searchByCategory(query.providerId, categoryId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
+                            fallback = seriesDao.searchByCategoryFallback(
+                                query.providerId,
+                                categoryId,
+                                normalizedSearch.toSqlLikePattern(),
+                                SEARCH_OVERSAMPLE_LIMIT
+                            ),
+                            rawQuery = normalizedSearch
+                        ),
                         preferencesRepository.parentalControlLevel
                     ) { entities, level ->
                         if (level >= 3) entities.filter { !it.isUserProtected } else entities
@@ -688,6 +711,16 @@ class SeriesRepositoryImpl @Inject constructor(
                     seriesDao.getCountByCategory(query.providerId, categoryId)
                 } ?: seriesDao.getCount(query.providerId)
             }
+            normalizedSearch.isBlank() && query.filterBy.type == LibraryFilterType.TOP_RATED -> {
+                query.categoryId?.let { categoryId ->
+                    seriesDao.getTopRatedCountByCategory(query.providerId, categoryId)
+                } ?: seriesDao.getTopRatedCountByProvider(query.providerId)
+            }
+            normalizedSearch.isBlank() && query.filterBy.type == LibraryFilterType.RECENTLY_UPDATED -> {
+                query.categoryId?.let { categoryId ->
+                    seriesDao.getFreshCountByCategory(query.providerId, categoryId)
+                } ?: seriesDao.getFreshCountByProvider(query.providerId)
+            }
             query.filterBy.type in setOf(LibraryFilterType.ALL, LibraryFilterType.TOP_RATED, LibraryFilterType.RECENTLY_UPDATED) &&
                 query.sortBy in setOf(LibrarySortBy.LIBRARY, LibrarySortBy.TITLE, LibrarySortBy.RELEASE, LibrarySortBy.UPDATED, LibrarySortBy.RATING) -> {
                 query.categoryId?.let { categoryId ->
@@ -726,6 +759,12 @@ class SeriesRepositoryImpl @Inject constructor(
                 }
                 .mapNotNull { it.seriesId ?: it.contentId }
                 .toSet()
+            val completedSeriesIds = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES_EPISODE }
+                .filter { it.totalDurationMs > 0L && it.resumePositionMs >= (it.totalDurationMs * 0.95f).toLong() }
+                .mapNotNull { it.seriesId }
+                .toSet()
             val watchCounts = history
                 .asSequence()
                 .filter { it.contentType == ContentType.SERIES || it.contentType == ContentType.SERIES_EPISODE }
@@ -737,6 +776,7 @@ class SeriesRepositoryImpl @Inject constructor(
                 query = query,
                 favoriteIds = favoriteIds,
                 inProgressIds = inProgressIds,
+                completedSeriesIds = completedSeriesIds,
                 watchCounts = watchCounts
             ).drop(query.offset).take(query.limit)
         }
@@ -872,8 +912,6 @@ class SeriesRepositoryImpl @Inject constructor(
                     LibrarySortBy.UPDATED,
                     LibrarySortBy.RATING
                 ) -> true
-            query.filterBy.type == LibraryFilterType.TOP_RATED -> true
-            query.filterBy.type == LibraryFilterType.RECENTLY_UPDATED -> true
             else -> false
         }
     }
@@ -883,11 +921,12 @@ class SeriesRepositoryImpl @Inject constructor(
         query: LibraryBrowseQuery,
         favoriteIds: Set<Long>,
         inProgressIds: Set<Long>,
+        completedSeriesIds: Set<Long> = emptySet(),
         watchCounts: Map<Long, Int>
     ): List<Series> {
         val withFavoriteState = series.map { item -> item.copy(isFavorite = item.id in favoriteIds) }
         val filtered = withFavoriteState.filter { item ->
-            seriesMatchesFilter(item, query.filterBy.type, inProgressIds) && seriesMatchesSearch(item, query.searchQuery)
+            seriesMatchesFilter(item, query.filterBy.type, inProgressIds, completedSeriesIds) && seriesMatchesSearch(item, query.searchQuery)
         }
 
         val sorted = when (query.sortBy) {
@@ -905,11 +944,16 @@ class SeriesRepositoryImpl @Inject constructor(
         }
     }
 
-    private fun seriesMatchesFilter(series: Series, filterType: LibraryFilterType, inProgressIds: Set<Long>): Boolean = when (filterType) {
+    private fun seriesMatchesFilter(
+        series: Series,
+        filterType: LibraryFilterType,
+        inProgressIds: Set<Long>,
+        completedSeriesIds: Set<Long> = emptySet()
+    ): Boolean = when (filterType) {
         LibraryFilterType.ALL -> true
         LibraryFilterType.FAVORITES -> series.isFavorite
         LibraryFilterType.IN_PROGRESS -> series.id in inProgressIds
-        LibraryFilterType.UNWATCHED -> series.id !in inProgressIds
+        LibraryFilterType.UNWATCHED -> series.id !in completedSeriesIds
         LibraryFilterType.TOP_RATED -> series.rating > 0f
         LibraryFilterType.RECENTLY_UPDATED -> seriesFreshnessScore(series) > 0L
     }
@@ -922,14 +966,31 @@ class SeriesRepositoryImpl @Inject constructor(
             .any { value -> value.lowercase().contains(normalizedQuery) }
     }
 
-    private fun safeSeriesSearchFlow(source: Flow<List<SeriesBrowseEntity>>): Flow<List<SeriesBrowseEntity>> =
+    private fun safeSeriesSearchFlow(
+        source: Flow<List<SeriesBrowseEntity>>,
+        fallback: Flow<List<SeriesBrowseEntity>>,
+        rawQuery: String
+    ): Flow<List<SeriesBrowseEntity>> =
         source.catch { error ->
             if (error is SQLiteException) {
-                emit(emptyList<SeriesBrowseEntity>())
+                Log.w(TAG, "FTS series search failed for query '$rawQuery'; falling back to LIKE search", error)
+                emitAll(fallback)
             } else {
                 throw error
             }
         }
+
+    private fun String.toSqlLikePattern(): String {
+        val escaped = buildString(length) {
+            this@toSqlLikePattern.forEach { char ->
+                when (char) {
+                    '%', '_', '\\' -> append('\\')
+                }
+                append(char)
+            }
+        }
+        return "%$escaped%"
+    }
 
     private suspend fun ensureXtreamCategoryLoaded(
         providerId: Long,

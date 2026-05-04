@@ -97,10 +97,10 @@ class EpgResolutionEngine @Inject constructor(
 
         // Check which channels have provider-native EPG data
         val providerEpgChannelIds = channels.mapNotNull { it.epgChannelId?.trim()?.takeIf(String::isNotEmpty) }
-        val providerHasEpg = if (providerEpgChannelIds.isNotEmpty()) {
-            programDao.countByProvider(providerId) > 0
+        val providerNativeChannelIds = if (providerEpgChannelIds.isNotEmpty()) {
+            programDao.getChannelIdsWithPrograms(providerId, providerEpgChannelIds).toHashSet()
         } else {
-            false
+            emptySet()
         }
 
         // Preserve existing manual overrides
@@ -181,7 +181,7 @@ class EpgResolutionEngine @Inject constructor(
             }
 
             // 4. Fall back to provider-native EPG
-            if (providerHasEpg && channelEpgId != null) {
+            if (channelEpgId != null && channelEpgId in providerNativeChannelIds) {
                 providerNativeMatches++
                 return@map ChannelEpgMappingEntity(
                     providerChannelId = channel.id,

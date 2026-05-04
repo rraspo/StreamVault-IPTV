@@ -4,12 +4,13 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.util.isPlaybackComplete
+import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.ExternalRatings
 import com.streamvault.domain.model.ExternalRatingsLookup
 import com.streamvault.domain.model.Movie
-import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.repository.ExternalRatingsRepository
+import com.streamvault.domain.repository.FavoriteRepository
 import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
@@ -28,7 +29,8 @@ class MovieDetailViewModel @Inject constructor(
     private val movieRepository: MovieRepository,
     private val providerRepository: ProviderRepository,
     private val playbackHistoryRepository: PlaybackHistoryRepository,
-    private val externalRatingsRepository: ExternalRatingsRepository
+    private val externalRatingsRepository: ExternalRatingsRepository,
+    private val favoriteRepository: FavoriteRepository
 ) : ViewModel() {
 
     private val movieId: Long = checkNotNull(
@@ -48,19 +50,25 @@ class MovieDetailViewModel @Inject constructor(
             try {
                 _uiState.update { it.copy(isLoading = true) }
 
-                val provider = providerRepository.getActiveProvider().first()
-                if (provider == null) {
-                    _uiState.update { it.copy(isLoading = false, error = "No active provider") }
-                    return@launch
-                }
+                // Derive the provider from the movie's own row so detail/history remain
+                // correct even when the globally active provider differs from the opened movie.
+                val movieRow = movieRepository.getMovie(movieId)
+                val effectiveProviderId = movieRow?.providerId?.takeIf { it > 0L }
+                    ?: providerRepository.getActiveProvider().first()?.id
+                    ?: run {
+                        _uiState.update { it.copy(isLoading = false, error = "No active provider") }
+                        return@launch
+                    }
 
                 val playbackHistory = playbackHistoryRepository.getPlaybackHistory(
                     contentId = movieId,
                     contentType = ContentType.MOVIE,
-                    providerId = provider.id
+                    providerId = effectiveProviderId
                 )
 
-                when (val result = movieRepository.getMovieDetails(provider.id, movieId)) {
+                val isFavorite = favoriteRepository.isFavorite(effectiveProviderId, movieId, ContentType.MOVIE)
+
+                when (val result = movieRepository.getMovieDetails(effectiveProviderId, movieId)) {
                     is Result.Success -> _uiState.update {
                         val movie = result.data
                         val movieDurationMs = movie.durationSeconds.takeIf { it > 0 }?.times(1000L) ?: 0L
@@ -69,13 +77,16 @@ class MovieDetailViewModel @Inject constructor(
                             progressMs = resumePositionMs,
                             totalDurationMs = playbackHistory?.totalDurationMs?.takeIf { it > 0L } ?: movieDurationMs
                         )
-                        it.copy(isLoading = false, movie = result.data, error = null)
-                            .copy(
-                                hasResume = hasResume,
-                                resumePositionMs = if (hasResume) resumePositionMs else 0L
-                            )
+                        it.copy(
+                            isLoading = false,
+                            movie = result.data.copy(isFavorite = isFavorite),
+                            error = null,
+                            hasResume = hasResume,
+                            resumePositionMs = if (hasResume) resumePositionMs else 0L
+                        )
                     }.also {
                         loadExternalRatings(result.data)
+                        loadRelatedContent(effectiveProviderId)
                     }
                     is Result.Error -> _uiState.update {
                         it.copy(isLoading = false, error = result.message)
@@ -89,6 +100,19 @@ class MovieDetailViewModel @Inject constructor(
                     it.copy(isLoading = false, error = e.message ?: "Failed to load movie details")
                 }
             }
+        }
+    }
+
+    fun toggleFavorite() {
+        val movie = _uiState.value.movie ?: return
+        viewModelScope.launch {
+            val newState = !movie.isFavorite
+            if (newState) {
+                favoriteRepository.addFavorite(movie.providerId, movie.id, ContentType.MOVIE)
+            } else {
+                favoriteRepository.removeFavorite(movie.providerId, movie.id, ContentType.MOVIE)
+            }
+            _uiState.update { it.copy(movie = movie.copy(isFavorite = newState)) }
         }
     }
 
@@ -118,6 +142,13 @@ class MovieDetailViewModel @Inject constructor(
             }
         }
     }
+
+    private fun loadRelatedContent(providerId: Long) {
+        viewModelScope.launch {
+            val related = movieRepository.getRelatedContent(providerId, movieId, limit = 10).first()
+            _uiState.update { it.copy(relatedContent = related) }
+        }
+    }
 }
 
 data class MovieDetailUiState(
@@ -127,5 +158,6 @@ data class MovieDetailUiState(
     val hasResume: Boolean = false,
     val resumePositionMs: Long = 0L,
     val isLoadingExternalRatings: Boolean = false,
-    val externalRatings: ExternalRatings = ExternalRatings.unavailable()
+    val externalRatings: ExternalRatings = ExternalRatings.unavailable(),
+    val relatedContent: List<Movie> = emptyList()
 )

@@ -97,13 +97,30 @@ internal class SettingsBackupActions(
     }
 
     fun confirmBackupImport(scope: CoroutineScope) {
-        val uriString = uiState.value.pendingBackupUri ?: return
-        val plan = uiState.value.backupImportPlan
+        // Atomically capture uri+plan and mark in-flight so rapid double-taps cannot both
+        // pass the guard before the flag is written. MutableStateFlow.update {} is a CAS
+        // loop, so only one call wins the transition isImportingBackup=false→true.
+        var capturedUri: String? = null
+        var capturedPlan: BackupImportPlan? = null
+        uiState.update { state ->
+            if (state.isImportingBackup || state.pendingBackupUri == null) return@update state
+            val plan = state.backupImportPlan
+            if (!plan.importPreferences && !plan.importProviders && !plan.importSavedLibrary &&
+                !plan.importPlaybackHistory && !plan.importMultiViewPresets && !plan.importRecordingSchedules
+            ) {
+                return@update state.copy(userMessage = "Select at least one section to import")
+            }
+            capturedUri = state.pendingBackupUri
+            capturedPlan = plan
+            state.copy(isImportingBackup = true)
+        }
+        val uriString = capturedUri ?: return
+        val plan = capturedPlan ?: return
         scope.launch {
-            uiState.update { it.copy(isSyncing = true) }
             val result = importBackup.confirm(ImportBackupCommand(uriString, plan))
             uiState.update { state ->
                 state.copy(
+                    isImportingBackup = false,
                     isSyncing = false,
                     userMessage = if (result is ImportBackupResult.Error) {
                         "Import failed: ${result.message}"

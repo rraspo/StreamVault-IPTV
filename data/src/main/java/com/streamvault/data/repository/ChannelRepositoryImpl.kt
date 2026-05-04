@@ -1,6 +1,7 @@
 package com.streamvault.data.repository
 
 import android.database.sqlite.SQLiteException
+import android.util.Log
 import com.streamvault.data.local.dao.CategoryDao
 import com.streamvault.data.local.dao.ChannelDao
 import com.streamvault.data.local.dao.FavoriteDao
@@ -35,6 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flatMapLatest
@@ -54,7 +56,8 @@ class ChannelRepositoryImpl @Inject constructor(
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver
 ) : ChannelRepository {
     private companion object {
-        const val GLOBAL_SEARCH_LIMIT = 200
+        const val TAG = "ChannelRepository"
+        const val GLOBAL_SEARCH_LIMIT = 500
         const val CATEGORY_SEARCH_LIMIT = 300
         const val MIN_SEARCH_QUERY_LENGTH = 2
     }
@@ -359,9 +362,17 @@ class ChannelRepositoryImpl @Inject constructor(
             if (ftsQuery.isNullOrBlank()) {
                 flowOf(emptyList())
             } else if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
-                safeSearchFlow(channelDao.search(providerId, ftsQuery, limit))
+                safeSearchFlow(
+                    source = channelDao.search(providerId, ftsQuery, limit),
+                    fallback = channelDao.searchFallback(providerId, query.trim().toSqlLikePattern(), limit),
+                    rawQuery = query.trim()
+                )
             } else {
-                safeSearchFlow(channelDao.searchByCategory(providerId, categoryId, ftsQuery, limit))
+                safeSearchFlow(
+                    source = channelDao.searchByCategory(providerId, categoryId, ftsQuery, limit),
+                    fallback = channelDao.searchByCategoryFallback(providerId, categoryId, query.trim().toSqlLikePattern(), limit),
+                    rawQuery = query.trim()
+                )
             }
         }
 
@@ -676,14 +687,31 @@ class ChannelRepositoryImpl @Inject constructor(
             channelDao.getByCategoryWithoutErrorsBrowsePage(providerId, categoryId, limit)
         }
 
-    private fun safeSearchFlow(source: Flow<List<ChannelBrowseEntity>>): Flow<List<ChannelBrowseEntity>> =
+    private fun safeSearchFlow(
+        source: Flow<List<ChannelBrowseEntity>>,
+        fallback: Flow<List<ChannelBrowseEntity>>,
+        rawQuery: String
+    ): Flow<List<ChannelBrowseEntity>> =
         source.catch { error ->
             if (error is SQLiteException) {
-                emit(emptyList())
+                Log.w(TAG, "FTS channel search failed for query '$rawQuery'; falling back to LIKE search", error)
+                emitAll(fallback)
             } else {
                 throw error
             }
         }
+
+    private fun String.toSqlLikePattern(): String {
+        val escaped = buildString(length) {
+            this@toSqlLikePattern.forEach { char ->
+                when (char) {
+                    '%', '_', '\\' -> append('\\')
+                }
+                append(char)
+            }
+        }
+        return "%$escaped%"
+    }
 
     private fun channelGroupKey(entity: ChannelBrowseEntity): String =
         entity.logicalGroupId.takeIf(String::isNotBlank) ?: entity.id.toString()

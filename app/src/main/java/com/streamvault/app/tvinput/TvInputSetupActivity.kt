@@ -38,7 +38,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.R
 import com.streamvault.app.MainActivity
-import com.streamvault.app.navigation.Routes
+import com.streamvault.app.navigation.ExternalDestination
 import com.streamvault.app.ui.theme.ErrorColor
 import com.streamvault.app.ui.theme.OnBackground
 import com.streamvault.app.ui.theme.OnSurfaceDim
@@ -72,7 +72,10 @@ class TvInputSetupActivity : ComponentActivity() {
                     onOpenProviderSetup = {
                         startActivity(
                             Intent(this, MainActivity::class.java)
-                                .putExtra(MainActivity.EXTRA_EXTERNAL_ROUTE, Routes.providerSetup())
+                                .putExtra(
+                                    MainActivity.EXTRA_EXTERNAL_DESTINATION,
+                                    ExternalDestination.ProviderSetup()
+                                )
                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         )
                     },

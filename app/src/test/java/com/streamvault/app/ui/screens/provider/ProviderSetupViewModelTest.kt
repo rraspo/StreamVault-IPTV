@@ -8,6 +8,10 @@ import com.streamvault.domain.model.ProviderEpgSyncMode
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.repository.CombinedM3uRepository
 import com.streamvault.domain.repository.ProviderRepository
+import com.streamvault.domain.manager.BackupImportPlan
+import com.streamvault.domain.manager.BackupImportResult
+import com.streamvault.domain.usecase.ImportBackup
+import com.streamvault.domain.usecase.ImportBackupResult
 import com.streamvault.domain.usecase.ValidateAndAddProvider
 import com.streamvault.domain.usecase.ValidateAndAddProviderResult
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +37,7 @@ class ProviderSetupViewModelTest {
     private val providerRepository: ProviderRepository = mock()
     private val combinedM3uRepository: CombinedM3uRepository = mock()
     private val validateAndAddProvider: ValidateAndAddProvider = mock()
+    private val importBackup: ImportBackup = mock()
     private val testDispatcher = StandardTestDispatcher()
 
     @Before
@@ -70,7 +75,8 @@ class ProviderSetupViewModelTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         viewModel.addM3u("https://example.com/list.m3u", "Playlist 7")
@@ -83,11 +89,79 @@ class ProviderSetupViewModelTest {
     }
 
     @Test
+    fun `login xtream saved with sync warning completes onboarding with warning state`() = runTest {
+        val createdProvider = Provider(
+            id = 8L,
+            name = "Premium",
+            type = ProviderType.XTREAM_CODES,
+            serverUrl = "https://example.com"
+        )
+        whenever(validateAndAddProvider.loginXtream(any(), any())).thenReturn(
+            ValidateAndAddProviderResult.SavedWithWarning(
+                provider = createdProvider,
+                warning = "Provider login succeeded, but initial sync failed. The provider was saved and can be retried from Settings: timeout"
+            )
+        )
+
+        val viewModel = ProviderSetupViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
+        )
+
+        viewModel.loginXtream("https://example.com", "alice", "secret", "Premium")
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.loginSuccess).isTrue()
+        assertThat(viewModel.uiState.value.createdProviderId).isEqualTo(8L)
+        assertThat(viewModel.uiState.value.completionWarning).contains("initial sync failed")
+        assertThat(viewModel.uiState.value.error).isNull()
+    }
+
+    @Test
+    fun `confirm backup import completes onboarding when providers are restored`() = runTest {
+        val importedProvider = Provider(
+            id = 9L,
+            name = "Restored",
+            type = ProviderType.XTREAM_CODES,
+            serverUrl = "https://example.com"
+        )
+        whenever(providerRepository.getProviders()).thenReturn(flowOf(listOf(importedProvider)))
+        whenever(importBackup.confirm(any())).thenReturn(
+            ImportBackupResult.Success(BackupImportResult(importedSections = listOf("Providers")))
+        )
+
+        val viewModel = ProviderSetupViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
+        )
+        val field = ProviderSetupViewModel::class.java.getDeclaredField("_uiState").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val stateFlow = field.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<ProviderSetupState>
+        stateFlow.value = stateFlow.value.copy(
+            pendingBackupUri = "content://backup.json",
+            backupImportPlan = BackupImportPlan()
+        )
+
+        viewModel.confirmBackupImport()
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.backupImportSuccess).isTrue()
+        assertThat(viewModel.uiState.value.pendingBackupUri).isNull()
+        assertThat(viewModel.uiState.value.isImportingBackup).isFalse()
+        assertThat(viewModel.uiState.value.error).isNull()
+    }
+
+    @Test
     fun `attach created provider to combined keeps combined source active`() = runTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         val seededState = viewModel.uiState.value.copy(
@@ -113,7 +187,8 @@ class ProviderSetupViewModelTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         viewModel.applySourceDefaults(ProviderSetupViewModel.SetupSourceType.STALKER)
@@ -128,7 +203,8 @@ class ProviderSetupViewModelTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         viewModel.applySourceDefaults(ProviderSetupViewModel.SetupSourceType.XTREAM)
@@ -143,7 +219,8 @@ class ProviderSetupViewModelTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         viewModel.applySourceDefaults(ProviderSetupViewModel.SetupSourceType.M3U)
@@ -158,7 +235,8 @@ class ProviderSetupViewModelTest {
         val viewModel = ProviderSetupViewModel(
             providerRepository = providerRepository,
             combinedM3uRepository = combinedM3uRepository,
-            validateAndAddProvider = validateAndAddProvider
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
         )
 
         viewModel.updateEpgSyncMode(ProviderEpgSyncMode.SKIP)
@@ -167,5 +245,95 @@ class ProviderSetupViewModelTest {
 
         assertThat(viewModel.uiState.value.epgSyncMode).isEqualTo(ProviderEpgSyncMode.SKIP)
         assertThat(viewModel.uiState.value.hasCustomizedEpgSyncMode).isTrue()
+    }
+
+    @Test
+    fun `editing m3u provider while combined source is active does not re-prompt for combined attach`() = runTest {
+        val editedProvider = Provider(
+            id = 7L,
+            name = "Playlist 7",
+            type = ProviderType.M3U,
+            serverUrl = "https://example.com",
+            m3uUrl = "https://example.com/list.m3u"
+        )
+        whenever(combinedM3uRepository.getActiveLiveSource()).thenReturn(
+            flowOf(ActiveLiveSource.CombinedM3uSource(44L))
+        )
+        whenever(validateAndAddProvider.addM3u(any(), any())).thenReturn(
+            ValidateAndAddProviderResult.Success(editedProvider)
+        )
+
+        val viewModel = ProviderSetupViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
+        )
+
+        // Simulate being in edit mode for provider 7.
+        val field = ProviderSetupViewModel::class.java.getDeclaredField("_uiState").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val stateFlow = field.get(viewModel) as kotlinx.coroutines.flow.MutableStateFlow<ProviderSetupState>
+        stateFlow.value = stateFlow.value.copy(isEditing = true, existingProviderId = 7L)
+
+        viewModel.addM3u("https://example.com/list.m3u", "Playlist 7")
+        advanceUntilIdle()
+
+        // Edit flows must complete directly without the combined-attach dialog.
+        assertThat(viewModel.uiState.value.pendingCombinedAttachProfileId).isNull()
+        assertThat(viewModel.uiState.value.loginSuccess).isTrue()
+    }
+
+    @Test
+    fun `m3u sync failure error does not include could not validate playlist prefix`() = runTest {
+        whenever(validateAndAddProvider.addM3u(any(), any())).thenReturn(
+            ValidateAndAddProviderResult.Error(
+                message = "Playlist saved, but initial sync failed. The provider was saved and can be retried from Settings: timeout"
+            )
+        )
+
+        val viewModel = ProviderSetupViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
+        )
+
+        viewModel.addM3u("https://example.com/list.m3u", "Playlist")
+        advanceUntilIdle()
+
+        val error = viewModel.uiState.value.error
+        assertThat(error).doesNotContain("Could not validate playlist")
+        assertThat(error).contains("saved")
+    }
+
+    @Test
+    fun `stalker error maps sync failure to user friendly message`() = runTest {
+        whenever(validateAndAddProvider.loginStalker(any(), any())).thenReturn(
+            ValidateAndAddProviderResult.Error(
+                message = "Provider login succeeded, but initial sync failed. The provider was saved and can be retried from Settings: timeout"
+            )
+        )
+
+        val viewModel = ProviderSetupViewModel(
+            providerRepository = providerRepository,
+            combinedM3uRepository = combinedM3uRepository,
+            validateAndAddProvider = validateAndAddProvider,
+            importBackup = importBackup
+        )
+
+        viewModel.loginStalker(
+            portalUrl = "https://portal.example.com",
+            macAddress = "00:1A:79:12:34:56",
+            name = "MAG",
+            deviceProfile = "MAG250",
+            timezone = "UTC",
+            locale = "en"
+        )
+        advanceUntilIdle()
+
+        val error = viewModel.uiState.value.error
+        assertThat(error).doesNotContain("initial sync failed. The provider was saved")
+        assertThat(error).contains("sync failed")
     }
 }

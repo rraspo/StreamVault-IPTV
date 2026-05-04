@@ -41,6 +41,30 @@ internal interface LiveTimeshiftManager {
     suspend fun releaseRetiredSnapshots()
 }
 
+internal data class DashSnapshotPlaylistSegment(
+    val fileName: String,
+    val durationMs: Long,
+    val isInit: Boolean
+)
+
+internal fun buildDashSnapshotPlaylist(
+    targetDurationSeconds: Int,
+    segments: List<DashSnapshotPlaylistSegment>
+): String = buildString {
+    appendLine("#EXTM3U")
+    appendLine("#EXT-X-VERSION:7")
+    appendLine("#EXT-X-TARGETDURATION:$targetDurationSeconds")
+    appendLine("#EXT-X-MEDIA-SEQUENCE:0")
+    segments.firstOrNull { it.isInit }?.let { initSegment ->
+        appendLine("#EXT-X-MAP:URI=\"${initSegment.fileName}\"")
+    }
+    segments.filterNot(DashSnapshotPlaylistSegment::isInit).forEach { segment ->
+        appendLine("#EXTINF:${"%.3f".format(Locale.US, segment.durationMs / 1000.0)},")
+        appendLine(segment.fileName)
+    }
+    appendLine("#EXT-X-ENDLIST")
+}
+
 @Singleton
 internal class DefaultLiveTimeshiftManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
@@ -760,27 +784,25 @@ internal class DefaultLiveTimeshiftManager @Inject constructor(
             val playlist = File(snapshotDir, "index.m3u8")
             val targetDurationSeconds = snapshotSegments.maxOf { ((it.durationMs + 999L) / 1000L).toInt().coerceAtLeast(1) }
             val all = segmentMutex.withLock { segments.toList() }  // includes init
-            val body = buildString {
-                appendLine("#EXTM3U")
-                appendLine("#EXT-X-VERSION:3")
-                appendLine("#EXT-X-TARGETDURATION:$targetDurationSeconds")
-                appendLine("#EXT-X-MEDIA-SEQUENCE:0")
-                var mediaIndex = 0
-                all.forEachIndexed { index, segment ->
-                    val isInit = segment.durationMs == 0L
-                    val fileName = if (isInit) "init-$index.mp4" else "segment-${mediaIndex++}.mp4"
-                    val outputFile = File(snapshotDir, fileName)
-                    when {
-                        segment.file != null && segment.file.exists() -> segment.file.copyTo(outputFile, overwrite = true)
-                        segment.payload != null -> outputFile.writeBytes(segment.payload)
-                    }
-                    if (!isInit) {
-                        appendLine("#EXTINF:${"%.3f".format(Locale.US, segment.durationMs / 1000.0)},")
-                        appendLine(fileName)
-                    }
+            var mediaIndex = 0
+            val playlistSegments = all.mapIndexed { index, segment ->
+                val isInit = segment.durationMs == 0L
+                val fileName = if (isInit) "init-$index.mp4" else "segment-${mediaIndex++}.mp4"
+                val outputFile = File(snapshotDir, fileName)
+                when {
+                    segment.file != null && segment.file.exists() -> segment.file.copyTo(outputFile, overwrite = true)
+                    segment.payload != null -> outputFile.writeBytes(segment.payload)
                 }
-                appendLine("#EXT-X-ENDLIST")
+                DashSnapshotPlaylistSegment(
+                    fileName = fileName,
+                    durationMs = segment.durationMs,
+                    isInit = isInit
+                )
             }
+            val body = buildDashSnapshotPlaylist(
+                targetDurationSeconds = targetDurationSeconds,
+                segments = playlistSegments
+            )
             playlist.writeText(body)
             return LiveTimeshiftSnapshot(
                 url = playlist.toURI().toString(),

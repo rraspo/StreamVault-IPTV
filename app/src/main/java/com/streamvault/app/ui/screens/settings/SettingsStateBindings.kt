@@ -42,6 +42,7 @@ internal fun observeSettingsPreferenceSnapshot(
             playerSurfaceMode = com.streamvault.domain.model.PlayerSurfaceMode.AUTO,
             playerPlaybackSpeed = 1f,
             playerAudioVideoOffsetMs = 0,
+            centerTwoSlotMultiviewLayout = false,
             playerControlsTimeoutSeconds = 5,
             playerLiveOverlayTimeoutSeconds = 4,
             playerNoticeTimeoutSeconds = 6,
@@ -106,6 +107,8 @@ internal fun observeSettingsPreferenceSnapshot(
         snapshot.copy(playerPlaybackSpeed = playerPlaybackSpeed)
     }.combine(preferencesRepository.playerAudioVideoOffsetMs) { snapshot, playerAudioVideoOffsetMs ->
         snapshot.copy(playerAudioVideoOffsetMs = playerAudioVideoOffsetMs)
+    }.combine(preferencesRepository.multiViewCenterTwoSlotLayout) { snapshot, centerTwoSlotLayout ->
+        snapshot.copy(centerTwoSlotMultiviewLayout = centerTwoSlotLayout)
     }.combine(preferencesRepository.playerControlsTimeoutSeconds) { snapshot, timeoutSeconds ->
         snapshot.copy(playerControlsTimeoutSeconds = timeoutSeconds)
     }.combine(preferencesRepository.playerLiveOverlayTimeoutSeconds) { snapshot, timeoutSeconds ->

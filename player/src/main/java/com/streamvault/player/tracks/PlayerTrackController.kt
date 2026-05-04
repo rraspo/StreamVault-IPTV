@@ -108,6 +108,11 @@ class PlayerTrackController(
             }
         }
 
+        selectedVideoTrackId = normalizeSelectedVideoTrackId(
+            selectedTrackId = selectedVideoTrackId,
+            availableTrackIds = videoTracks.map(PlayerTrack::id)
+        )
+
         _availableAudioTracks.value = audioTracks
         _availableSubtitleTracks.value = subtitleTracks
         _availableVideoTracks.value = when {
@@ -135,13 +140,13 @@ class PlayerTrackController(
     }
 
     fun selectVideoTrack(player: ExoPlayer, trackId: String) {
-        selectedVideoTrackId = trackId
         if (trackId == PLAYER_TRACK_AUTO_ID) {
             player.trackSelectionParameters = player.trackSelectionParameters
                 .buildUpon()
                 .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                 .build()
+            selectedVideoTrackId = PLAYER_TRACK_AUTO_ID
         } else {
             val override = findOverride(player.currentTracks, C.TRACK_TYPE_VIDEO, trackId) ?: return
             player.trackSelectionParameters = player.trackSelectionParameters
@@ -149,9 +154,12 @@ class PlayerTrackController(
                 .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, false)
                 .setOverrideForType(override)
                 .build()
+            selectedVideoTrackId = trackId
         }
         _availableVideoTracks.update { tracks ->
-            tracks.map { it.copy(isSelected = it.id == trackId) }
+            tracks.map { track ->
+                track.copy(isSelected = track.id == selectedVideoTrackId)
+            }
         }
     }
 
@@ -257,5 +265,16 @@ class PlayerTrackController(
         return parts.firstOrNull()?.takeIf { parts.size == 1 }
             ?: parts.joinToString(" · ").ifBlank { "Quality ${index + 1}" }
     }
+}
+
+internal fun normalizeSelectedVideoTrackId(
+    selectedTrackId: String,
+    availableTrackIds: List<String>
+): String = when {
+    availableTrackIds.isEmpty() -> PLAYER_TRACK_AUTO_ID
+    selectedTrackId == PLAYER_TRACK_AUTO_ID -> PLAYER_TRACK_AUTO_ID
+    selectedTrackId in availableTrackIds -> selectedTrackId
+    availableTrackIds.size == 1 -> availableTrackIds.first()
+    else -> PLAYER_TRACK_AUTO_ID
 }
 

@@ -44,6 +44,7 @@ internal fun InternetSpeedTestCard(
     val focusRequester = remember { FocusRequester() }
     TvClickableSurface(
         onClick = onRunTest,
+        enabled = !isRunning,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = SurfaceElevated,
@@ -55,6 +56,7 @@ internal fun InternetSpeedTestCard(
             .padding(top = 8.dp)
             .focusRequester(focusRequester)
             .mouseClickable(
+                enabled = !isRunning,
                 focusRequester = focusRequester,
                 onClick = onRunTest
             )

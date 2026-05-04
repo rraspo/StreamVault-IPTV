@@ -82,7 +82,7 @@ internal fun LazyListScope.settingsPrivacySection(
                     Text(text = stringResource(R.string.settings_incognito_mode), style = MaterialTheme.typography.bodyMedium, color = OnSurface)
                     Text(text = stringResource(R.string.settings_incognito_mode_subtitle), style = MaterialTheme.typography.bodySmall, color = OnBackground.copy(alpha = 0.6f))
                 }
-                Switch(checked = uiState.isIncognitoMode, onCheckedChange = { viewModel.toggleIncognitoMode() })
+                Switch(checked = uiState.isIncognitoMode, onCheckedChange = null)
             }
         }
         Spacer(Modifier.height(2.dp))
@@ -105,7 +105,7 @@ internal fun LazyListScope.settingsPrivacySection(
                     Text(text = stringResource(R.string.settings_xtream_text_classification), style = MaterialTheme.typography.bodyMedium, color = OnSurface)
                     Text(text = stringResource(R.string.settings_xtream_text_classification_subtitle), style = MaterialTheme.typography.bodySmall, color = OnBackground.copy(alpha = 0.6f))
                 }
-                Switch(checked = uiState.useXtreamTextClassification, onCheckedChange = { viewModel.toggleXtreamTextClassification() })
+                Switch(checked = uiState.useXtreamTextClassification, onCheckedChange = null)
             }
         }
         Spacer(Modifier.height(2.dp))
@@ -128,7 +128,7 @@ internal fun LazyListScope.settingsPrivacySection(
                     Text(text = stringResource(R.string.settings_xtream_base64_compatibility), style = MaterialTheme.typography.bodyMedium, color = OnSurface)
                     Text(text = stringResource(R.string.settings_xtream_base64_compatibility_subtitle), style = MaterialTheme.typography.bodySmall, color = OnBackground.copy(alpha = 0.6f))
                 }
-                Switch(checked = uiState.xtreamBase64TextCompatibility, onCheckedChange = { viewModel.toggleXtreamBase64TextCompatibility() })
+                Switch(checked = uiState.xtreamBase64TextCompatibility, onCheckedChange = null)
             }
         }
         Spacer(Modifier.height(2.dp))

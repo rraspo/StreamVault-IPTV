@@ -69,7 +69,6 @@ internal fun PlayerViewModel.tryAlternateStreamInternal(channel: Channel): Boole
                 contentType = ContentType.LIVE
             ) ?: return@launch
             if (!isActivePlaybackSession(requestVersion, nextVariant.streamUrl)) return@launch
-            recordLivePlayback(updatedChannel)
             requestEpg(
                 providerId = updatedChannel.providerId,
                 epgChannelId = updatedChannel.epgChannelId,
@@ -131,10 +130,16 @@ internal fun PlayerViewModel.tryNextCatchUpVariantInternal(): Boolean {
     currentStreamUrl = nextStream
     updateStreamClass("Catch-up")
     viewModelScope.launch {
-        val streamInfo = resolvePlaybackStreamInfo(nextStream, currentContentId, currentProviderId, ContentType.LIVE)
+        val streamInfo = resolveCatchUpStreamInfo(
+            candidateUrl = nextStream,
+            title = currentTitle,
+            currentContentId = currentContentId,
+            currentProviderId = currentProviderId,
+            resolveStreamInfo = ::resolvePlaybackStreamInfo
+        )
             ?: return@launch
         if (!isActivePlaybackSession(requestVersion, nextStream)) return@launch
-        if (!preparePlayer(streamInfo.copy(title = streamInfo.title ?: currentTitle), requestVersion)) return@launch
+        if (!preparePlayer(streamInfo, requestVersion)) return@launch
         playerEngine.play()
     }
     return true

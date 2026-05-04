@@ -21,6 +21,7 @@ import com.streamvault.domain.repository.FavoriteRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.ContinueWatchingResult
 import com.streamvault.domain.usecase.ContinueWatchingScope
 import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.domain.usecase.GetCustomCategories
@@ -379,9 +380,14 @@ class SeriesViewModel @Inject constructor(
                             limit = 20,
                             scope = ContinueWatchingScope.SERIES
                         )
-                            .collect { history ->
+                            .collect { result ->
                                 _uiState.update {
-                                    it.copy(continueWatching = history)
+                                    it.copy(
+                                        continueWatching = when (result) {
+                                            is ContinueWatchingResult.Items -> result.items
+                                            ContinueWatchingResult.Degraded -> emptyList()
+                                        }
+                                    )
                                 }
                             }
                     }
@@ -1149,6 +1155,13 @@ class SeriesViewModel @Inject constructor(
         query: String
     ): List<Series> {
         val historyKeys = history.mapTo(mutableSetOf()) { it.seriesId ?: it.contentId }
+        val completedSeriesIds = history
+            .filter { ph ->
+                ph.contentType == ContentType.SERIES_EPISODE &&
+                    ph.totalDurationMs > 0 &&
+                    ph.resumePositionMs >= (ph.totalDurationMs * 0.95f).toLong()
+            }
+            .mapNotNullTo(mutableSetOf()) { it.seriesId }
         val watchCounts = history.groupingBy { it.seriesId ?: it.contentId }.eachCount()
         val normalizedQuery = query.trim().lowercase()
         val searched = if (normalizedQuery.isBlank()) {
@@ -1164,7 +1177,7 @@ class SeriesViewModel @Inject constructor(
             LibraryFilterType.ALL -> searched
             LibraryFilterType.FAVORITES -> searched.filter { it.isFavorite }
             LibraryFilterType.IN_PROGRESS -> searched.filter { it.id in historyKeys }
-            LibraryFilterType.UNWATCHED -> searched.filter { it.id !in historyKeys }
+            LibraryFilterType.UNWATCHED -> searched.filter { it.id !in completedSeriesIds }
             LibraryFilterType.RECENTLY_UPDATED -> searched.filter { seriesFreshnessScore(it) > 0L }
             LibraryFilterType.TOP_RATED -> searched.filter { it.rating > 0f }
         }

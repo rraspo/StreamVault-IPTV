@@ -29,7 +29,17 @@ sealed class InspectBackupResult {
 sealed class ImportBackupResult {
     data class Success(val result: BackupImportResult) : ImportBackupResult() {
         val importedSummary: String
-            get() = result.importedSections.joinToString().ifBlank { "Nothing imported" }
+            get() {
+                val baseSummary = result.importedSections.joinToString().ifBlank { "Nothing imported" }
+                val recordingSummary = result.recordingScheduleImport
+                    ?.takeIf { it.failedCount > 0 || it.skippedCount > 0 }
+                    ?.let { summary ->
+                        "Recording schedules: ${summary.importedCount} imported, ${summary.skippedCount} skipped, ${summary.failedCount} failed"
+                    }
+                return listOf(baseSummary, recordingSummary)
+                    .filterNotNull()
+                    .joinToString(separator = ". ")
+            }
     }
 
     data class Error(val message: String, val exception: Throwable? = null) : ImportBackupResult()

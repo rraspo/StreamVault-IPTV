@@ -1,6 +1,14 @@
 package com.streamvault.app.ui.screens.settings
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.streamvault.app.ui.components.dialogs.PremiumDialog
+import com.streamvault.app.ui.components.dialogs.PremiumDialogFooterButton
+import androidx.compose.ui.res.stringResource
+import com.streamvault.app.R
 
 @Composable
 internal fun SettingsProviderManagementDialogs(
@@ -13,12 +21,17 @@ internal fun SettingsProviderManagementDialogs(
     }
 
     if (providerState.showCreateCombinedDialog) {
+        var isCreating by remember { mutableStateOf(false) }
         CreateCombinedM3uDialog(
             providers = uiState.availableM3uProviders,
+            isSubmitting = isCreating,
             onDismiss = { providerState.showCreateCombinedDialog = false },
             onCreate = { name, providerIds ->
-                providerState.showCreateCombinedDialog = false
-                viewModel.createCombinedProfile(name, providerIds)
+                isCreating = true
+                viewModel.createCombinedProfile(name, providerIds,
+                    onSuccess = { providerState.showCreateCombinedDialog = false },
+                    onError = { isCreating = false }
+                )
             }
         )
     }
@@ -26,12 +39,17 @@ internal fun SettingsProviderManagementDialogs(
     if (providerState.showRenameCombinedDialog) {
         val selectedProfile = uiState.combinedProfiles.firstOrNull { it.id == providerState.selectedCombinedProfileId }
         if (selectedProfile != null) {
+            var isRenaming by remember(selectedProfile.id) { mutableStateOf(false) }
             RenameCombinedM3uDialog(
                 profile = selectedProfile,
+                isSubmitting = isRenaming,
                 onDismiss = { providerState.showRenameCombinedDialog = false },
                 onRename = { name ->
-                    providerState.showRenameCombinedDialog = false
-                    viewModel.renameCombinedProfile(selectedProfile.id, name)
+                    isRenaming = true
+                    viewModel.renameCombinedProfile(selectedProfile.id, name,
+                        onSuccess = { providerState.showRenameCombinedDialog = false },
+                        onError = { isRenaming = false }
+                    )
                 }
             )
         }
@@ -40,13 +58,18 @@ internal fun SettingsProviderManagementDialogs(
     if (providerState.showAddCombinedMemberDialog) {
         val selectedProfile = uiState.combinedProfiles.firstOrNull { it.id == providerState.selectedCombinedProfileId }
         if (selectedProfile != null) {
+            var isAddingMember by remember(selectedProfile.id) { mutableStateOf(false) }
             AddCombinedProviderDialog(
                 profile = selectedProfile,
                 availableProviders = uiState.availableM3uProviders,
+                isSubmitting = isAddingMember,
                 onDismiss = { providerState.showAddCombinedMemberDialog = false },
                 onAddProvider = { providerId ->
-                    providerState.showAddCombinedMemberDialog = false
-                    viewModel.addProviderToCombinedProfile(selectedProfile.id, providerId)
+                    isAddingMember = true
+                    viewModel.addProviderToCombinedProfile(selectedProfile.id, providerId,
+                        onSuccess = { providerState.showAddCombinedMemberDialog = false },
+                        onError = { isAddingMember = false }
+                    )
                 }
             )
         }
@@ -91,6 +114,36 @@ internal fun SettingsProviderManagementDialogs(
                 providerState.showCustomProviderSyncDialog = false
                 viewModel.syncProviderCustom(pendingSyncProvider.id, providerState.customSyncSelections)
                 providerState.pendingSyncProviderId = null
+            }
+        )
+    }
+
+    val pendingDeleteProviderId = providerState.pendingDeleteProviderId
+    if (pendingDeleteProviderId != null) {
+        val providerToDelete = uiState.providers.firstOrNull { it.id == pendingDeleteProviderId }
+        val providerName = providerToDelete?.name ?: "this provider"
+        PremiumDialog(
+            title = "Delete Provider",
+            subtitle = "Delete \"$providerName\"? This will permanently remove all its channels, programs, and sync data.",
+            onDismissRequest = { if (!uiState.isDeletingProvider) providerState.pendingDeleteProviderId = null },
+            widthFraction = 0.48f,
+            content = {},
+            footer = {
+                PremiumDialogFooterButton(
+                    label = stringResource(R.string.settings_cancel),
+                    onClick = { providerState.pendingDeleteProviderId = null },
+                    enabled = !uiState.isDeletingProvider
+                )
+                PremiumDialogFooterButton(
+                    label = "Delete",
+                    onClick = {
+                        viewModel.deleteProvider(pendingDeleteProviderId,
+                            onSuccess = { providerState.pendingDeleteProviderId = null }
+                        )
+                    },
+                    enabled = !uiState.isDeletingProvider,
+                    destructive = true
+                )
             }
         )
     }

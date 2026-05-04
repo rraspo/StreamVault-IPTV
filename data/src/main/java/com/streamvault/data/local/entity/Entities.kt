@@ -182,7 +182,11 @@ data class PlaybackCompatibilityRecordEntity(
     indices = [
         Index(value = ["provider_id"]),
         Index(value = ["provider_id", "category_id"]),
-        Index(value = ["provider_id", "stream_id"], unique = true)
+        Index(value = ["provider_id", "stream_id"], unique = true),
+        Index(name = "index_movies_provider_id_name_id", value = ["provider_id", "name", "id"]),
+        Index(name = "index_movies_provider_id_category_id_name_id", value = ["provider_id", "category_id", "name", "id"]),
+        Index(name = "index_movies_provider_id_rating_name_id", value = ["provider_id", "rating", "name", "id"]),
+        Index(name = "index_movies_provider_id_added_at_release_date_name_id", value = ["provider_id", "added_at", "release_date", "name", "id"])
     ]
 )
 data class MovieEntity(
@@ -250,7 +254,11 @@ data class MovieBrowseEntity(
     indices = [
         Index(value = ["provider_id"]),
         Index(value = ["provider_id", "category_id"]),
-        Index(value = ["provider_id", "series_id"], unique = true)
+        Index(value = ["provider_id", "series_id"], unique = true),
+        Index(name = "index_series_provider_id_name_id", value = ["provider_id", "name", "id"]),
+        Index(name = "index_series_provider_id_category_id_name_id", value = ["provider_id", "category_id", "name", "id"]),
+        Index(name = "index_series_provider_id_rating_name_id", value = ["provider_id", "rating", "name", "id"]),
+        Index(name = "index_series_provider_id_last_modified_name_id", value = ["provider_id", "last_modified", "name", "id"])
     ]
 )
 data class SeriesEntity(
@@ -486,7 +494,7 @@ data class MovieImportStageEntity(
 
 @Entity(
     tableName = "series_import_stage",
-    primaryKeys = ["session_id", "provider_id", "series_id"],
+    primaryKeys = ["session_id", "provider_id", "provider_series_key"],
     foreignKeys = [ForeignKey(
         entity = ProviderEntity::class,
         parentColumns = ["id"],
@@ -502,6 +510,8 @@ data class SeriesImportStageEntity(
     @ColumnInfo(name = "session_id") val sessionId: Long,
     @ColumnInfo(name = "provider_id") val providerId: Long,
     @ColumnInfo(name = "series_id") val seriesId: Long,
+    @ColumnInfo(name = "provider_series_id") val providerSeriesId: String? = null,
+    @ColumnInfo(name = "provider_series_key") val providerSeriesKey: String = providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesId.toString(),
     val name: String,
     @ColumnInfo(name = "poster_url") val posterUrl: String? = null,
     @ColumnInfo(name = "backdrop_url") val backdropUrl: String? = null,
@@ -609,7 +619,7 @@ data class ProgramBrowseEntity(
         )
     ],
     indices = [
-        Index(value = ["provider_id", "content_id", "content_type", "group_id"], unique = true),
+        Index(value = ["provider_id", "content_id", "content_type", "group_key"], unique = true),
         Index(value = ["provider_id", "content_type", "group_id"]),
         Index(value = ["group_id", "position"])
     ]
@@ -622,6 +632,7 @@ data class FavoriteEntity(
     @ColumnInfo(name = "content_type") val contentType: ContentType,
     val position: Int = 0,
     @ColumnInfo(name = "group_id") val groupId: Long? = null,
+    @ColumnInfo(name = "group_key") val groupKey: Long = groupId ?: 0L,
     @ColumnInfo(name = "added_at") val addedAt: Long = System.currentTimeMillis()
 )
 
@@ -666,7 +677,9 @@ data class CategoryCount(
     indices = [
         Index(value = ["content_id", "content_type", "provider_id"], unique = true),
         Index(value = ["last_watched_at"]),
-        Index(value = ["provider_id"])
+        Index(value = ["provider_id"]),
+        Index(name = "index_playback_history_provider_id_content_type_content_id", value = ["provider_id", "content_type", "content_id"]),
+        Index(name = "index_playback_history_provider_id_content_type_last_watched_at", value = ["provider_id", "content_type", "last_watched_at"])
     ]
 )
 data class PlaybackHistoryEntity(

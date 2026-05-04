@@ -21,6 +21,7 @@ import com.streamvault.domain.repository.FavoriteRepository
 import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
+import com.streamvault.domain.usecase.ContinueWatchingResult
 import com.streamvault.domain.usecase.ContinueWatchingScope
 import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.domain.usecase.GetCustomCategories
@@ -376,9 +377,14 @@ class MoviesViewModel @Inject constructor(
                             limit = 20,
                             scope = ContinueWatchingScope.MOVIES
                         )
-                            .collect { history ->
+                            .collect { result ->
                                 _uiState.update {
-                                    it.copy(continueWatching = history)
+                                    it.copy(
+                                        continueWatching = when (result) {
+                                            is ContinueWatchingResult.Items -> result.items
+                                            ContinueWatchingResult.Degraded -> emptyList()
+                                        }
+                                    )
                                 }
                             }
                     }
@@ -1048,7 +1054,7 @@ class MoviesViewModel @Inject constructor(
                 )
                 Triple(
                     filteredItems.take(request.loadLimit),
-                    if (fetchIds === ids) filteredItems.size else ids.size,
+                    if (fetchIds.size == ids.size) filteredItems.size else ids.size,
                     false
                 )
             }
@@ -1081,7 +1087,7 @@ class MoviesViewModel @Inject constructor(
                     )
                     Triple(
                         filteredItems.take(request.loadLimit),
-                        if (fetchIds === ids) filteredItems.size else ids.size,
+                        if (fetchIds.size == ids.size) filteredItems.size else ids.size,
                         false
                     )
                 } else {
@@ -1160,7 +1166,7 @@ class MoviesViewModel @Inject constructor(
                 )
             }
             LibraryFilterType.UNWATCHED -> searched.filter { it.watchProgress <= 0L }
-            LibraryFilterType.RECENTLY_UPDATED -> searched.sortedByDescending(::movieReleaseScore)
+            LibraryFilterType.RECENTLY_UPDATED -> searched.filter { movieReleaseScore(it) > 0L }
             LibraryFilterType.TOP_RATED -> searched.filter { it.rating > 0f }
         }
         return when (sortBy) {

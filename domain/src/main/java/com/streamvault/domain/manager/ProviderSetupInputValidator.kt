@@ -5,6 +5,7 @@ import com.streamvault.domain.model.Result
 data class ValidatedXtreamProviderInput(
     val serverUrl: String,
     val username: String,
+    val password: String,
     val name: String
 )
 
@@ -26,6 +27,8 @@ interface ProviderSetupInputValidator {
     fun validateXtream(
         serverUrl: String,
         username: String,
+        password: String,
+        allowBlankPassword: Boolean = false,
         name: String
     ): Result<ValidatedXtreamProviderInput>
 

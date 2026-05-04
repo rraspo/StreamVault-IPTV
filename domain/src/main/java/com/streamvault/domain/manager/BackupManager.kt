@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 import com.streamvault.domain.model.Result
 
 data class BackupData(
-    val version: Int = 5,
+    val version: Int = 7,
     val checksum: String? = null,
     val preferences: Map<String, String>? = null,
     val providers: List<Provider>? = null,
@@ -38,8 +38,13 @@ data class ScheduledRecordingBackup(
     val streamUrl: String,
     val scheduledStartMs: Long,
     val scheduledEndMs: Long,
+    val requestedStartMs: Long? = null,
+    val requestedEndMs: Long? = null,
+    val paddingBeforeMs: Long? = null,
+    val paddingAfterMs: Long? = null,
     val programTitle: String? = null,
-    val recurrence: RecordingRecurrence = RecordingRecurrence.NONE
+    val recurrence: RecordingRecurrence = RecordingRecurrence.NONE,
+    val recurringRuleId: String? = null
 )
 
 enum class BackupConflictStrategy {
@@ -75,9 +80,49 @@ data class BackupImportPlan(
     val conflictStrategy: BackupConflictStrategy = BackupConflictStrategy.KEEP_EXISTING
 )
 
+enum class RecordingScheduleImportDisposition {
+    IMPORTED,
+    REPLACED_EXISTING,
+    SKIPPED_EXISTING,
+    SKIPPED_EXPIRED,
+    SKIPPED_MISSING_PROVIDER,
+    FAILED
+}
+
+data class RecordingScheduleImportOutcome(
+    val channelName: String,
+    val programTitle: String? = null,
+    val scheduledStartMs: Long,
+    val scheduledEndMs: Long,
+    val recurrence: RecordingRecurrence = RecordingRecurrence.NONE,
+    val disposition: RecordingScheduleImportDisposition,
+    val reason: String? = null
+)
+
+data class RecordingScheduleImportSummary(
+    val outcomes: List<RecordingScheduleImportOutcome> = emptyList()
+) {
+    val importedCount: Int
+        get() = outcomes.count {
+            it.disposition == RecordingScheduleImportDisposition.IMPORTED ||
+                it.disposition == RecordingScheduleImportDisposition.REPLACED_EXISTING
+        }
+
+    val skippedCount: Int
+        get() = outcomes.count {
+            it.disposition == RecordingScheduleImportDisposition.SKIPPED_EXISTING ||
+                it.disposition == RecordingScheduleImportDisposition.SKIPPED_EXPIRED ||
+                it.disposition == RecordingScheduleImportDisposition.SKIPPED_MISSING_PROVIDER
+        }
+
+    val failedCount: Int
+        get() = outcomes.count { it.disposition == RecordingScheduleImportDisposition.FAILED }
+}
+
 data class BackupImportResult(
     val importedSections: List<String> = emptyList(),
-    val skippedSections: List<String> = emptyList()
+    val skippedSections: List<String> = emptyList(),
+    val recordingScheduleImport: RecordingScheduleImportSummary? = null
 )
 
 interface BackupManager {

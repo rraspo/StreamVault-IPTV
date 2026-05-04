@@ -34,6 +34,7 @@ import androidx.tv.material3.SurfaceDefaults
 import androidx.tv.material3.Text
 import com.streamvault.app.R
 import com.streamvault.app.ui.components.ChannelLogoBadge
+import com.streamvault.app.ui.model.isArchivePlayable
 import com.streamvault.app.ui.interaction.TvClickableSurface
 import com.streamvault.app.ui.model.guideLookupKey
 import com.streamvault.app.ui.time.LocalAppTimeFormat
@@ -243,9 +244,9 @@ internal fun ImmersiveGuideHero(
                 if (isRefreshing) {
                     GuideHeroBadge(text = stringResource(R.string.epg_loading))
                 }
-                if (selection?.program?.hasArchive == true || selection?.channel?.catchUpSupported == true) {
+                if (selection?.program != null && selection.channel.isArchivePlayable(selection.program, currentGuideNow())) {
                     GuideHeroBadge(
-                        text = if (selection.program?.hasArchive == true) {
+                        text = if (selection.program.hasArchive) {
                             stringResource(R.string.epg_program_replay_ready)
                         } else {
                             stringResource(R.string.epg_program_replay_partial)

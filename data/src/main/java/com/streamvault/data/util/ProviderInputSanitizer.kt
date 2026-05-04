@@ -35,6 +35,8 @@ object ProviderInputSanitizer {
 
     fun normalizeUsername(input: String): String = sanitizeSingleLine(input, MAX_USERNAME_LENGTH).trim()
 
+    fun normalizePassword(input: String): String = sanitizeRaw(input, MAX_PASSWORD_LENGTH)
+
     fun normalizeMacAddress(input: String): String {
         val raw = sanitizeSingleLine(input, MAX_MAC_ADDRESS_LENGTH + 5)
             .uppercase()
@@ -71,6 +73,19 @@ object ProviderInputSanitizer {
         } else {
             "MAC address must be six hex pairs like 00:1A:79:12:34:56."
         }
+    }
+
+    fun validatePassword(password: String, allowBlank: Boolean): String? {
+        if (!allowBlank && password.isBlank()) {
+            return "Please enter password"
+        }
+        if (password.length > MAX_PASSWORD_LENGTH) {
+            return "Password is too long"
+        }
+        if (password.any(Char::isISOControl)) {
+            return "Password cannot contain control characters."
+        }
+        return null
     }
 
     private fun sanitizeSingleLine(input: String, maxLength: Int): String {

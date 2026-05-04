@@ -26,6 +26,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
@@ -66,9 +67,11 @@ class MultiViewViewModel @Inject constructor(
     private val lastDroppedFramesBySlot = mutableMapOf<Int, Int>()
     private val slotStartupJobs = mutableMapOf<Int, kotlinx.coroutines.Job>()
     private val slotErrorJobs = mutableMapOf<Int, kotlinx.coroutines.Job>()
+    private val slotGenerations = mutableMapOf<Int, Long>()
     private var slotInitVersion: Long = 0L
     private var playbackSessionActive: Boolean = false
     private var currentProviderId: Long? = null
+    private var lastPerformanceMode: MultiViewPerformanceMode? = null
 
     /** Flow of the current 4 slot channels from the manager */
     val slotsFlow = multiViewManager.slots
@@ -86,19 +89,28 @@ class MultiViewViewModel @Inject constructor(
                 preferencesRepository.getMultiViewPreset(0),
                 preferencesRepository.getMultiViewPreset(1),
                 preferencesRepository.getMultiViewPreset(2),
-                preferencesRepository.multiViewPerformanceMode
-            ) { preset1, preset2, preset3, performanceMode ->
-                listOf(preset1, preset2, preset3) to performanceMode
+                preferencesRepository.multiViewPerformanceMode,
+                preferencesRepository.multiViewCenterTwoSlotLayout
+            ) { preset1, preset2, preset3, performanceMode, centerTwoSlotLayout ->
+                Triple(listOf(preset1, preset2, preset3), performanceMode, centerTwoSlotLayout)
             }.collect { presets ->
                 val presetList = presets.first
                 val mode = presets.second
                     ?.let { saved -> MultiViewPerformanceMode.entries.firstOrNull { it.name == saved } }
                     ?: MultiViewPerformanceMode.AUTO
                 val policy = resolvePolicy(mode, detectedTier)
-                runtimeActiveSlotLimit = runtimeActiveSlotLimit
-                    .coerceAtLeast(1)
-                    .coerceAtMost(policy.maxActiveSlots)
+                val modeChanged = lastPerformanceMode != null && lastPerformanceMode != mode
+                lastPerformanceMode = mode
+                runtimeActiveSlotLimit = if (modeChanged &&
+                    thermalStatus != MultiViewThermalStatus.SEVERE &&
+                    thermalStatus != MultiViewThermalStatus.CRITICAL
+                ) {
+                    policy.maxActiveSlots
+                } else {
+                    runtimeActiveSlotLimit.coerceAtLeast(1).coerceAtMost(policy.maxActiveSlots)
+                }
                 _uiState.value = _uiState.value.copy(
+                    centerTwoSlotLayout = presets.third,
                     presets = presetList.mapIndexed { index, ids ->
                         MultiViewPresetUiModel(
                             index = index,
@@ -159,12 +171,15 @@ class MultiViewViewModel @Inject constructor(
 
     fun releasePlayersForBackground() {
         playbackSessionActive = false
+        telemetryJob?.cancel()
+        telemetryJob = null
         releaseActivePlayers()
     }
 
     /** Called when MultiViewScreen is opened — spins up player engines for occupied slots */
     fun initSlots() {
         playbackSessionActive = true
+        normalizeCenteredTwoSlotLayoutIfNeeded()
         val initVersion = ++slotInitVersion
         telemetryJob?.cancel()
         cancelSlotStartupJobs()
@@ -179,10 +194,13 @@ class MultiViewViewModel @Inject constructor(
         val maxActiveSlots = providerConnectionLimit
             ?.let { deviceActiveSlotLimit.coerceAtMost(it) }
             ?: deviceActiveSlotLimit
+        var occupiedCount = 0
         val slots = channels.mapIndexed { index, channel ->
             if (channel != null) {
+                val isActive = occupiedCount < maxActiveSlots
+                occupiedCount++
                 val performanceBlockedReason = when {
-                    index < maxActiveSlots -> null
+                    isActive -> null
                     providerConnectionLimit != null && providerConnectionLimit < deviceActiveSlotLimit ->
                         "Held back by the provider connection limit (${providerConnectionLimit} stream(s) max)."
                     else ->
@@ -193,7 +211,7 @@ class MultiViewViewModel @Inject constructor(
                     channel = channel,
                     streamUrl = channel.streamUrl,
                     title = channel.name,
-                    isLoading = index < maxActiveSlots,
+                    isLoading = isActive,
                     isAudioPinned = pinnedAudioSlotIndex == index,
                     performanceBlockedReason = performanceBlockedReason
                 )
@@ -223,65 +241,82 @@ class MultiViewViewModel @Inject constructor(
         // Start all occupied engines
         slots.forEachIndexed { index, slot ->
             if (!slot.isEmpty) {
-                if (index >= maxActiveSlots) {
+                if (slot.performanceBlockedReason != null) {
                     updateSlot(index) { it.copy(isLoading = false, playerEngine = null) }
                     return@forEachIndexed
                 }
                 val startupJob = viewModelScope.launch {
                     kotlinx.coroutines.delay(index * _uiState.value.performancePolicy.startupDelayMs)
                     if (initVersion != slotInitVersion) return@launch
+                    val slotGen = slotGenerations.getOrDefault(index, 0L)
+                    var localEngine: PlayerEngine? = null
+                    var enginePublished = false
                     try {
-                        val engine = playerEngineProvider.get()
+                        localEngine = playerEngineProvider.get()
                         // Cap each multi-view slot to 720p so slots don't compete for 4K bandwidth
-                        (engine as? com.streamvault.player.Media3PlayerEngine)
+                        (localEngine as? com.streamvault.player.Media3PlayerEngine)
                             ?.let {
                                 it.constrainResolutionForMultiView = true
                                 it.bypassAudioFocus = true
                                 it.enableMediaSession = false
                             }
-                        if (initVersion != slotInitVersion) {
-                            engine.release()
+                        if (initVersion != slotInitVersion || slotGen != slotGenerations.getOrDefault(index, 0L)) {
                             return@launch
                         }
-                        playerEngines[index] = engine
-                        observeSlotErrors(index, engine, initVersion)
+                        observeSlotErrors(index, localEngine, initVersion)
 
                         val channel = slot.channel
                             ?: throw IllegalStateException("Missing channel for slot ${slot.index}")
-                        engine.setAudioVideoOffsetMs(effectiveAudioVideoOffsetForChannel(channel.id))
+                        localEngine.setAudioVideoOffsetMs(effectiveAudioVideoOffsetForChannel(channel.id))
                         val streamInfo = when (val result = channelRepository.getStreamInfo(channel)) {
                             is Result.Success -> result.data
                             is Result.Error -> throw IllegalStateException(result.message)
                             Result.Loading -> throw IllegalStateException("Stream info still loading for ${slot.title}")
                         }
 
-                        engine.prepare(streamInfo)
-                        engine.play()
-                        
+                        if (initVersion != slotInitVersion || slotGen != slotGenerations.getOrDefault(index, 0L)) {
+                            return@launch
+                        }
+                        localEngine.prepare(streamInfo)
+                        localEngine.play()
+
+                        // Success: publish engine
+                        playerEngines[index] = localEngine
+                        enginePublished = true
+
                         // Copy the engine into the slot UI state as well
                         updateSlot(index) {
                             it.copy(
                                 isLoading = false,
                                 hasError = false,
                                 errorMessage = null,
-                                playerEngine = engine
+                                playerEngine = localEngine
                             )
                         }
-                        
+
                         // Re-apply audio to make sure the focused one is audible
                         applyFocusAudio(_uiState.value.focusedSlotIndex)
                     } catch (e: Exception) {
-                        if (initVersion == slotInitVersion) {
-                            updateSlot(index) {
-                                it.copy(
-                                    isLoading = false,
-                                    hasError = true,
-                                    errorMessage = e.message,
-                                    playerEngine = playerEngines[index]
-                                )
+                        val isCancellation = e is kotlinx.coroutines.CancellationException
+                        if (!isCancellation) {
+                            slotErrorJobs.remove(index)?.cancel()
+                            if (initVersion == slotInitVersion) {
+                                updateSlot(index) {
+                                    it.copy(
+                                        isLoading = false,
+                                        hasError = true,
+                                        errorMessage = e.message,
+                                        playerEngine = null
+                                    )
+                                }
                             }
                         }
+                        if (isCancellation) throw e
                     } finally {
+                        if (!enginePublished) {
+                            runCatching { localEngine?.stop() }
+                            runCatching { localEngine?.release() }
+                        }
                         slotStartupJobs.remove(index)
                     }
                 }
@@ -312,8 +347,10 @@ class MultiViewViewModel @Inject constructor(
     }
 
     private fun applyFocusAudio(focusedIndex: Int) {
+        val audibleIndex = pinnedAudioSlotIndex
+            ?.takeIf { playerEngines.containsKey(it) }
+            ?: focusedIndex
         playerEngines.forEach { (index, engine) ->
-            val audibleIndex = pinnedAudioSlotIndex ?: focusedIndex
             if (index == audibleIndex) engine.setVolume(1f) else engine.setVolume(0f)
         }
     }
@@ -321,11 +358,21 @@ class MultiViewViewModel @Inject constructor(
     /** Assign a channel to a specific slot (0–3). Called from dialog or AddToGroupDialog. */
     fun assignChannelToSlot(slotIndex: Int, channel: Channel) {
         multiViewManager.setChannel(slotIndex, channel)
+        normalizeCenteredTwoSlotLayoutIfNeeded()
     }
 
     /** Clear a specific slot */
     fun clearSlot(slotIndex: Int) {
         slotStartupJobs.remove(slotIndex)?.cancel()
+        slotErrorJobs.remove(slotIndex)?.cancel()
+        slotGenerations[slotIndex] = (slotGenerations.getOrDefault(slotIndex, 0L) + 1L)
+        if (playbackSessionActive) {
+            playerEngines.remove(slotIndex)?.let { engine ->
+                runCatching { engine.stop() }
+                runCatching { engine.release() }
+            }
+            updateSlot(slotIndex) { it.copy(isLoading = false, playerEngine = null) }
+        }
         multiViewManager.clearSlot(slotIndex)
         if (pinnedAudioSlotIndex == slotIndex) {
             pinnedAudioSlotIndex = null
@@ -353,12 +400,14 @@ class MultiViewViewModel @Inject constructor(
     }
 
     fun pinAudioToFocusedSlot() {
-        pinnedAudioSlotIndex = _uiState.value.focusedSlotIndex
+        val focusedIndex = _uiState.value.focusedSlotIndex
+        if (!playerEngines.containsKey(focusedIndex)) return  // Cannot pin audio to a slot without an active engine
+        pinnedAudioSlotIndex = focusedIndex
         _uiState.value = _uiState.value.copy(
             pinnedAudioSlotIndex = pinnedAudioSlotIndex,
             slots = _uiState.value.slots.mapIndexed { index, slot -> slot.copy(isAudioPinned = index == pinnedAudioSlotIndex) }
         )
-        applyFocusAudio(_uiState.value.focusedSlotIndex)
+        applyFocusAudio(focusedIndex)
     }
 
     fun clearPinnedAudio() {
@@ -372,7 +421,8 @@ class MultiViewViewModel @Inject constructor(
 
     fun saveCurrentAsPreset(presetIndex: Int) {
         viewModelScope.launch {
-            val channelIds = multiViewManager.slots.value.mapNotNull { it?.id }
+            // Save as a fixed-size list (one entry per slot); 0L marks an empty slot so positions are preserved.
+            val channelIds = multiViewManager.slots.value.map { it?.id ?: 0L }
             preferencesRepository.setMultiViewPreset(presetIndex, channelIds)
         }
     }
@@ -387,20 +437,33 @@ class MultiViewViewModel @Inject constructor(
     fun loadPreset(presetIndex: Int) {
         viewModelScope.launch {
             val channelIds = preferencesRepository.getMultiViewPreset(presetIndex).first()
-            if (channelIds.isEmpty()) return@launch
-            val channels = channelRepository.getChannelsByIds(channelIds).first()
+            if (channelIds.isEmpty() || channelIds.all { it <= 0L }) return@launch
+            val validIds = channelIds.filter { it > 0L }
+            val channels = channelRepository.getChannelsByIds(validIds).first()
                 .associateByAnyRawId()
-            multiViewManager.clearAll()
-            channelIds.forEachIndexed { index, channelId ->
-                channels[channelId]?.let { channel ->
-                    multiViewManager.setChannel(index, channel)
-                }
+            // Rebuild a fixed-size plan preserving slot positions; 0L entries become empty slots.
+            val plan: List<com.streamvault.domain.model.Channel?> = List(MultiViewManager.MAX_SLOTS) { index ->
+                val id = channelIds.getOrNull(index) ?: 0L
+                if (id > 0L) channels[id] else null
             }
+            multiViewManager.setSlots(plan)
             restartPlaybackIfActive()
         }
     }
 
     fun isQueued(channelId: Long): Boolean = multiViewManager.isQueued(channelId)
+
+    fun normalizeCenteredTwoSlotLayoutIfNeeded() {
+        if (!_uiState.value.centerTwoSlotLayout) return
+        val current = multiViewManager.slots.value
+        val normalized = buildCenteredTwoSlotPlan(current)
+        if (normalized == current) return
+        multiViewManager.setSlots(normalized)
+        if (pinnedAudioSlotIndex != null && normalized.getOrNull(pinnedAudioSlotIndex ?: -1) == null) {
+            pinnedAudioSlotIndex = null
+            _uiState.value = _uiState.value.copy(pinnedAudioSlotIndex = null)
+        }
+    }
 
     private fun updateSlot(index: Int, transform: (MultiViewSlot) -> MultiViewSlot) {
         val updated = _uiState.value.slots.toMutableList()
@@ -413,6 +476,13 @@ class MultiViewViewModel @Inject constructor(
     private fun restartPlaybackIfActive() {
         if (playbackSessionActive) {
             initSlots()
+        }
+    }
+
+    private fun buildCenteredTwoSlotPlan(slots: List<Channel?>): List<Channel?> {
+        val firstTwoPopulated = slots.filterNotNull().take(2)
+        return List(MultiViewManager.MAX_SLOTS) { index ->
+            firstTwoPopulated.getOrNull(index)
         }
     }
 
@@ -504,10 +574,11 @@ class MultiViewViewModel @Inject constructor(
 
     private fun observeReplacementCandidates() {
         viewModelScope.launch {
-            preferencesRepository.lastActiveProviderId.collect { providerId ->
+            preferencesRepository.lastActiveProviderId.collectLatest { providerId ->
                 if (providerId == null || providerId <= 0L) {
+                    currentProviderId = null
                     _uiState.value = _uiState.value.copy(replacementCandidates = emptyList())
-                    return@collect
+                    return@collectLatest
                 }
                 currentProviderId = providerId
                 combine(
@@ -798,7 +869,26 @@ class MultiViewViewModel @Inject constructor(
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || thermalListener != null) return
         val manager = powerManager ?: return
         thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
-            thermalStatus = mapThermalStatus(status)
+            val newStatus = mapThermalStatus(status)
+            val wasBelow = thermalStatus != MultiViewThermalStatus.SEVERE &&
+                thermalStatus != MultiViewThermalStatus.CRITICAL
+            thermalStatus = newStatus
+            if ((newStatus == MultiViewThermalStatus.SEVERE || newStatus == MultiViewThermalStatus.CRITICAL) && wasBelow) {
+                // Immediately cap admission and update UI without waiting for next telemetry tick
+                runtimeActiveSlotLimit = (runtimeActiveSlotLimit - 1).coerceAtLeast(1)
+                lastPolicyAdjustmentAt = System.currentTimeMillis()
+                _uiState.value = _uiState.value.copy(
+                    telemetry = _uiState.value.telemetry.copy(
+                        thermalStatus = newStatus,
+                        throttledReason = "Thermal pressure forced Split Screen to hold extra slots in standby."
+                    )
+                )
+                restartPlaybackIfActive()
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    telemetry = _uiState.value.telemetry.copy(thermalStatus = newStatus)
+                )
+            }
         }
         manager.addThermalStatusListener(context.mainExecutor, thermalListener!!)
     }

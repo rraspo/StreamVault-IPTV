@@ -8,11 +8,19 @@ import com.streamvault.data.remote.xtream.XtreamParsingException
 import com.streamvault.data.remote.xtream.XtreamRequestException
 import com.streamvault.data.remote.xtream.XtreamResponseTooLargeException
 import com.streamvault.data.security.CredentialDecryptionException
+import com.streamvault.domain.manager.BackupConflictStrategy
+import com.streamvault.domain.manager.BackupImportPlan
+import com.streamvault.domain.manager.BackupPreview
 import com.streamvault.domain.model.ActiveLiveSource
 import com.streamvault.domain.model.ProviderEpgSyncMode
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.repository.CombinedM3uRepository
 import com.streamvault.domain.repository.ProviderRepository
+import com.streamvault.domain.usecase.ImportBackup
+import com.streamvault.domain.usecase.ImportBackupCommand
+import com.streamvault.domain.usecase.ImportBackupResult
+import com.streamvault.domain.usecase.InspectBackupCommand
+import com.streamvault.domain.usecase.InspectBackupResult
 import com.streamvault.domain.usecase.M3uProviderSetupCommand
 import com.streamvault.domain.usecase.StalkerProviderSetupCommand
 import com.streamvault.domain.usecase.ValidateAndAddProvider
@@ -39,7 +47,8 @@ import javax.net.ssl.SSLPeerUnverifiedException
 class ProviderSetupViewModel @Inject constructor(
     private val providerRepository: ProviderRepository,
     private val combinedM3uRepository: CombinedM3uRepository,
-    private val validateAndAddProvider: ValidateAndAddProvider
+    private val validateAndAddProvider: ValidateAndAddProvider,
+    private val importBackup: ImportBackup
 ) : ViewModel() {
 
     enum class SetupSourceType {
@@ -141,7 +150,7 @@ class ProviderSetupViewModel @Inject constructor(
         timezone: String,
         locale: String
     ) {
-        _uiState.update { it.copy(validationError = null, error = null) }
+        _uiState.update { it.copy(validationError = null, error = null, completionWarning = null) }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, validationError = null, syncProgress = "Connecting...") }
@@ -172,6 +181,19 @@ class ProviderSetupViewModel @Inject constructor(
                         )
                     }
                 }
+                is ValidateAndAddProviderResult.SavedWithWarning -> {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            loginSuccess = true,
+                            createdProviderId = result.provider.id,
+                            error = null,
+                            validationError = null,
+                            completionWarning = result.warning,
+                            syncProgress = null
+                        )
+                    }
+                }
                 is ValidateAndAddProviderResult.ValidationError -> {
                     _uiState.update {
                         it.copy(isLoading = false, validationError = result.message, error = null, syncProgress = null)
@@ -181,7 +203,7 @@ class ProviderSetupViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            error = result.message,
+                            error = mapStalkerLoginError(result),
                             validationError = null,
                             syncProgress = null
                         )
@@ -192,7 +214,7 @@ class ProviderSetupViewModel @Inject constructor(
     }
 
     fun loginXtream(serverUrl: String, username: String, password: String, name: String) {
-        _uiState.update { it.copy(validationError = null, error = null) }
+        _uiState.update { it.copy(validationError = null, error = null, completionWarning = null) }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, validationError = null, syncProgress = "Connecting...") }
@@ -222,6 +244,19 @@ class ProviderSetupViewModel @Inject constructor(
                         )
                     }
                 }
+                is ValidateAndAddProviderResult.SavedWithWarning -> {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            loginSuccess = true,
+                            createdProviderId = result.provider.id,
+                            error = null,
+                            validationError = null,
+                            completionWarning = result.warning,
+                            syncProgress = null
+                        )
+                    }
+                }
                 is ValidateAndAddProviderResult.ValidationError -> {
                     _uiState.update {
                         it.copy(isLoading = false, validationError = result.message, error = null, syncProgress = null)
@@ -242,7 +277,7 @@ class ProviderSetupViewModel @Inject constructor(
     }
 
     fun addM3u(url: String, name: String) {
-        _uiState.update { it.copy(validationError = null, error = null) }
+        _uiState.update { it.copy(validationError = null, error = null, completionWarning = null) }
 
         if (url.isBlank()) {
             _uiState.update {
@@ -266,8 +301,15 @@ class ProviderSetupViewModel @Inject constructor(
                 onProgress = { msg -> _uiState.update { it.copy(syncProgress = msg) } }
             )) {
                 is ValidateAndAddProviderResult.Success -> {
-                    val activeCombinedProfileId = (combinedM3uRepository.getActiveLiveSource().first()
-                        as? ActiveLiveSource.CombinedM3uSource)?.profileId
+                    // Only prompt to attach to the active combined profile for newly created
+                    // providers; edits should never re-trigger the attach dialog because the
+                    // decision was already made when the provider was first onboarded.
+                    val activeCombinedProfileId = if (existingId == null) {
+                        (combinedM3uRepository.getActiveLiveSource().first()
+                            as? ActiveLiveSource.CombinedM3uSource)?.profileId
+                    } else {
+                        null
+                    }
                     val activeCombinedProfileName = activeCombinedProfileId?.let { profileId ->
                         combinedM3uRepository.getProfile(profileId)?.name
                     }
@@ -285,6 +327,32 @@ class ProviderSetupViewModel @Inject constructor(
                         )
                     }
                 }
+                is ValidateAndAddProviderResult.SavedWithWarning -> {
+                    // Same combined-attach guard: only for new providers, not edits.
+                    val activeCombinedProfileId = if (existingId == null) {
+                        (combinedM3uRepository.getActiveLiveSource().first()
+                            as? ActiveLiveSource.CombinedM3uSource)?.profileId
+                    } else {
+                        null
+                    }
+                    val activeCombinedProfileName = activeCombinedProfileId?.let { profileId ->
+                        combinedM3uRepository.getProfile(profileId)?.name
+                    }
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            loginSuccess = activeCombinedProfileId == null,
+                            createdProviderId = result.provider.id,
+                            createdProviderName = result.provider.name,
+                            pendingCombinedAttachProfileId = activeCombinedProfileId,
+                            pendingCombinedAttachProfileName = activeCombinedProfileName,
+                            error = null,
+                            validationError = null,
+                            completionWarning = result.warning,
+                            syncProgress = null
+                        )
+                    }
+                }
                 is ValidateAndAddProviderResult.ValidationError -> {
                     _uiState.update {
                         it.copy(isLoading = false, validationError = result.message, error = null, syncProgress = null)
@@ -294,12 +362,127 @@ class ProviderSetupViewModel @Inject constructor(
                     _uiState.update {
                         it.copy(
                             isLoading = false,
-                            error = "Could not validate playlist: ${result.message}",
+                            error = mapM3uSetupError(result),
                             validationError = null,
                             syncProgress = null
                         )
                     }
                 }
+            }
+        }
+    }
+
+    fun inspectBackup(uriString: String) {
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    syncProgress = "Reading backup...",
+                    validationError = null,
+                    error = null
+                )
+            }
+            val result = importBackup.inspect(InspectBackupCommand(uriString))
+            _uiState.update { state ->
+                when (result) {
+                    is InspectBackupResult.Error -> state.copy(
+                        syncProgress = null,
+                        error = "Import failed: ${result.message}"
+                    )
+
+                    is InspectBackupResult.Success -> state.copy(
+                        syncProgress = null,
+                        pendingBackupUri = result.uriString,
+                        backupPreview = result.preview,
+                        backupImportPlan = result.defaultPlan
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissBackupPreview() {
+        _uiState.update {
+            it.copy(
+                backupPreview = null,
+                pendingBackupUri = null,
+                backupImportPlan = BackupImportPlan()
+            )
+        }
+    }
+
+    fun setBackupConflictStrategy(strategy: BackupConflictStrategy) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(conflictStrategy = strategy)) }
+    }
+
+    fun setImportPreferences(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importPreferences = enabled)) }
+    }
+
+    fun setImportProviders(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importProviders = enabled)) }
+    }
+
+    fun setImportSavedLibrary(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importSavedLibrary = enabled)) }
+    }
+
+    fun setImportPlaybackHistory(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importPlaybackHistory = enabled)) }
+    }
+
+    fun setImportMultiViewPresets(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importMultiViewPresets = enabled)) }
+    }
+
+    fun setImportRecordingSchedules(enabled: Boolean) {
+        _uiState.update { it.copy(backupImportPlan = it.backupImportPlan.copy(importRecordingSchedules = enabled)) }
+    }
+
+    fun confirmBackupImport() {
+        var capturedUri: String? = null
+        var capturedPlan: BackupImportPlan? = null
+        _uiState.update { state ->
+            if (state.isImportingBackup || state.pendingBackupUri == null) return@update state
+            val plan = state.backupImportPlan
+            if (!plan.importPreferences && !plan.importProviders && !plan.importSavedLibrary &&
+                !plan.importPlaybackHistory && !plan.importMultiViewPresets && !plan.importRecordingSchedules
+            ) {
+                return@update state.copy(error = "Select at least one section to import")
+            }
+            capturedUri = state.pendingBackupUri
+            capturedPlan = plan
+            state.copy(
+                isImportingBackup = true,
+                syncProgress = null,
+                validationError = null,
+                error = null
+            )
+        }
+        val uriString = capturedUri ?: return
+        val plan = capturedPlan ?: return
+        viewModelScope.launch {
+            val result = importBackup.confirm(ImportBackupCommand(uriString, plan))
+            val hasProviders = if (result is ImportBackupResult.Success) {
+                providerRepository.getProviders().first().isNotEmpty()
+            } else {
+                false
+            }
+            _uiState.update { state ->
+                state.copy(
+                    isImportingBackup = false,
+                    syncProgress = null,
+                    backupPreview = null,
+                    pendingBackupUri = null,
+                    backupImportPlan = BackupImportPlan(),
+                    backupImportSuccess = hasProviders,
+                    error = if (result is ImportBackupResult.Error) {
+                        "Import failed: ${result.message}"
+                    } else if (!hasProviders) {
+                        "Backup imported, but it did not add any providers."
+                    } else {
+                        null
+                    }
+                )
             }
         }
     }
@@ -328,6 +511,10 @@ class ProviderSetupViewModel @Inject constructor(
                 loginSuccess = true
             )
         }
+    }
+
+    fun dismissCompletionWarning() {
+        _uiState.update { it.copy(completionWarning = null) }
     }
 
     private fun mapXtreamLoginError(result: ValidateAndAddProviderResult.Error): String {
@@ -375,6 +562,53 @@ class ProviderSetupViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Maps M3U setup errors to user-friendly messages. Handles both the case where the playlist
+     * was stored but the initial sync failed (saved-with-error path, distinct from the Xtream
+     * sync failure prefix) and delegates to [mapXtreamLoginError] for errors that originated
+     * from an auto-converted Xtream playlist URL.
+     */
+    private fun mapM3uSetupError(result: ValidateAndAddProviderResult.Error): String {
+        if (result.message.startsWith(M3U_PLAYLIST_SYNC_FAILED_PREFIX, ignoreCase = true)) {
+            return "Playlist saved, but the initial sync failed while loading the content"
+        }
+        // Auto-converted Xtream playlist URLs go through loginXtream internally, so the
+        // same Xtream exception types apply.
+        return mapXtreamLoginError(result)
+    }
+
+    /**
+     * Maps Stalker portal setup errors to user-friendly messages consistent with the
+     * Xtream error mapping. The Stalker stack throws [java.io.IOException] for network and
+     * portal errors, so the same transport exception checks apply.
+     */
+    private fun mapStalkerLoginError(result: ValidateAndAddProviderResult.Error): String {
+        if (result.message.startsWith(PROVIDER_LOGIN_SYNC_FAILED_PREFIX, ignoreCase = true)) {
+            return "Login succeeded, but the initial sync failed while loading the channel list"
+        }
+        val failure = result.exception
+        return when {
+            failure.hasCause<CredentialDecryptionException>() ->
+                failure.findCause<CredentialDecryptionException>()?.message
+                    ?: CredentialDecryptionException.MESSAGE
+
+            failure.hasCause<SSLPeerUnverifiedException>() ||
+                failure.hasCause<CertificateException>() ||
+                failure.hasCause<SSLException>() ->
+                "Secure connection failed - the server's TLS certificate is not trusted on this device"
+
+            failure.hasCause<SocketTimeoutException>() ||
+                failure.hasCause<InterruptedIOException>() ||
+                failure.hasCause<UnknownHostException>() ||
+                failure.hasCause<ConnectException>() ||
+                failure.hasCause<NoRouteToHostException>() ->
+                "Cannot reach portal - check your internet connection and portal URL"
+
+            else -> result.message
+        }
+    }
+
+
     private inline fun <reified T : Throwable> Throwable?.findCause(): T? {
         return generateSequence(this) { it.cause }
             .filterIsInstance<T>()
@@ -387,15 +621,19 @@ class ProviderSetupViewModel @Inject constructor(
     private companion object {
         private const val PROVIDER_LOGIN_SYNC_FAILED_PREFIX =
             "Provider login succeeded, but initial sync failed"
+        private const val M3U_PLAYLIST_SYNC_FAILED_PREFIX =
+            "Playlist saved, but initial sync failed"
     }
 }
 
 data class ProviderSetupState(
     val isLoading: Boolean = false,
     val loginSuccess: Boolean = false,
+    val backupImportSuccess: Boolean = false,
     val hasExistingProvider: Boolean = false,
     val error: String? = null,
     val validationError: String? = null,
+    val completionWarning: String? = null,
     val syncProgress: String? = null,
     val isEditing: Boolean = false,
     val existingProviderId: Long? = null,
@@ -414,6 +652,10 @@ data class ProviderSetupState(
     val createdProviderName: String? = null,
     val pendingCombinedAttachProfileId: Long? = null,
     val pendingCombinedAttachProfileName: String? = null,
+    val isImportingBackup: Boolean = false,
+    val backupPreview: BackupPreview? = null,
+    val pendingBackupUri: String? = null,
+    val backupImportPlan: BackupImportPlan = BackupImportPlan(),
     val epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND,
     val hasCustomizedEpgSyncMode: Boolean = false,
     val xtreamFastSyncEnabled: Boolean = true,

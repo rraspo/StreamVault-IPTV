@@ -27,6 +27,7 @@ import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.ContinueWatchingResult
 import com.streamvault.domain.usecase.ContinueWatchingScope
 import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.domain.usecase.GetCustomCategories
@@ -138,7 +139,7 @@ class DashboardViewModel @Inject constructor(
                                     .filter { it.enabled }
                                     .map { it.providerId }
                                     .distinct()
-                                val provider = activeProvider
+                                val provider = activeProvider?.takeIf { it.id in liveProviderIds }
                                     ?: liveProviderIds.firstOrNull()?.let { providerRepository.getProvider(it) }
                                     ?: run {
                                         emit(DashboardUiState(isLoading = false, currentCombinedProfileId = activeSource.profileId))
@@ -181,14 +182,15 @@ class DashboardViewModel @Inject constructor(
         val contentShelves = combine(
             observeFavoriteChannels(liveProviderIds).onStart { emit(emptyList()) },
             observeRecentChannels(liveProviderIds).onStart { emit(emptyList()) },
-            observeContinueWatching(provider.id).onStart { emit(emptyList()) },
+            observeContinueWatching(liveProviderIds.toSet()).onStart { emit(ContinueWatchingShelf()) },
             movieShelf.onStart { emit(emptyList()) },
             seriesShelf.onStart { emit(emptyList()) }
-        ) { favoriteChannels, recentChannels, continueWatching, recentMovies, recentSeries ->
+        ) { favoriteChannels, recentChannels, continueWatchingShelf, recentMovies, recentSeries ->
             DashboardContentShelves(
                 favoriteChannels = favoriteChannels,
                 recentChannels = recentChannels,
-                continueWatching = continueWatching,
+                continueWatching = continueWatchingShelf.items,
+                continueWatchingDegraded = continueWatchingShelf.isDegraded,
                 recentMovies = recentMovies,
                 recentSeries = recentSeries
             )
@@ -222,6 +224,7 @@ class DashboardViewModel @Inject constructor(
                 favoriteChannels = snapshot.shelves.favoriteChannels,
                 recentChannels = snapshot.shelves.recentChannels,
                 continueWatching = snapshot.shelves.continueWatching,
+                continueWatchingDegraded = snapshot.shelves.continueWatchingDegraded,
                 recentMovies = snapshot.shelves.recentMovies,
                 recentSeries = snapshot.shelves.recentSeries,
                 lastLiveCategory = snapshot.liveContext.lastVisitedCategory,
@@ -239,6 +242,7 @@ class DashboardViewModel @Inject constructor(
                     providerName = provider.name,
                     recentChannels = snapshot.shelves.recentChannels,
                     continueWatching = snapshot.shelves.continueWatching,
+                    continueWatchingDegraded = snapshot.shelves.continueWatchingDegraded,
                     recentMovies = snapshot.shelves.recentMovies,
                     recentSeries = snapshot.shelves.recentSeries
                 ),
@@ -285,12 +289,17 @@ class DashboardViewModel @Inject constructor(
             ) { isAdult || isUserProtected }
         }
 
-    private fun observeContinueWatching(providerId: Long): Flow<List<PlaybackHistory>> =
+    private fun observeContinueWatching(providerIds: Set<Long>): Flow<ContinueWatchingShelf> =
         getContinueWatching(
-            providerId = providerId,
+            providerIds = providerIds,
             limit = CONTINUE_WATCHING_LIMIT,
             scope = ContinueWatchingScope.ALL_VOD
-        )
+        ).map { result ->
+            when (result) {
+                is ContinueWatchingResult.Items -> ContinueWatchingShelf(items = result.items)
+                ContinueWatchingResult.Degraded -> ContinueWatchingShelf(isDegraded = true)
+            }
+        }
 
     private fun buildLiveContext(
         providerIds: List<Long>,
@@ -434,9 +443,21 @@ class DashboardViewModel @Inject constructor(
         providerName: String,
         recentChannels: List<Channel>,
         continueWatching: List<PlaybackHistory>,
+        continueWatchingDegraded: Boolean,
         recentMovies: List<Movie>,
         recentSeries: List<Series>
     ): DashboardFeature {
+        // When continue-watching is empty due to a transient IO failure, do not silently
+        // fall through to an unrelated hero — surface an explicit degraded state instead.
+        if (continueWatching.isEmpty() && continueWatchingDegraded) {
+            return DashboardFeature(
+                title = appContext.getString(R.string.dashboard_resume_unavailable),
+                summary = appContext.getString(R.string.dashboard_resume_unavailable_detail),
+                artworkUrl = null,
+                actionLabel = appContext.getString(R.string.dashboard_continue_watching),
+                actionType = DashboardFeatureAction.CONTINUE_WATCHING
+            )
+        }
         val resumeItem = continueWatching.firstOrNull()
         if (resumeItem != null) {
             val detail = when (resumeItem.contentType) {
@@ -581,10 +602,16 @@ private data class DashboardLiveContext(
     val shortcuts: List<DashboardLiveShortcut>
 )
 
+private data class ContinueWatchingShelf(
+    val items: List<PlaybackHistory> = emptyList(),
+    val isDegraded: Boolean = false
+)
+
 private data class DashboardContentShelves(
     val favoriteChannels: List<Channel>,
     val recentChannels: List<Channel>,
     val continueWatching: List<PlaybackHistory>,
+    val continueWatchingDegraded: Boolean = false,
     val recentMovies: List<Movie>,
     val recentSeries: List<Series>
 )
@@ -603,6 +630,7 @@ data class DashboardUiState(
     val favoriteChannels: List<Channel> = emptyList(),
     val recentChannels: List<Channel> = emptyList(),
     val continueWatching: List<PlaybackHistory> = emptyList(),
+    val continueWatchingDegraded: Boolean = false,
     val recentMovies: List<Movie> = emptyList(),
     val recentSeries: List<Series> = emptyList(),
     val lastLiveCategory: Category? = null,

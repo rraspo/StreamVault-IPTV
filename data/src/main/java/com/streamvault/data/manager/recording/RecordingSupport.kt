@@ -78,7 +78,7 @@ internal fun RecordingStorageConfig.toEntity(existing: RecordingStorageEntity?, 
 internal fun headersToJson(headers: Map<String, String>): String {
     val obj = JSONObject()
     headers.forEach { (k, v) -> obj.put(k, v) }
-    return obj.toString()
+    return obj.toString() ?: "{}"
 }
 
 internal fun headersFromJson(raw: String?): Map<String, String> {
@@ -141,6 +141,8 @@ internal fun resolveStorageDetails(
     if (treeUriString.isNullOrBlank()) {
         val recordingsDir = defaultRecordingDirectory(context)
         val available = runCatching { StatFs(recordingsDir.absolutePath).availableBytes }.getOrNull()
+            ?.takeIf { it > 0L }
+            ?: recordingsDir.usableSpace.takeIf { it > 0L }
         return Triple(recordingsDir.absolutePath, available, recordingsDir.canWrite())
     }
 

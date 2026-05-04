@@ -23,6 +23,7 @@ import com.streamvault.app.ui.components.dialogs.PremiumDialogFooterButton
 import com.streamvault.app.ui.components.dialogs.RenameGroupDialog
 import com.streamvault.app.ui.screens.multiview.MultiViewPlannerDialog
 import com.streamvault.app.ui.screens.multiview.MultiViewViewModel
+import com.streamvault.domain.model.ActiveLiveSource
 import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Provider
@@ -99,7 +100,8 @@ internal fun HomeDialogsHost(
 
                         pendingUnlockChannel?.let { channel ->
                             viewModel.clearPreview()
-                            onChannelClick(channel, uiState.selectedCategory, resolveProviderForChannel(channel), null, null)
+                            val combinedProfileId = (uiState.activeLiveSource as? ActiveLiveSource.CombinedM3uSource)?.profileId
+                            onChannelClick(channel, uiState.selectedCategory, resolveProviderForChannel(channel), combinedProfileId, uiState.selectedCombinedSourceProviderId)
                             onPendingUnlockChannelChange(null)
                         }
 
@@ -241,7 +243,11 @@ internal fun HomeDialogsHost(
             },
             onAddToGroup = { group -> viewModel.addToGroup(channel, group) },
             onRemoveFromGroup = { group -> viewModel.removeFromGroup(channel, group) },
-            onCreateGroup = { name -> viewModel.createCustomGroup(name) },
+            onCreateGroup = if (
+                uiState.isCombinedLiveSource &&
+                uiState.selectedCombinedSourceProviderId == null &&
+                uiState.currentCombinedProfileMembers.count { it.enabled } > 1
+            ) null else { name -> viewModel.createCustomGroup(name) },
             isQueuedForSplitScreen = multiViewViewModel.isQueued(channel.id),
             onOpenSplitScreenPlanner = { onPendingSplitPlannerChannelChange(channel) },
             onRemoveFromRecent = if (uiState.selectedCategory?.id == VirtualCategoryIds.RECENT) {

@@ -37,9 +37,11 @@ class ProgramReminderNotifier @Inject constructor(
             .setContentIntent(buildLaunchPendingIntent())
             .build()
         runCatching {
-            NotificationManagerCompat.from(context).notify(reminder.id.hashCode(), notification)
+            NotificationManagerCompat.from(context).notify(reminderNotificationTag(reminder.id), 0, notification)
         }
     }
+
+    private fun reminderNotificationTag(reminderId: Long): String = "program-reminder:$reminderId"
 
     private fun buildLaunchPendingIntent(): PendingIntent? {
         val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null

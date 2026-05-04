@@ -160,7 +160,6 @@ private class FakeMovieRepository(
     override suspend fun getMovieDetails(providerId: Long, movieId: Long): Result<Movie> = error("Not used in test")
     override suspend fun getStreamInfo(movie: Movie): Result<StreamInfo> = error("Not used in test")
     override suspend fun refreshMovies(providerId: Long): Result<Unit> = error("Not used in test")
-    override suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit> = error("Not used in test")
 }
 
 private class FakeSeriesRepository(
@@ -184,7 +183,6 @@ private class FakeSeriesRepository(
     override suspend fun getSeriesDetails(providerId: Long, seriesId: Long): Result<Series> = error("Not used in test")
     override suspend fun getEpisodeStreamInfo(episode: com.streamvault.domain.model.Episode): Result<StreamInfo> = error("Not used in test")
     override suspend fun refreshSeries(providerId: Long): Result<Unit> = error("Not used in test")
-    override suspend fun updateEpisodeWatchProgress(episodeId: Long, progress: Long): Result<Unit> = error("Not used in test")
 }
 
 private fun <T> unsupported(): Flow<T> = error("Not used in test")

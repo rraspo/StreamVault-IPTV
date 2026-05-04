@@ -409,6 +409,31 @@ class XtreamProviderTest {
     }
 
     @Test
+    fun `getLiveStreams uses category_ids when live category_id is missing or zero`() = runBlocking {
+        val provider = XtreamProvider(
+            providerId = 42,
+            api = FakeXtreamApiService(
+                liveStreams = listOf(
+                    XtreamStream(
+                        name = "Channel",
+                        streamId = 77,
+                        categoryId = "0",
+                        categoryIds = listOf("28")
+                    )
+                )
+            ),
+            serverUrl = "https://example.com",
+            username = "user",
+            password = "pass"
+        )
+
+        val channel = provider.getLiveStreams().getOrNull().orEmpty().single()
+
+        assertThat(channel.categoryId).isEqualTo(28L)
+        assertThat(channel.categoryName).isEqualTo("Category 28")
+    }
+
+    @Test
     fun `getSeriesCategories honors explicit adult flag from xtream category payload`() = runBlocking {
         val provider = XtreamProvider(
             providerId = 42,

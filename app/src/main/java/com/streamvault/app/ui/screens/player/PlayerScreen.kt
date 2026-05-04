@@ -79,6 +79,7 @@ import com.streamvault.app.MainActivity
 import com.streamvault.app.cast.CastConnectionState
 import com.streamvault.app.ui.components.PlayerRenderView
 import com.streamvault.app.ui.design.requestFocusSafely
+import com.streamvault.app.ui.notifications.rememberNotificationPermissionGate
 import com.streamvault.app.ui.screens.player.overlay.ChannelInfoOverlay
 import com.streamvault.app.ui.screens.player.overlay.ChannelVariantSelectionDialog
 import com.streamvault.app.ui.screens.player.overlay.CategoryListOverlay
@@ -126,6 +127,7 @@ fun PlayerScreen(
     seriesId: Long? = null,
     seasonNumber: Int? = null,
     episodeNumber: Int? = null,
+    episodeId: Long? = null,
     returnRoute: String? = null,
     onBack: () -> Unit,
     onNavigate: ((String) -> Unit)? = null,
@@ -148,6 +150,11 @@ fun PlayerScreen(
         400.dp
     }
     val mainActivity = LocalContext.current.findMainActivity()
+    val notificationPermissionGate = rememberNotificationPermissionGate(
+        onNotificationsBlocked = { message -> viewModel.showPlayerNotice(message = message) },
+        reminderBlockedMessage = stringResource(R.string.notification_permission_reminder_required),
+        recordingBlockedMessage = stringResource(R.string.notification_permission_recording_alert_required)
+    )
     val isInPictureInPictureMode = mainActivity
         ?.pictureInPictureModeFlow
         ?.collectAsState(initial = mainActivity.isInPictureInPictureMode)
@@ -388,7 +395,21 @@ fun PlayerScreen(
         )
     }
 
-    LaunchedEffect(streamUrl, epgChannelId, internalChannelId, categoryId, providerId, isVirtual, combinedProfileId, combinedSourceFilterProviderId, contentType, archiveStartMs, archiveEndMs, archiveTitle, seriesId, seasonNumber, episodeNumber) {
+    val prepareIdentity = buildPlayerPrepareIdentity(
+        streamUrl = streamUrl,
+        epgChannelId = epgChannelId,
+        internalChannelId = internalChannelId,
+        categoryId = categoryId,
+        providerId = providerId,
+        isVirtual = isVirtual,
+        combinedProfileId = combinedProfileId,
+        combinedSourceFilterProviderId = combinedSourceFilterProviderId,
+        contentType = contentType,
+        archiveStartMs = archiveStartMs,
+        archiveEndMs = archiveEndMs
+    )
+
+    LaunchedEffect(prepareIdentity) {
         viewModel.prepare(
             streamUrl = streamUrl,
             epgChannelId = epgChannelId,
@@ -401,6 +422,23 @@ fun PlayerScreen(
             contentType = contentType,
             title = title,
             artworkUrl = artworkUrl,
+            archiveStartMs = archiveStartMs,
+            archiveEndMs = archiveEndMs,
+            archiveTitle = archiveTitle,
+            seriesId = seriesId,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber,
+            episodeId = episodeId
+        )
+    }
+
+    LaunchedEffect(title, artworkUrl, archiveTitle, seriesId, seasonNumber, episodeNumber, prepareIdentity) {
+        viewModel.updatePreparedRouteMetadata(
+            title = title,
+            artworkUrl = artworkUrl,
+            contentType = contentType,
+            providerId = providerId ?: -1L,
+            internalChannelId = internalChannelId,
             archiveStartMs = archiveStartMs,
             archiveEndMs = archiveEndMs,
             archiveTitle = archiveTitle,
@@ -958,11 +996,27 @@ fun PlayerScreen(
             onSeekForward = viewModel::seekForward,
             onRestartProgram = viewModel::restartCurrentProgram,
             onOpenArchive = { showProgramHistory = true },
-            onStartRecording = viewModel::startManualRecording,
+            onStartRecording = {
+                notificationPermissionGate.runRecordingAction {
+                    viewModel.startManualRecording()
+                }
+            },
             onStopRecording = viewModel::stopCurrentRecording,
-            onScheduleRecording = viewModel::scheduleRecording,
-            onScheduleDailyRecording = viewModel::scheduleDailyRecording,
-            onScheduleWeeklyRecording = viewModel::scheduleWeeklyRecording,
+            onScheduleRecording = {
+                notificationPermissionGate.runRecordingAction {
+                    viewModel.scheduleRecording()
+                }
+            },
+            onScheduleDailyRecording = {
+                notificationPermissionGate.runRecordingAction {
+                    viewModel.scheduleDailyRecording()
+                }
+            },
+            onScheduleWeeklyRecording = {
+                notificationPermissionGate.runRecordingAction {
+                    viewModel.scheduleWeeklyRecording()
+                }
+            },
             onToggleAspectRatio = viewModel::toggleAspectRatio,
             onOpenSubtitleTracks = { showTrackSelection = TrackType.TEXT },
             onOpenAudioTracks = { showTrackSelection = TrackType.AUDIO },
@@ -1236,11 +1290,27 @@ fun PlayerScreen(
                         viewModel.openLastVisitedCategory()
                     },
                     currentRecordingStatus = currentChannelRecording?.status,
-                    onStartRecording = viewModel::startManualRecording,
+                    onStartRecording = {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.startManualRecording()
+                        }
+                    },
                     onStopRecording = viewModel::stopCurrentRecording,
-                    onScheduleRecording = viewModel::scheduleRecording,
-                    onScheduleDailyRecording = viewModel::scheduleDailyRecording,
-                    onScheduleWeeklyRecording = viewModel::scheduleWeeklyRecording,
+                    onScheduleRecording = {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleRecording()
+                        }
+                    },
+                    onScheduleDailyRecording = {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleDailyRecording()
+                        }
+                    },
+                    onScheduleWeeklyRecording = {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleWeeklyRecording()
+                        }
+                    },
                     onRestartProgram = { viewModel.restartCurrentProgram() },
                     onOpenArchive = { showProgramHistory = true },
                     onToggleAspectRatio = { viewModel.toggleAspectRatio() },

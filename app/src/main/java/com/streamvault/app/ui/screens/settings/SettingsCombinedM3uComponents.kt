@@ -126,6 +126,7 @@ internal fun CombinedM3uProfilesCard(
                         CompactSettingsActionChip(
                             label = "Use For Live TV",
                             accent = Primary,
+                            enabled = selectedProfile.members.any { it.enabled },
                             onClick = { onActivateProfile(selectedProfile.id) }
                         )
                         CompactSettingsActionChip(
@@ -218,6 +219,7 @@ internal fun CombinedM3uProfilesCard(
 @Composable
 internal fun RenameCombinedM3uDialog(
     profile: CombinedM3uProfile,
+    isSubmitting: Boolean = false,
     onDismiss: () -> Unit,
     onRename: (String) -> Unit
 ) {
@@ -238,12 +240,13 @@ internal fun RenameCombinedM3uDialog(
         footer = {
             PremiumDialogFooterButton(
                 label = stringResource(R.string.settings_cancel),
-                onClick = onDismiss
+                onClick = onDismiss,
+                enabled = !isSubmitting
             )
             PremiumDialogFooterButton(
                 label = "Save",
                 onClick = { onRename(name.trim()) },
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !isSubmitting,
                 emphasized = true
             )
         }
@@ -253,6 +256,7 @@ internal fun RenameCombinedM3uDialog(
 @Composable
 internal fun CreateCombinedM3uDialog(
     providers: List<Provider>,
+    isSubmitting: Boolean = false,
     onDismiss: () -> Unit,
     onCreate: (String, List<Long>) -> Unit
 ) {
@@ -353,12 +357,13 @@ internal fun CreateCombinedM3uDialog(
         footer = {
             PremiumDialogFooterButton(
                 label = stringResource(R.string.settings_cancel),
-                onClick = onDismiss
+                onClick = onDismiss,
+                enabled = !isSubmitting
             )
             PremiumDialogFooterButton(
                 label = "Create",
                 onClick = { onCreate(effectiveName, selectedProviderIds.toList()) },
-                enabled = selectedProviderIds.isNotEmpty() && effectiveName.isNotBlank(),
+                enabled = selectedProviderIds.isNotEmpty() && effectiveName.isNotBlank() && !isSubmitting,
                 emphasized = true
             )
         }
@@ -369,6 +374,7 @@ internal fun CreateCombinedM3uDialog(
 internal fun AddCombinedProviderDialog(
     profile: CombinedM3uProfile,
     availableProviders: List<Provider>,
+    isSubmitting: Boolean = false,
     onDismiss: () -> Unit,
     onAddProvider: (Long) -> Unit
 ) {
@@ -447,12 +453,13 @@ internal fun AddCombinedProviderDialog(
         footer = {
             PremiumDialogFooterButton(
                 label = stringResource(R.string.settings_cancel),
-                onClick = onDismiss
+                onClick = onDismiss,
+                enabled = !isSubmitting
             )
             PremiumDialogFooterButton(
                 label = "Add",
                 onClick = { selectedProviderId?.let(onAddProvider) },
-                enabled = selectedProviderId != null && candidateProviders.isNotEmpty(),
+                enabled = selectedProviderId != null && candidateProviders.isNotEmpty() && !isSubmitting,
                 emphasized = true
             )
         }

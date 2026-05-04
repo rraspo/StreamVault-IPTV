@@ -1,8 +1,37 @@
 package com.streamvault.app.ui.screens.player
 
+import com.streamvault.domain.model.StreamInfo
+
 internal fun String?.safeTrimmedOrNull(): String? {
     val value = this ?: return null
     return value.trim().takeIf { it.isNotEmpty() }
+}
+
+internal fun resolveTimeshiftStreamInfo(
+    streamInfoOverride: StreamInfo?,
+    currentResolvedStreamInfo: StreamInfo?,
+    currentResolvedPlaybackUrl: String,
+    currentStreamUrl: String,
+    playbackTitle: String,
+    currentTitle: String
+): StreamInfo? {
+    val resolvedTitle = playbackTitle.ifBlank { currentTitle }
+    streamInfoOverride?.let { override ->
+        return override.copy(title = override.title ?: resolvedTitle)
+    }
+    currentResolvedStreamInfo?.let { resolved ->
+        val resolvedUrl = resolved.url.safeTrimmedOrNull()
+        if (resolvedUrl != null) {
+            return resolved.copy(
+                url = resolvedUrl,
+                title = resolved.title ?: resolvedTitle
+            )
+        }
+    }
+    val fallbackUrl = currentResolvedPlaybackUrl.safeTrimmedOrNull()
+        ?: currentStreamUrl.safeTrimmedOrNull()
+        ?: return null
+    return StreamInfo(url = fallbackUrl, title = resolvedTitle)
 }
 
 internal fun resolvePlaybackIdentityUrl(

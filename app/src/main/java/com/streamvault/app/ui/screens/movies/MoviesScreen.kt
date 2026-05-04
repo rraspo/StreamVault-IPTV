@@ -53,6 +53,7 @@ import com.streamvault.domain.model.Category
 import com.streamvault.domain.model.LibraryFilterType
 import com.streamvault.domain.model.LibrarySortBy
 import com.streamvault.domain.model.Movie
+import com.streamvault.domain.model.PlaybackHistory
 import kotlinx.coroutines.launch
 import androidx.compose.ui.res.stringResource
 import com.streamvault.app.R
@@ -95,6 +96,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun MoviesScreen(
     onMovieClick: (Movie) -> Unit,
+    onContinueWatchingPlay: (PlaybackHistory) -> Unit,
     onNavigate: (String) -> Unit,
     currentRoute: String,
     viewModel: MoviesViewModel = hiltViewModel()
@@ -220,6 +222,7 @@ fun MoviesScreen(
                 searchQuery = uiState.searchQuery,
                 onSearchQueryChange = viewModel::setSearchQuery,
                 onMovieClick = onMovieClick,
+                onContinueWatchingPlay = onContinueWatchingPlay,
                 onProtectedMovieClick = { movie ->
                     pendingCategory = null
                     pendingMovie = movie
@@ -332,6 +335,7 @@ private fun MoviesVodContent(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     onMovieClick: (Movie) -> Unit,
+    onContinueWatchingPlay: (PlaybackHistory) -> Unit,
     onProtectedMovieClick: (Movie) -> Unit,
     onProtectedCategoryClick: (Category) -> Unit,
     onShowDialog: (Movie) -> Unit,
@@ -586,17 +590,7 @@ private fun MoviesVodContent(
             item(key = "continue_watching") {
                 ContinueWatchingRow(
                         items = continueWatching,
-                        onItemClick = { history ->
-                            onMovieClick(
-                                Movie(
-                                    id = history.contentId,
-                                    name = history.title,
-                                    posterUrl = history.posterUrl,
-                                    streamUrl = history.streamUrl,
-                                    providerId = history.providerId
-                                )
-                            )
-                        }
+                        onItemClick = onContinueWatchingPlay
                     )
             }
             }
@@ -1155,7 +1149,7 @@ private fun MoviesVodClassicContent(
             )
             LazyVerticalGrid(
                 state = classicGridState,
-                columns = GridCells.Adaptive(minSize = 136.dp),
+                columns = GridCells.Adaptive(minSize = 68.dp),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)

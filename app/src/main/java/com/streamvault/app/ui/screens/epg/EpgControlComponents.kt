@@ -67,9 +67,10 @@ import com.streamvault.app.ui.theme.Primary
 import com.streamvault.app.ui.theme.SurfaceElevated
 import com.streamvault.app.ui.theme.SurfaceHighlight
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.time.LocalDate
+import java.time.ZoneId
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -524,7 +525,7 @@ internal fun GuideDayRow(
     val dayFormat = remember { SimpleDateFormat("EEE d MMM", Locale.getDefault()) }
     val dayAnchors = remember(selectedDayStart) {
         (-1L..3L).map { offset ->
-            selectedDayStart + (offset * EpgViewModel.DAY_SHIFT_MS)
+            shiftGuideDayStart(selectedDayStart, offset)
         }
     }
 
@@ -700,23 +701,17 @@ internal fun GuideShortcutChip(
 }
 
 internal fun startOfDay(timestamp: Long): Long {
-    val calendar = Calendar.getInstance().apply {
-        timeInMillis = timestamp
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
-    }
-    return calendar.timeInMillis
+    return startOfGuideDay(timestamp)
 }
 
 @Composable
 private fun dayRelativeLabel(dayStart: Long): String {
-    val todayStart = remember { startOfDay(System.currentTimeMillis()) }
-    return when (dayStart) {
-        todayStart - EpgViewModel.DAY_SHIFT_MS -> stringResource(R.string.epg_day_yesterday)
-        todayStart -> stringResource(R.string.epg_day_today)
-        todayStart + EpgViewModel.DAY_SHIFT_MS -> stringResource(R.string.epg_day_tomorrow)
+    val zoneId = remember { ZoneId.systemDefault() }
+    val today = remember { LocalDate.now(zoneId) }
+    return when (dayRelativeOffset(dayStart, today, zoneId)) {
+        -1L -> stringResource(R.string.epg_day_yesterday)
+        0L -> stringResource(R.string.epg_day_today)
+        1L -> stringResource(R.string.epg_day_tomorrow)
         else -> {
             val format = remember { SimpleDateFormat("EEE", Locale.getDefault()) }
             format.format(Date(dayStart))

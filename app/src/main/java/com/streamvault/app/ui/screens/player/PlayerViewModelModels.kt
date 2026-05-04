@@ -3,6 +3,7 @@ package com.streamvault.app.ui.screens.player
 import android.graphics.Bitmap
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ChannelQualityOption
+import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.Season
 import com.streamvault.domain.model.Series
@@ -102,6 +103,78 @@ data class AutoPlayCountdownUiState(
     val episode: Episode,
     val secondsRemaining: Int
 )
+
+data class PlayerPrepareIdentity(
+    val streamUrl: String,
+    val epgChannelId: String?,
+    val internalChannelId: Long,
+    val categoryId: Long,
+    val providerId: Long,
+    val isVirtual: Boolean,
+    val combinedProfileId: Long?,
+    val combinedSourceFilterProviderId: Long?,
+    val contentType: String,
+    val archiveStartMs: Long?,
+    val archiveEndMs: Long?
+)
+
+internal fun buildPlayerPrepareIdentity(
+    streamUrl: String,
+    epgChannelId: String?,
+    internalChannelId: Long,
+    categoryId: Long?,
+    providerId: Long?,
+    isVirtual: Boolean,
+    combinedProfileId: Long?,
+    combinedSourceFilterProviderId: Long?,
+    contentType: String,
+    archiveStartMs: Long?,
+    archiveEndMs: Long?
+): PlayerPrepareIdentity = PlayerPrepareIdentity(
+    streamUrl = streamUrl,
+    epgChannelId = epgChannelId,
+    internalChannelId = internalChannelId,
+    categoryId = categoryId?.takeIf { it > 0L } ?: -1L,
+    providerId = providerId?.takeIf { it > 0L } ?: -1L,
+    isVirtual = isVirtual,
+    combinedProfileId = combinedProfileId?.takeIf { it > 0L },
+    combinedSourceFilterProviderId = combinedSourceFilterProviderId?.takeIf { it > 0L },
+    contentType = contentType,
+    archiveStartMs = archiveStartMs,
+    archiveEndMs = archiveEndMs
+)
+
+internal fun hasArchivePlaybackIdentity(
+    contentType: String,
+    archiveStartMs: Long?,
+    archiveEndMs: Long?
+): Boolean = archiveStartMs != null &&
+    archiveEndMs != null &&
+    archiveStartMs > 0L &&
+    archiveEndMs > archiveStartMs &&
+    try {
+        ContentType.valueOf(contentType)
+    } catch (_: Exception) {
+        ContentType.LIVE
+    } == ContentType.LIVE
+
+internal fun resolveRouteDisplayTitle(
+    title: String,
+    contentType: String,
+    archiveStartMs: Long?,
+    archiveEndMs: Long?,
+    archiveTitle: String?
+): String = if (
+    hasArchivePlaybackIdentity(
+        contentType = contentType,
+        archiveStartMs = archiveStartMs,
+        archiveEndMs = archiveEndMs
+    )
+) {
+    archiveTitle?.takeIf { it.isNotBlank() } ?: title
+} else {
+    title
+}
 
 enum class PlayerRecoveryType {
     NETWORK,

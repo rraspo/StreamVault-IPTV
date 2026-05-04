@@ -161,12 +161,13 @@ class SearchViewModel @Inject constructor(
         val level = params.level
         val unlockedIds = params.unlockedCategoryIds
 
-        if (provider == null || query.length < 2) {
+        val trimmedQueryLength = query.trim().length
+        if (provider == null || trimmedQueryLength < 2) {
             flowOf(
                 SearchUiState(
                     parentalControlLevel = level,
                     hasActiveProvider = provider != null,
-                    queryLength = query.length,
+                    queryLength = trimmedQueryLength,
                     unlockedCategoryIds = unlockedIds
                 )
             )
@@ -190,9 +191,10 @@ class SearchViewModel @Inject constructor(
                     else results.series,
                     isLoading = false,
                     hasSearched = true,
+                    hasSearchError = results.isPartialResult,
                     parentalControlLevel = level,
                     hasActiveProvider = true,
-                    queryLength = query.length,
+                    queryLength = trimmedQueryLength,
                     unlockedCategoryIds = unlockedIds
                 )
             }
@@ -326,6 +328,7 @@ data class SearchUiState(
     val series: List<Series> = emptyList(),
     val isLoading: Boolean = false,
     val hasSearched: Boolean = false,
+    val hasSearchError: Boolean = false,
     val parentalControlLevel: Int = 0,
     val hasActiveProvider: Boolean = false,
     val queryLength: Int = 0,
@@ -560,6 +563,15 @@ fun SearchScreen(
                         SearchMessageState(
                             title = stringResource(R.string.search_ready_title),
                             subtitle = stringResource(R.string.search_type_to_search)
+                        )
+                    }
+                }
+
+                uiState.isEmpty && uiState.hasSearchError -> {
+                    item {
+                        SearchMessageState(
+                            title = stringResource(R.string.search_error_title),
+                            subtitle = stringResource(R.string.search_error_subtitle)
                         )
                     }
                 }

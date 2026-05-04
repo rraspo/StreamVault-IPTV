@@ -270,6 +270,9 @@ fun FavoritesScreen(
             }
         }
     }
+    val hasVisibleContent = remember(filteredSections, visibleContinueWatching, visibleRecentLive) {
+        filteredSections.isNotEmpty() || visibleContinueWatching.isNotEmpty() || visibleRecentLive.isNotEmpty()
+    }
     val sectionBaseIndex = 5 +
         (if (visibleContinueWatching.isNotEmpty()) 1 else 0) +
         (if (visibleRecentLive.isNotEmpty()) 1 else 0)
@@ -378,7 +381,7 @@ fun FavoritesScreen(
                     }
                 }
 
-                uiState.sections.isEmpty() -> {
+                !hasVisibleContent -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(

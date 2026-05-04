@@ -227,6 +227,29 @@ internal fun LazyListScope.settingsPlaybackSection(
             value = audioVideoOffsetLabel,
             onClick = { onShowAudioVideoOffsetDialogChange(true) }
         )
+        HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
+        TvClickableSurface(
+            onClick = { viewModel.setCenterTwoSlotMultiviewLayout(!uiState.centerTwoSlotMultiviewLayout) },
+            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = Color.Transparent,
+                focusedContainerColor = Primary.copy(alpha = 0.15f)
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = stringResource(R.string.settings_multiview_center_two_slot_layout), style = MaterialTheme.typography.bodyMedium, color = OnSurface)
+                    Text(text = stringResource(R.string.settings_multiview_center_two_slot_layout_subtitle), style = MaterialTheme.typography.bodySmall, color = OnBackground.copy(alpha = 0.6f))
+                }
+                Switch(checked = uiState.centerTwoSlotMultiviewLayout, onCheckedChange = { viewModel.setCenterTwoSlotMultiviewLayout(it) })
+            }
+        }
         ClickableSettingsRow(
             label = stringResource(R.string.settings_player_controls_timeout),
             value = controlsTimeoutLabel,

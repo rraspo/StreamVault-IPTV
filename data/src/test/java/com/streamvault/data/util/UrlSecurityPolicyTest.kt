@@ -14,6 +14,14 @@ class UrlSecurityPolicyTest {
     }
 
     @Test
+    fun `validateXtreamServerUrl rejects embedded credentials and missing host`() {
+        assertThat(UrlSecurityPolicy.validateXtreamServerUrl("https://user@example.com"))
+            .isEqualTo("Xtream server URLs must not include embedded credentials.")
+        assertThat(UrlSecurityPolicy.validateXtreamServerUrl("https:///portal"))
+            .isEqualTo("Xtream server URLs must include a host.")
+    }
+
+    @Test
     fun `validateXtreamEpgUrl allows http and https endpoints`() {
         assertThat(UrlSecurityPolicy.validateXtreamEpgUrl("http://provider.example.com/xmltv.php")).isNull()
         assertThat(UrlSecurityPolicy.validateXtreamEpgUrl("https://provider.example.com/xmltv.php")).isNull()
@@ -24,11 +32,26 @@ class UrlSecurityPolicyTest {
     @Test
     fun `validatePlaylistSourceUrl allows local http and https`() {
         assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("file:///storage/emulated/0/playlist.m3u")).isNull()
-        assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("content://downloads/public_downloads/1")).isNull()
         assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("https://example.com/playlist.m3u")).isNull()
         assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("http://example.com/playlist.m3u")).isNull()
         assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("ftp://example.com/playlist.m3u"))
             .isEqualTo("Playlist sources must use HTTP, HTTPS, or point to a local file.")
+    }
+
+    @Test
+    fun `validatePlaylistSourceUrl rejects content uri because the importer cannot open it`() {
+        // content:// URIs are accepted during the UI file-import flow but the imported data is
+        // immediately copied to an internal file:// path. Storing a raw content:// URI as a
+        // provider playlist source would cause every subsequent sync to fail because
+        // SyncManagerM3uImporter only handles file: paths and HTTP/S via OkHttp.
+        assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("content://downloads/public_downloads/1"))
+            .isEqualTo("Playlist sources must use HTTP, HTTPS, or point to a local file.")
+    }
+
+    @Test
+    fun `validatePlaylistSourceUrl rejects embedded credentials in remote urls`() {
+        assertThat(UrlSecurityPolicy.validatePlaylistSourceUrl("https://user@example.com/get.php?username=a&password=b&type=m3u_plus"))
+            .isEqualTo("Playlist sources must not include embedded credentials in the URL authority.")
     }
 
     @Test

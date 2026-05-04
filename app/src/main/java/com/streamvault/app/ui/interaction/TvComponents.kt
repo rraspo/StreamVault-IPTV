@@ -21,6 +21,7 @@ import androidx.tv.material3.ClickableSurfaceGlow
 import androidx.tv.material3.ClickableSurfaceScale
 import androidx.tv.material3.ClickableSurfaceShape
 import androidx.tv.material3.IconButton
+import androidx.tv.material3.IconButtonDefaults
 import androidx.tv.material3.Surface
 
 /**
@@ -98,13 +99,27 @@ fun TvButton(
 fun TvIconButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onLongClick: (() -> Unit)? = null,
     enabled: Boolean = true,
+    scale: ButtonScale = IconButtonDefaults.scale(),
+    glow: ButtonGlow = IconButtonDefaults.glow(),
+    interactionSource: MutableInteractionSource? = null,
+    shape: ButtonShape = IconButtonDefaults.shape(),
+    colors: ButtonColors = IconButtonDefaults.colors(),
+    border: ButtonBorder = IconButtonDefaults.border(),
     content: @Composable BoxScope.() -> Unit,
 ) {
     IconButton(
         onClick = onClick,
+        onLongClick = onLongClick,
         modifier = modifier.mouseClickable(onClick = onClick, enabled = enabled),
         enabled = enabled,
+        scale = scale,
+        glow = glow,
+        interactionSource = interactionSource,
+        shape = shape,
+        colors = colors,
+        border = border,
         content = content,
     )
 }

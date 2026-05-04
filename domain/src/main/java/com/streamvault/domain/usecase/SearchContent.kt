@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 
 enum class SearchContentScope {
     ALL,
@@ -25,7 +26,8 @@ enum class SearchContentScope {
 data class SearchContentResult(
     val channels: List<Channel> = emptyList(),
     val movies: List<Movie> = emptyList(),
-    val series: List<Series> = emptyList()
+    val series: List<Series> = emptyList(),
+    val isPartialResult: Boolean = false
 )
 
 class SearchContent @Inject constructor(
@@ -49,31 +51,44 @@ class SearchContent @Inject constructor(
         return combine(
             if (scope == SearchContentScope.ALL || scope == SearchContentScope.LIVE) {
                 channelRepository.searchChannels(providerId, normalizedQuery)
+                    .map { it to false }
+                    .catch { error ->
+                        if (error.shouldRethrowDomainFlowFailure()) throw error
+                        logger.log(Level.WARNING, "Channel search section failed", error)
+                        emit(emptyList<Channel>() to true)
+                    }
             } else {
-                flowOf(emptyList())
+                flowOf(emptyList<Channel>() to false)
             },
             if (scope == SearchContentScope.ALL || scope == SearchContentScope.MOVIES) {
                 movieRepository.searchMovies(providerId, normalizedQuery)
+                    .map { it to false }
+                    .catch { error ->
+                        if (error.shouldRethrowDomainFlowFailure()) throw error
+                        logger.log(Level.WARNING, "Movie search section failed", error)
+                        emit(emptyList<Movie>() to true)
+                    }
             } else {
-                flowOf(emptyList())
+                flowOf(emptyList<Movie>() to false)
             },
             if (scope == SearchContentScope.ALL || scope == SearchContentScope.SERIES) {
                 seriesRepository.searchSeries(providerId, normalizedQuery)
+                    .map { it to false }
+                    .catch { error ->
+                        if (error.shouldRethrowDomainFlowFailure()) throw error
+                        logger.log(Level.WARNING, "Series search section failed", error)
+                        emit(emptyList<Series>() to true)
+                    }
             } else {
-                flowOf(emptyList())
+                flowOf(emptyList<Series>() to false)
             }
-        ) { channels, movies, series ->
+        ) { (channels, channelsDegraded), (movies, moviesDegraded), (series, seriesDegraded) ->
             SearchContentResult(
                 channels = channels.take(maxResultsPerSection),
                 movies = movies.take(maxResultsPerSection),
-                series = series.take(maxResultsPerSection)
+                series = series.take(maxResultsPerSection),
+                isPartialResult = channelsDegraded || moviesDegraded || seriesDegraded
             )
-        }.catch { error ->
-            if (error.shouldRethrowDomainFlowFailure()) {
-                throw error
-            }
-            logger.log(Level.WARNING, "Failed to build search results", error)
-            emit(SearchContentResult())
         }
     }
 }

@@ -3,15 +3,20 @@ package com.streamvault.app.ui.components.dialogs
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
@@ -64,6 +69,7 @@ fun PremiumDialog(
     onDismissRequest: () -> Unit,
     modifier: Modifier = Modifier,
     widthFraction: Float = 0.42f,
+    heightFraction: Float? = 0.88f,
     content: @Composable ColumnScope.() -> Unit,
     footer: @Composable RowScope.() -> Unit = {}
 ) {
@@ -81,66 +87,19 @@ fun PremiumDialog(
     ) {
         androidx.compose.runtime.CompositionLocalProvider(LocalDialogCanInteract provides canInteract) {
             if (isTelevisionDevice) {
-                Surface(
-                    modifier = modifier
-                        .fillMaxWidth(widthFraction)
-                        .onPreviewKeyEvent(blockOpenGesture),
-                    shape = RoundedCornerShape(28.dp),
-                    colors = SurfaceDefaults.colors(containerColor = AppColors.SurfaceElevated)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        AppColors.BrandMuted.copy(alpha = 0.18f),
-                                        AppColors.SurfaceElevated,
-                                        AppColors.Surface
-                                    )
-                                )
-                            )
-                            .padding(28.dp),
-                        verticalArrangement = Arrangement.spacedBy(18.dp)
-                    ) {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.headlineMedium,
-                                color = AppColors.TextPrimary
-                            )
-                            if (!subtitle.isNullOrBlank()) {
-                                Text(
-                                    text = subtitle,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = AppColors.TextSecondary
-                                )
-                            }
-                        }
-
-                        Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp, androidx.compose.ui.Alignment.End),
-                            content = footer
-                        )
-                    }
-                }
-            } else {
                 BoxWithConstraints(
                     modifier = Modifier.fillMaxWidth(),
                     contentAlignment = Alignment.Center
                 ) {
-                    val resolvedWidthFraction = when {
-                        maxWidth < 700.dp -> 0.9f
-                        maxWidth < 1000.dp -> maxOf(widthFraction, 0.62f)
-                        else -> widthFraction
-                    }
-
+                    val maxDialogBodyHeight = maxHeight * 0.5f
+                    val dialogModifier = modifier
+                        .fillMaxWidth(widthFraction)
+                        .then(
+                            if (heightFraction != null) Modifier.fillMaxHeight(heightFraction) else Modifier
+                        )
+                        .onPreviewKeyEvent(blockOpenGesture)
                     Surface(
-                        modifier = modifier
-                            .fillMaxWidth(resolvedWidthFraction)
-                            .onPreviewKeyEvent(blockOpenGesture),
+                        modifier = dialogModifier,
                         shape = RoundedCornerShape(28.dp),
                         colors = SurfaceDefaults.colors(containerColor = AppColors.SurfaceElevated)
                     ) {
@@ -173,7 +132,83 @@ fun PremiumDialog(
                                 }
                             }
 
-                            Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .heightIn(max = maxDialogBodyHeight)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp, androidx.compose.ui.Alignment.End),
+                                content = footer
+                            )
+                        }
+                    }
+                }
+            } else {
+                BoxWithConstraints(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val resolvedWidthFraction = when {
+                        maxWidth < 700.dp -> 0.9f
+                        maxWidth < 1000.dp -> maxOf(widthFraction, 0.62f)
+                        else -> widthFraction
+                    }
+                    val maxDialogBodyHeight = maxHeight * 0.5f
+                    val dialogModifier = modifier
+                        .fillMaxWidth(resolvedWidthFraction)
+                        .then(
+                            if (heightFraction != null) Modifier.fillMaxHeight(heightFraction) else Modifier
+                        )
+                        .onPreviewKeyEvent(blockOpenGesture)
+
+                    Surface(
+                        modifier = dialogModifier,
+                        shape = RoundedCornerShape(28.dp),
+                        colors = SurfaceDefaults.colors(containerColor = AppColors.SurfaceElevated)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            AppColors.BrandMuted.copy(alpha = 0.18f),
+                                            AppColors.SurfaceElevated,
+                                            AppColors.Surface
+                                        )
+                                    )
+                                )
+                                .padding(28.dp),
+                            verticalArrangement = Arrangement.spacedBy(18.dp)
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    color = AppColors.TextPrimary
+                                )
+                                if (!subtitle.isNullOrBlank()) {
+                                    Text(
+                                        text = subtitle,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = AppColors.TextSecondary
+                                    )
+                                }
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f, fill = false)
+                                    .heightIn(max = maxDialogBodyHeight)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
+                            }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),

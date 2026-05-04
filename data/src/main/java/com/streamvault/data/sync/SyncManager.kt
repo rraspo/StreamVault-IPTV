@@ -323,7 +323,7 @@ class SyncManager @Inject constructor(
         publishSyncState(providerId, SyncState.Syncing("Downloading EPG..."))
 
         try {
-            val warnings = syncProviderEpg(
+            val epgResult = syncProviderEpg(
                 provider = provider,
                 metadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id),
                 now = System.currentTimeMillis(),
@@ -332,14 +332,18 @@ class SyncManager @Inject constructor(
             )
             updateSyncStatusMetadata(
                 providerId = providerId,
-                status = if (warnings.isEmpty()) "SUCCESS" else "PARTIAL"
+                status = if (epgResult.warnings.isEmpty()) "SUCCESS" else "PARTIAL"
             )
             publishSyncState(
                 providerId,
-                if (warnings.isEmpty()) {
+                if (epgResult.warnings.isEmpty()) {
                     SyncState.Success()
                 } else {
-                    SyncState.Partial("EPG sync completed with warnings", warnings)
+                    SyncState.Partial(
+                        message = "EPG sync completed with warnings",
+                        warnings = epgResult.warnings,
+                        hasRetryableEpgFailure = epgResult.hasRetryableFailure
+                    )
                 }
             )
             com.streamvault.domain.model.Result.success(Unit)
@@ -433,16 +437,29 @@ class SyncManager @Inject constructor(
             }
 
         try {
-            withContext(Dispatchers.IO) {
+            val outcome = withContext(Dispatchers.IO) {
                 when (section) {
                     SyncRepairSection.LIVE -> syncLiveOnly(provider, onProgress)
-                    SyncRepairSection.EPG -> syncEpgOnly(provider, onProgress)
+                    SyncRepairSection.EPG -> {
+                        syncEpgOnly(provider, onProgress)
+                        SyncOutcome()
+                    }
                     SyncRepairSection.MOVIES -> syncMoviesOnly(provider, onProgress)
                     SyncRepairSection.SERIES -> syncSeriesOnly(provider, onProgress)
                 }
             }
-            updateSyncStatusMetadata(providerId = providerId, status = "SUCCESS")
-            publishSyncState(providerId, SyncState.Success())
+            updateSyncStatusMetadata(
+                providerId = providerId,
+                status = if (outcome.partial) "PARTIAL" else "SUCCESS"
+            )
+            publishSyncState(
+                providerId,
+                if (outcome.partial) {
+                    SyncState.Partial("Section retry completed with warnings", outcome.warnings)
+                } else {
+                    SyncState.Success()
+                }
+            )
             com.streamvault.domain.model.Result.success(Unit)
         } catch (e: CancellationException) {
             resetState(providerId)
@@ -531,13 +548,15 @@ class SyncManager @Inject constructor(
                     warnings += liveSyncResult.warnings + liveResult.warnings
                 }
                 is CatalogStrategyResult.Partial -> {
+                    // Partial snapshot: upsert only so that channels absent from the subset
+                    // are not deleted from the existing live catalog.
                     val liveCatalog = mergeVisibleLiveSyncWithHiddenStoredContent(
                         providerId = provider.id,
                         visibleCategories = liveSyncResult.categories,
                         visibleChannels = liveResult.items.map { it.toEntity() },
                         hiddenLiveCategoryIds = hiddenLiveCategoryIds
                     )
-                    val acceptedCount = syncCatalogStore.replaceLiveCatalog(
+                    val acceptedCount = syncCatalogStore.upsertLiveCatalog(
                         providerId = provider.id,
                         categories = liveCatalog.categories,
                         channels = liveCatalog.channels
@@ -636,10 +655,13 @@ class SyncManager @Inject constructor(
                     )
                 }
                 is CatalogStrategyResult.Partial -> {
+                    // Partial means the server returned a truncated or mid-interrupted
+                    // catalog subset. Running full stale deletion would remove titles that
+                    // simply weren't included in the partial snapshot, so we upsert only.
                     val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
+                        syncCatalogStore.applyStagedMovieCatalogUpsertOnly(provider.id, sessionId, movieSyncResult.categories)
                         movieSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.replaceMovieCatalog(
+                    } ?: syncCatalogStore.upsertMovieCatalog(
                         providerId = provider.id,
                         categories = movieSyncResult.categories,
                         movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
@@ -754,10 +776,12 @@ class SyncManager @Inject constructor(
                     warnings += seriesSyncResult.warnings + seriesResult.warnings
                 }
                 is CatalogStrategyResult.Partial -> {
+                    // Partial result: upsert only to avoid deleting titles that weren't
+                    // included in the truncated snapshot.
                     val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
+                        syncCatalogStore.applyStagedSeriesCatalogUpsertOnly(provider.id, sessionId, seriesSyncResult.categories)
                         seriesSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.replaceSeriesCatalog(
+                    } ?: syncCatalogStore.upsertSeriesCatalog(
                         providerId = provider.id,
                         categories = seriesSyncResult.categories,
                         series = seriesResult.items.asSequence().map { it.toEntity() }
@@ -823,7 +847,7 @@ class SyncManager @Inject constructor(
                 now = now,
                 force = force,
                 onProgress = onProgress
-            )
+            ).warnings
         }
 
         return if (warnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = warnings)
@@ -872,7 +896,7 @@ class SyncManager @Inject constructor(
                 now = now,
                 force = force,
                 onProgress = onProgress
-            )
+            ).warnings
         }
 
         return if (warnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = warnings)
@@ -910,8 +934,13 @@ class SyncManager @Inject constructor(
         if (force || ContentCachePolicy.shouldRefresh(metadata.lastMovieSuccess, ContentCachePolicy.CATALOG_TTL_MILLIS, now)) {
             progress(provider.id, onProgress, "Downloading Movies...")
             val categories = requireResult(api.getVodCategories(), "Failed to load movie categories")
-            syncCatalogStore.replaceMovieCatalog(
+            // Stalker uses lazy-by-category VoD loading — only categories are persisted up
+            // front. Using replaceMovieCatalog with an empty sequence would run full stale
+            // deletion and destroy any movies already hydrated via on-demand category loads.
+            // replaceCategories updates/inserts category rows without touching movie rows.
+            syncCatalogStore.replaceCategories(
                 providerId = provider.id,
+                type = "MOVIE",
                 categories = categories.map { category ->
                     CategoryEntity(
                         providerId = provider.id,
@@ -921,8 +950,7 @@ class SyncManager @Inject constructor(
                         type = ContentType.MOVIE,
                         isAdult = category.isAdult
                     )
-                },
-                movies = emptySequence()
+                }
             )
             metadata = metadata.copy(
                 lastMovieSync = now,
@@ -939,8 +967,11 @@ class SyncManager @Inject constructor(
         if (force || ContentCachePolicy.shouldRefresh(metadata.lastSeriesSuccess, ContentCachePolicy.CATALOG_TTL_MILLIS, now)) {
             progress(provider.id, onProgress, "Downloading Series...")
             val categories = requireResult(api.getSeriesCategories(), "Failed to load series categories")
-            syncCatalogStore.replaceSeriesCatalog(
+            // Same rationale as movies: use replaceCategories to avoid destroying any
+            // already-hydrated series rows when running a category-only Stalker sync.
+            syncCatalogStore.replaceCategories(
                 providerId = provider.id,
+                type = "SERIES",
                 categories = categories.map { category ->
                     CategoryEntity(
                         providerId = provider.id,
@@ -950,8 +981,7 @@ class SyncManager @Inject constructor(
                         type = ContentType.SERIES,
                         isAdult = category.isAdult
                     )
-                },
-                series = emptySequence()
+                }
             )
             metadata = metadata.copy(
                 lastSeriesSync = now,
@@ -968,11 +998,40 @@ class SyncManager @Inject constructor(
                 now = now,
                 force = force,
                 onProgress = onProgress
-            )
+            ).warnings
         }
 
         return if (warnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = warnings)
     }
+
+    /**
+     * Returned by [syncProviderEpg] so callers can distinguish between warning-only
+     * degradations and transient network/IO failures that WorkManager should retry.
+     */
+    private data class EpgSyncResult(
+        val warnings: List<String>,
+        /** True when at least one EPG sub-operation failed due to a network or IO error
+         *  rather than a permanent configuration problem (bad URL, bad credentials, etc.).
+         *  WorkManager workers should return [Result.retry()] when this is true. */
+        val hasRetryableFailure: Boolean
+    )
+
+    /**
+     * Returns true for transient network/IO exceptions that are worth retrying via
+     * WorkManager backoff — as opposed to permanent failures (bad URL, auth, parse error)
+     * that will fail identically on every attempt.
+     */
+    private fun isRetryableEpgException(e: Exception): Boolean =
+        e is java.io.IOException ||
+            e is java.net.SocketTimeoutException ||
+            e is java.net.ConnectException ||
+            e is java.net.UnknownHostException ||
+            e.cause?.let {
+                it is java.io.IOException ||
+                    it is java.net.SocketTimeoutException ||
+                    it is java.net.ConnectException ||
+                    it is java.net.UnknownHostException
+            } == true
 
     private suspend fun syncProviderEpg(
         provider: Provider,
@@ -980,9 +1039,10 @@ class SyncManager @Inject constructor(
         now: Long,
         force: Boolean,
         onProgress: ((String) -> Unit)?
-    ): List<String> {
+    ): EpgSyncResult {
         var updatedMetadata = metadata
         val warnings = mutableListOf<String>()
+        var hasRetryableFailure = false
         val hiddenLiveCategoryIds = preferencesRepository.getHiddenCategoryIds(provider.id, ContentType.LIVE).first()
 
         when (provider.type) {
@@ -1012,6 +1072,7 @@ class SyncManager @Inject constructor(
                         throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "EPG sync failed (non-fatal): ${sanitizeThrowableMessage(e)}")
+                        if (isRetryableEpgException(e)) hasRetryableFailure = true
                         warnings.add("EPG XMLTV sync failed; live guide will fall back to on-demand Xtream data.")
                     }
                 }
@@ -1037,6 +1098,7 @@ class SyncManager @Inject constructor(
                             throw e
                         } catch (e: Exception) {
                             Log.e(TAG, "EPG sync failed (non-fatal): ${sanitizeThrowableMessage(e)}")
+                            if (isRetryableEpgException(e)) hasRetryableFailure = true
                             warnings.add("EPG sync failed")
                         }
                     }
@@ -1045,11 +1107,15 @@ class SyncManager @Inject constructor(
 
             ProviderType.STALKER_PORTAL -> {
                 if (force || ContentCachePolicy.shouldRefresh(updatedMetadata.lastEpgSuccess, ContentCachePolicy.EPG_TTL_MILLIS, now)) {
-                    warnings += syncStalkerPreferredEpg(
+                    val stalkerEpgWarnings = syncStalkerPreferredEpg(
                         provider = provider,
                         now = now,
                         onProgress = onProgress
                     )
+                    // Any Stalker EPG warning indicates an HTTP request failure, which is
+                    // typically transient.
+                    if (stalkerEpgWarnings.isNotEmpty()) hasRetryableFailure = true
+                    warnings += stalkerEpgWarnings
                     updatedMetadata = syncMetadataRepository.getMetadata(provider.id) ?: updatedMetadata
                 }
             }
@@ -1064,10 +1130,11 @@ class SyncManager @Inject constructor(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "External EPG resolution failed (non-fatal): ${sanitizeThrowableMessage(e)}")
+            if (isRetryableEpgException(e)) hasRetryableFailure = true
             warnings.add("External EPG source refresh/resolution failed.")
         }
 
-        return warnings
+        return EpgSyncResult(warnings = warnings, hasRetryableFailure = hasRetryableFailure)
     }
 
     private suspend fun syncEpgOnly(
@@ -1394,8 +1461,9 @@ class SyncManager @Inject constructor(
     private suspend fun syncLiveOnly(
         provider: Provider,
         onProgress: ((String) -> Unit)?
-    ) {
+    ): SyncOutcome {
         val now = System.currentTimeMillis()
+        val sectionWarnings = mutableListOf<String>()
         when (provider.type) {
             ProviderType.XTREAM_CODES -> {
                 progress(provider.id, onProgress, "Retrying Live TV...")
@@ -1448,13 +1516,14 @@ class SyncManager @Inject constructor(
                         )
                     }
                     is CatalogStrategyResult.Partial -> {
+                        // Partial snapshot: upsert only so channels not in the subset are preserved.
                         val liveCatalog = mergeVisibleLiveSyncWithHiddenStoredContent(
                             providerId = provider.id,
                             visibleCategories = liveSyncResult.categories,
                             visibleChannels = liveResult.items.map { it.toEntity() },
                             hiddenLiveCategoryIds = hiddenLiveCategoryIds
                         )
-                        val acceptedCount = syncCatalogStore.replaceLiveCatalog(
+                        val acceptedCount = syncCatalogStore.upsertLiveCatalog(
                             providerId = provider.id,
                             categories = liveCatalog.categories,
                             channels = liveCatalog.channels
@@ -1468,6 +1537,8 @@ class SyncManager @Inject constructor(
                                 liveHealthySyncStreak = 0
                             )
                         )
+                        sectionWarnings += liveSyncResult.warnings + liveResult.warnings +
+                            listOf("Live TV retry completed partially.")
                     }
                     is CatalogStrategyResult.EmptyValid -> {
                         val existingLiveCount = channelDao.getCount(provider.id).first()
@@ -1529,15 +1600,18 @@ class SyncManager @Inject constructor(
                         liveCount = liveCatalogResult.acceptedCount
                     )
                 syncMetadataRepository.updateMetadata(metadata)
+                sectionWarnings += liveCatalogResult.warnings
             }
         }
+        return if (sectionWarnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = sectionWarnings)
     }
 
     private suspend fun syncMoviesOnly(
         provider: Provider,
         onProgress: ((String) -> Unit)?
-    ) {
+    ): SyncOutcome {
         val now = System.currentTimeMillis()
+        val sectionWarnings = mutableListOf<String>()
         when (provider.type) {
             ProviderType.XTREAM_CODES -> {
                 progress(
@@ -1607,10 +1681,11 @@ class SyncManager @Inject constructor(
                         )
                     }
                     is CatalogStrategyResult.Partial -> {
+                        // Partial snapshot: upsert only to avoid deleting titles absent from the subset.
                         val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
-                            syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
+                            syncCatalogStore.applyStagedMovieCatalogUpsertOnly(provider.id, sessionId, movieSyncResult.categories)
                             movieSyncResult.stagedAcceptedCount
-                        } ?: syncCatalogStore.replaceMovieCatalog(
+                        } ?: syncCatalogStore.upsertMovieCatalog(
                             providerId = provider.id,
                             categories = movieSyncResult.categories,
                             movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
@@ -1626,6 +1701,7 @@ class SyncManager @Inject constructor(
                                 movieHealthySyncStreak = 0
                             )
                         )
+                        sectionWarnings += movieWarnings + listOf("Movies retry completed partially.")
                     }
                     is CatalogStrategyResult.EmptyValid -> {
                         val existingMovieCount = movieDao.getCount(provider.id).first()
@@ -1721,12 +1797,14 @@ class SyncManager @Inject constructor(
                 syncMetadataRepository.updateMetadata(metadata)
             }
         }
+        return if (sectionWarnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = sectionWarnings)
     }
 
     private suspend fun syncSeriesOnly(
         provider: Provider,
         onProgress: ((String) -> Unit)?
-    ) {
+    ): SyncOutcome {
+        val sectionWarnings = mutableListOf<String>()
         when (provider.type) {
             ProviderType.XTREAM_CODES -> {
                 progress(provider.id, onProgress, "Retrying Series...")
@@ -1775,10 +1853,11 @@ class SyncManager @Inject constructor(
                         )
                     }
                     is CatalogStrategyResult.Partial -> {
+                        // Partial snapshot: upsert only to preserve series absent from the subset.
                         val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                            syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
+                            syncCatalogStore.applyStagedSeriesCatalogUpsertOnly(provider.id, sessionId, seriesSyncResult.categories)
                             seriesSyncResult.stagedAcceptedCount
-                        } ?: syncCatalogStore.replaceSeriesCatalog(
+                        } ?: syncCatalogStore.upsertSeriesCatalog(
                             providerId = provider.id,
                             categories = seriesSyncResult.categories,
                             series = seriesResult.items.asSequence().map { it.toEntity() }
@@ -1792,6 +1871,8 @@ class SyncManager @Inject constructor(
                                 seriesHealthySyncStreak = 0
                             )
                         )
+                        sectionWarnings += seriesSyncResult.warnings + seriesResult.warnings +
+                            listOf("Series retry completed partially.")
                     }
                     is CatalogStrategyResult.EmptyValid -> {
                         val existingSeriesCount = seriesDao.getCount(provider.id).first()
@@ -1864,6 +1945,7 @@ class SyncManager @Inject constructor(
                 throw IllegalStateException("Series retry is unavailable for this provider")
             }
         }
+        return if (sectionWarnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = sectionWarnings)
     }
 
     private suspend fun syncXtreamMoviesCatalog(

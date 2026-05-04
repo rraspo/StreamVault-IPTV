@@ -603,119 +603,126 @@ interface CatalogSyncDao {
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             poster_url = (
                 SELECT stage.poster_url
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             backdrop_url = (
                 SELECT stage.backdrop_url
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             category_id = (
                 SELECT stage.category_id
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             category_name = (
                 SELECT stage.category_name
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             plot = (
                 SELECT stage.plot
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             cast = (
                 SELECT stage.cast
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             director = (
                 SELECT stage.director
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             genre = (
                 SELECT stage.genre
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             release_date = (
                 SELECT stage.release_date
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             rating = (
                 SELECT stage.rating
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             tmdb_id = (
                 SELECT stage.tmdb_id
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             youtube_trailer = (
                 SELECT stage.youtube_trailer
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             episode_run_time = (
                 SELECT stage.episode_run_time
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             last_modified = (
                 SELECT stage.last_modified
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
+            ),
+            provider_series_id = (
+                SELECT stage.provider_series_id
+                FROM series_import_stage AS stage
+                WHERE stage.session_id = :sessionId
+                  AND stage.provider_id = :providerId
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             is_adult = (
                 SELECT stage.is_adult
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             ),
             sync_fingerprint = (
                 SELECT stage.sync_fingerprint
                 FROM series_import_stage AS stage
                 WHERE stage.session_id = :sessionId
                   AND stage.provider_id = :providerId
-                  AND stage.series_id = series.series_id
+                  AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
             )
         WHERE provider_id = :providerId
           AND EXISTS (
@@ -723,7 +730,7 @@ interface CatalogSyncDao {
               FROM series_import_stage AS stage
               WHERE stage.session_id = :sessionId
                 AND stage.provider_id = :providerId
-                AND stage.series_id = series.series_id
+                AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
                 AND series.sync_fingerprint != stage.sync_fingerprint
           )
         """
@@ -734,6 +741,7 @@ interface CatalogSyncDao {
         """
         INSERT INTO series (
             series_id,
+            provider_series_id,
             name,
             poster_url,
             backdrop_url,
@@ -756,6 +764,7 @@ interface CatalogSyncDao {
         )
         SELECT
             stage.series_id,
+            stage.provider_series_id,
             stage.name,
             stage.poster_url,
             stage.backdrop_url,
@@ -782,7 +791,7 @@ interface CatalogSyncDao {
               SELECT 1
               FROM series AS existing
               WHERE existing.provider_id = stage.provider_id
-                AND existing.series_id = stage.series_id
+                AND COALESCE(NULLIF(existing.provider_series_id, ''), CAST(existing.series_id AS TEXT)) = stage.provider_series_key
           )
         """
     )
@@ -797,7 +806,7 @@ interface CatalogSyncDao {
               FROM series_import_stage AS stage
               WHERE stage.session_id = :sessionId
                 AND stage.provider_id = :providerId
-                AND stage.series_id = series.series_id
+                AND stage.provider_series_key = COALESCE(NULLIF(series.provider_series_id, ''), CAST(series.series_id AS TEXT))
           )
         """
     )

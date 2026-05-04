@@ -88,6 +88,8 @@ class SyncManagerTest {
         override fun getAll() = kotlinx.coroutines.flow.flowOf(listOfNotNull(provider))
         override suspend fun getAllSync(): List<ProviderEntity> = listOfNotNull(provider)
         override fun getActive() = kotlinx.coroutines.flow.flowOf(provider)
+        override suspend fun insertDirect(provider: ProviderEntity) = this.provider?.id ?: 0L
+        override suspend fun updateDirect(provider: ProviderEntity) = Unit
         override suspend fun insert(provider: ProviderEntity) = this.provider?.id ?: 0L
         override suspend fun update(provider: ProviderEntity) = Unit
         override suspend fun delete(id: Long) = Unit

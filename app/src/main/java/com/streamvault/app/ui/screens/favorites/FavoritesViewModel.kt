@@ -5,9 +5,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.R
 import com.streamvault.app.ui.model.associateByAnyRawId
+import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Favorite
 import com.streamvault.domain.model.PlaybackHistory
+import com.streamvault.domain.model.Provider
+import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.VirtualCategoryIds
 import com.streamvault.domain.model.VirtualGroup
 import com.streamvault.domain.repository.ChannelRepository
@@ -16,6 +19,7 @@ import com.streamvault.domain.repository.MovieRepository
 import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.usecase.ContinueWatchingResult
 import com.streamvault.domain.usecase.ContinueWatchingScope
 import com.streamvault.domain.usecase.GetContinueWatching
 import com.streamvault.data.preferences.PreferencesRepository
@@ -27,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
@@ -167,7 +172,7 @@ class FavoritesViewModel @Inject constructor(
         val liveGroupManagementFlow = providerIdsFlow.flatMapLatest { providerIds ->
             combine(
                 favoriteRepository.getGroups(providerIds, ContentType.LIVE),
-                favoriteRepository.getFavorites(providerIds, ContentType.LIVE).map(::countFavoritesByGroup),
+                favoriteRepository.getGroupFavoriteCounts(providerIds, ContentType.LIVE),
                 preferencesRepository.promotedLiveGroupIds
             ) { liveGroups, liveCounts, promotedLiveGroupIds ->
                 liveGroups.map { group ->
@@ -183,7 +188,7 @@ class FavoritesViewModel @Inject constructor(
         val movieGroupManagementFlow = providerIdsFlow.flatMapLatest { providerIds ->
             combine(
                 favoriteRepository.getGroups(providerIds, ContentType.MOVIE),
-                favoriteRepository.getFavorites(providerIds, ContentType.MOVIE).map(::countFavoritesByGroup)
+                favoriteRepository.getGroupFavoriteCounts(providerIds, ContentType.MOVIE)
             ) { movieGroups, movieCounts ->
                 movieGroups.map { group ->
                     SavedGroupManagementUiModel(
@@ -198,7 +203,7 @@ class FavoritesViewModel @Inject constructor(
         val seriesGroupManagementFlow = providerIdsFlow.flatMapLatest { providerIds ->
             combine(
                 favoriteRepository.getGroups(providerIds, ContentType.SERIES),
-                favoriteRepository.getFavorites(providerIds, ContentType.SERIES).map(::countFavoritesByGroup)
+                favoriteRepository.getGroupFavoriteCounts(providerIds, ContentType.SERIES)
             ) { seriesGroups, seriesCounts ->
                 seriesGroups.map { group ->
                     SavedGroupManagementUiModel(
@@ -225,6 +230,21 @@ class FavoritesViewModel @Inject constructor(
                 )
         }
 
+        val activeProviderFlow = providerRepository.getActiveProvider()
+        val selectedProviderScopeFlow = uiState
+            .map { state -> state.selectedProviderScope }
+            .distinctUntilChanged()
+        val historyProviderIdsFlow: Flow<Set<Long>> = combine(
+            providerIdsFlow,
+            activeProviderFlow,
+            selectedProviderScopeFlow
+        ) { providerIds: List<Long>, activeProvider: Provider?, selectedProviderScope: SavedLibraryProviderScope ->
+            when (selectedProviderScope) {
+                SavedLibraryProviderScope.CURRENT_PROVIDER -> activeProvider?.id?.let(::setOf).orEmpty()
+                SavedLibraryProviderScope.ALL_PROVIDERS -> providerIds.toSet()
+            }
+        }
+
         val groupedSectionsFlow = allGroupsFlow.flatMapLatest { groups ->
             if (groups.isEmpty()) {
                 flowOf(emptyList())
@@ -248,80 +268,9 @@ class FavoritesViewModel @Inject constructor(
             }
         }
 
-        val savedHistoryFlow = providerRepository.getActiveProvider().flatMapLatest { provider ->
-            if (provider == null) {
-                flowOf(SavedHistorySnapshot())
-            } else {
-                combine(
-                    getContinueWatching(
-                        providerId = provider.id,
-                        limit = 8,
-                        scope = ContinueWatchingScope.ALL_VOD,
-                        requireResumePosition = true
-                    ),
-                    playbackHistoryRepository.getRecentlyWatchedByProvider(provider.id, limit = 18)
-                ) { continueWatching, history ->
-                    continueWatching to history
-                }.flatMapLatest { (continueWatching, history) ->
-                    val recentLiveHistory = history
-                        .asSequence()
-                        .filter { it.contentType == ContentType.LIVE }
-                        .distinctBy { it.contentId }
-                        .take(10)
-                        .toList()
-
-                    val recentLiveIds = recentLiveHistory.map { it.contentId }
-                    val recentLiveFlow = if (recentLiveIds.isEmpty()) {
-                        flowOf(emptyList())
-                    } else {
-                        channelRepository.getChannelsByIds(recentLiveIds)
-                    }
-
-                    recentLiveFlow.map { liveChannels ->
-                            val liveById = liveChannels.associateByAnyRawId()
-                            SavedHistorySnapshot(
-                                continueWatching = continueWatching.map { entry ->
-                                    SavedHistoryUiModel(
-                                        history = entry,
-                                        title = entry.title,
-                                        subtitle = when (entry.contentType) {
-                                            ContentType.MOVIE -> appContext.getString(R.string.favorites_content_type_movie)
-                                            ContentType.SERIES -> appContext.getString(R.string.favorites_content_type_series)
-                                            ContentType.SERIES_EPISODE -> buildString {
-                                                val s = entry.seasonNumber
-                                                val e = entry.episodeNumber
-                                                if (s != null && e != null) {
-                                                    append(appContext.getString(R.string.favorites_content_type_episode_format, s, e))
-                                                } else {
-                                                    append(appContext.getString(R.string.favorites_content_type_episode))
-                                                    entry.seasonNumber?.let { append(" S$it") }
-                                                    entry.episodeNumber?.let { append("E$it") }
-                                                }
-                                            }
-                                            ContentType.LIVE -> appContext.getString(R.string.favorites_content_type_live)
-                                        },
-                                        providerId = entry.providerId
-                                    )
-                                },
-                                recentLive = recentLiveHistory.mapIndexedNotNull { index, entry ->
-                                    val channel = liveById[entry.contentId] ?: return@mapIndexedNotNull null
-                                    SavedHistoryUiModel(
-                                        history = entry,
-                                        title = channel.name,
-                                        subtitle = "Channel ${index + 1}",
-                                        providerId = channel.providerId,
-                                        categoryId = channel.categoryId,
-                                        epgChannelId = channel.epgChannelId,
-                                        launchIsVirtual = false
-                                    )
-                                }
-                            )
-                    }
-                    }
-            }
+        val savedHistoryFlow: Flow<SavedHistorySnapshot> = historyProviderIdsFlow.flatMapLatest { providerIds: Set<Long> ->
+            observeSavedHistory(providerIds)
         }
-
-        val activeProviderFlow = providerRepository.getActiveProvider()
 
         viewModelScope.launch {
             combine(
@@ -471,24 +420,26 @@ class FavoritesViewModel @Inject constructor(
 
     fun moveItemToGroup(item: FavoriteUiModel, targetGroupId: Long) {
         viewModelScope.launch {
-            favoriteRepository.addFavorite(
+            when (val result = favoriteRepository.moveFavoriteToGroup(
                 providerId = item.favorite.providerId,
                 contentId = item.favorite.contentId,
                 contentType = item.favorite.contentType,
-                groupId = targetGroupId
-            )
-            favoriteRepository.removeFavorite(
-                providerId = item.favorite.providerId,
-                contentId = item.favorite.contentId,
-                contentType = item.favorite.contentType,
-                groupId = item.favorite.groupId
-            )
-            _uiState.update {
-                it.copy(
-                    itemDialogItem = null,
-                    itemMoveTargets = emptyList(),
-                    userMessage = "Moved ${item.title} to the selected group."
-                )
+                fromGroupId = item.favorite.groupId,
+                targetGroupId = targetGroupId
+            )) {
+                is Result.Success -> _uiState.update {
+                    it.copy(
+                        itemDialogItem = null,
+                        itemMoveTargets = emptyList(),
+                        userMessage = "Moved ${item.title} to the selected group."
+                    )
+                }
+
+                is Result.Error -> _uiState.update {
+                    it.copy(userMessage = "Unable to move ${item.title}: ${result.errorMessageOrNull() ?: "Unknown error"}")
+                }
+
+                Result.Loading -> Unit
             }
         }
     }
@@ -557,33 +508,27 @@ class FavoritesViewModel @Inject constructor(
     fun mergeGroupInto(targetGroupId: Long) {
         val source = _uiState.value.mergeSourceGroup ?: return
         viewModelScope.launch {
-            val items = favoriteRepository.getFavoritesByGroup(source.group.id).first()
-            items.forEach { favorite ->
-                favoriteRepository.addFavorite(
-                    providerId = favorite.providerId,
-                    contentId = favorite.contentId,
-                    contentType = favorite.contentType,
-                    groupId = targetGroupId
-                )
-                favoriteRepository.removeFavorite(
-                    providerId = favorite.providerId,
-                    contentId = favorite.contentId,
-                    contentType = favorite.contentType,
-                    groupId = source.group.id
-                )
-            }
-            favoriteRepository.deleteGroup(source.group.id)
-            if (source.group.contentType == ContentType.LIVE) {
-                val currentPromoted = preferencesRepository.promotedLiveGroupIds.first()
-                preferencesRepository.setPromotedLiveGroupIds(currentPromoted - source.group.id)
-            }
-            _uiState.update {
-                it.copy(
-                    managedGroupDialog = null,
-                    mergeSourceGroup = null,
-                    mergeTargetCandidates = emptyList(),
-                    userMessage = appContext.getString(R.string.favorites_merged_group, source.group.name)
-                )
+            when (val result = favoriteRepository.mergeGroupInto(source.group.id, targetGroupId)) {
+                is Result.Success -> {
+                    if (source.group.contentType == ContentType.LIVE) {
+                        val currentPromoted = preferencesRepository.promotedLiveGroupIds.first()
+                        preferencesRepository.setPromotedLiveGroupIds(currentPromoted - source.group.id)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            managedGroupDialog = null,
+                            mergeSourceGroup = null,
+                            mergeTargetCandidates = emptyList(),
+                            userMessage = appContext.getString(R.string.favorites_merged_group, source.group.name)
+                        )
+                    }
+                }
+
+                is Result.Error -> _uiState.update {
+                    it.copy(userMessage = "Unable to merge ${source.group.name}: ${result.errorMessageOrNull() ?: "Unknown error"}")
+                }
+
+                Result.Loading -> Unit
             }
         }
     }
@@ -621,8 +566,13 @@ class FavoritesViewModel @Inject constructor(
         val section = state.sections.firstOrNull { it.key == sectionKey } ?: return
 
         viewModelScope.launch {
-            favoriteRepository.reorderFavorites(section.items.map { it.favorite })
-            exitReorderMode()
+            when (val result = favoriteRepository.reorderFavorites(section.items.map { it.favorite })) {
+                is Result.Success -> exitReorderMode()
+                is Result.Error -> _uiState.update {
+                    it.copy(userMessage = "Unable to save reorder: ${result.errorMessageOrNull() ?: "Unknown error"}")
+                }
+                Result.Loading -> Unit
+            }
         }
     }
 
@@ -691,6 +641,91 @@ class FavoritesViewModel @Inject constructor(
         }
     }
 
+    private fun observeSavedHistory(providerIds: Set<Long>): Flow<SavedHistorySnapshot> {
+        if (providerIds.isEmpty()) {
+            return flowOf(SavedHistorySnapshot())
+        }
+
+        val recentHistoryLimit = 18
+        val historyFlow: Flow<List<PlaybackHistory>> = if (providerIds.size == 1) {
+            playbackHistoryRepository.getRecentlyWatchedByProvider(providerIds.first(), limit = recentHistoryLimit)
+        } else {
+            playbackHistoryRepository.getRecentlyWatched(limit = recentHistoryLimit)
+                .map { history -> history.filter { entry -> entry.providerId in providerIds } }
+        }
+
+        return combine(
+            getContinueWatching(
+                providerIds,
+                limit = 8,
+                scope = ContinueWatchingScope.ALL_VOD,
+                requireResumePosition = true
+            ),
+            historyFlow
+        ) { continueWatchingResult, history ->
+            val continueWatching = when (continueWatchingResult) {
+                is ContinueWatchingResult.Items -> continueWatchingResult.items
+                ContinueWatchingResult.Degraded -> emptyList()
+            }
+            continueWatching to history
+        }.flatMapLatest { (continueWatching, history) ->
+            val recentLiveHistory = history
+                .asSequence()
+                .filter { it.contentType == ContentType.LIVE }
+                .distinctBy { it.providerId to it.contentId }
+                .take(10)
+                .toList()
+
+            val recentLiveIds = recentLiveHistory.map { it.contentId }.distinct()
+            val recentLiveFlow: Flow<List<Channel>> = if (recentLiveIds.isEmpty()) {
+                flowOf(emptyList<Channel>())
+            } else {
+                channelRepository.getChannelsByIds(recentLiveIds)
+            }
+
+            recentLiveFlow.map { liveChannels ->
+                val liveByProviderAndId = liveChannels.associateByProviderAndAnyRawId()
+                SavedHistorySnapshot(
+                    continueWatching = continueWatching.map { entry ->
+                        SavedHistoryUiModel(
+                            history = entry,
+                            title = entry.title,
+                            subtitle = when (entry.contentType) {
+                                ContentType.MOVIE -> appContext.getString(R.string.favorites_content_type_movie)
+                                ContentType.SERIES -> appContext.getString(R.string.favorites_content_type_series)
+                                ContentType.SERIES_EPISODE -> buildString {
+                                    val s = entry.seasonNumber
+                                    val e = entry.episodeNumber
+                                    if (s != null && e != null) {
+                                        append(appContext.getString(R.string.favorites_content_type_episode_format, s, e))
+                                    } else {
+                                        append(appContext.getString(R.string.favorites_content_type_episode))
+                                        entry.seasonNumber?.let { append(" S$it") }
+                                        entry.episodeNumber?.let { append("E$it") }
+                                    }
+                                }
+                                ContentType.LIVE -> appContext.getString(R.string.favorites_content_type_live)
+                            },
+                            providerId = entry.providerId
+                        )
+                    },
+                    recentLive = recentLiveHistory.mapIndexedNotNull { index, entry ->
+                        val channel = liveByProviderAndId[entry.providerId to entry.contentId] ?: return@mapIndexedNotNull null
+                        SavedHistoryUiModel(
+                            history = entry,
+                            title = channel.name,
+                            subtitle = "Channel ${index + 1}",
+                            providerId = channel.providerId,
+                            categoryId = channel.categoryId,
+                            epgChannelId = channel.epgChannelId,
+                            launchIsVirtual = false
+                        )
+                    }
+                )
+            }
+        }
+    }
+
     private fun FavoritesUiState.applyReorderPreview(
         incomingSections: List<FavoriteSectionUiModel>
     ): List<FavoriteSectionUiModel> {
@@ -717,12 +752,14 @@ class FavoritesViewModel @Inject constructor(
 
         private fun sectionKeyForGroup(groupId: Long): String = "group:$groupId"
 
-        private fun countFavoritesByGroup(favorites: List<Favorite>): Map<Long, Int> =
-            favorites
-                .asSequence()
-                .mapNotNull(Favorite::groupId)
-                .groupingBy { it }
-                .eachCount()
+        private fun List<Channel>.associateByProviderAndAnyRawId(): Map<Pair<Long, Long>, Channel> = buildMap {
+            this@associateByProviderAndAnyRawId.forEach { channel ->
+                channel.allVariantRawIds().forEach { rawId ->
+                    putIfAbsent(channel.providerId to rawId, channel)
+                }
+            }
+        }
+
     }
 }
 

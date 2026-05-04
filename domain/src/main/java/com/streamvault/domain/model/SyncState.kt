@@ -20,12 +20,17 @@ sealed class SyncState {
     /**
      * The most recent sync completed but with non-fatal degradations.
      *
-     * @param message  Human-readable partial-sync summary.
-     * @param warnings Detailed list of failed/skipped sub-operations.
+     * @param message               Human-readable partial-sync summary.
+     * @param warnings              Detailed list of failed/skipped sub-operations.
+     * @param hasRetryableEpgFailure True when the EPG portion failed due to a transient
+     *                               network/IO condition that WorkManager backoff should
+     *                               retry. Callers that only care about warnings may ignore
+     *                               this flag.
      */
     data class Partial(
         val message: String,
         val warnings: List<String> = emptyList(),
+        val hasRetryableEpgFailure: Boolean = false,
         val timestamp: Long = System.currentTimeMillis()
     ) : SyncState()
 

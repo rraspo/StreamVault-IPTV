@@ -48,8 +48,7 @@ class PlaybackCodecSelector(
             return normalized.startsWith("omx.google.") ||
                 normalized.startsWith("c2.android.") ||
                 normalized.contains("ffmpeg") ||
-                normalized.contains("avcodec") ||
-                normalized.contains("sw")
+                normalized.contains("avcodec")
         }
 
         fun knownBadDecoderNames(records: List<PlaybackCompatibilityRecord>): Set<String> =

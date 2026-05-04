@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.streamvault.app.R
 import com.streamvault.app.BuildConfig
+import com.streamvault.app.tv.LauncherRecommendationsManager
+import com.streamvault.app.tv.WatchNextManager
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.app.ui.model.LiveTvChannelMode
 import com.streamvault.app.ui.model.LiveTvQuickFilterVisibilityMode
@@ -81,6 +83,8 @@ class SettingsViewModel @Inject constructor(
     private val syncManager: SyncManager,
     private val syncMetadataRepository: SyncMetadataRepository,
     private val playbackHistoryRepository: com.streamvault.domain.repository.PlaybackHistoryRepository,
+    private val watchNextManager: WatchNextManager,
+    private val launcherRecommendationsManager: LauncherRecommendationsManager,
     private val tvInputChannelSyncManager: TvInputChannelSyncManager,
     private val syncProvider: SyncProvider,
     private val epgSourceRepository: com.streamvault.domain.repository.EpgSourceRepository,
@@ -119,6 +123,8 @@ class SettingsViewModel @Inject constructor(
         syncProvider = syncProvider,
         syncManager = syncManager,
         syncMetadataRepository = syncMetadataRepository,
+        watchNextManager = watchNextManager,
+        launcherRecommendationsManager = launcherRecommendationsManager,
         tvInputChannelSyncManager = tvInputChannelSyncManager,
         uiState = _uiState
     )
@@ -181,7 +187,13 @@ class SettingsViewModel @Inject constructor(
                 activeProviderIdFlow = activeProviderIdFlow,
                 preferencesRepository = preferencesRepository
             ).collect { snapshot ->
+                val previousProviderIds = _uiState.value.providers.map { it.id }.toSet()
                 _uiState.update { it.applyPreferenceSnapshot(snapshot) }
+                val currentProviderIds = snapshot.providers.map { it.id }.toSet()
+                val removedIds = previousProviderIds - currentProviderIds
+                if (removedIds.isNotEmpty()) {
+                    epgActions.cleanupEpgAssignmentsFor(removedIds)
+                }
             }
         }
     }
@@ -194,20 +206,20 @@ class SettingsViewModel @Inject constructor(
         providerActions.setActiveCombinedProfile(viewModelScope, profileId)
     }
 
-    fun createCombinedProfile(name: String, providerIds: List<Long>) {
-        providerActions.createCombinedProfile(viewModelScope, name, providerIds)
+    fun createCombinedProfile(name: String, providerIds: List<Long>, onSuccess: () -> Unit = {}, onError: () -> Unit = {}) {
+        providerActions.createCombinedProfile(viewModelScope, name, providerIds, onSuccess, onError)
     }
 
     fun deleteCombinedProfile(profileId: Long) {
         providerActions.deleteCombinedProfile(viewModelScope, profileId)
     }
 
-    fun addProviderToCombinedProfile(profileId: Long, providerId: Long) {
-        providerActions.addProviderToCombinedProfile(viewModelScope, profileId, providerId)
+    fun addProviderToCombinedProfile(profileId: Long, providerId: Long, onSuccess: () -> Unit = {}, onError: () -> Unit = {}) {
+        providerActions.addProviderToCombinedProfile(viewModelScope, profileId, providerId, onSuccess, onError)
     }
 
-    fun renameCombinedProfile(profileId: Long, name: String) {
-        providerActions.renameCombinedProfile(viewModelScope, profileId, name)
+    fun renameCombinedProfile(profileId: Long, name: String, onSuccess: () -> Unit = {}, onError: () -> Unit = {}) {
+        providerActions.renameCombinedProfile(viewModelScope, profileId, name, onSuccess, onError)
     }
 
     fun removeProviderFromCombinedProfile(profileId: Long, providerId: Long) {
@@ -433,6 +445,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setCenterTwoSlotMultiviewLayout(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setMultiViewCenterTwoSlotLayout(enabled)
+        }
+    }
+
     fun setPlayerMediaSessionEnabled(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setPlayerMediaSessionEnabled(enabled)
@@ -560,6 +578,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun runInternetSpeedTest() {
+        if (_uiState.value.isRunningInternetSpeedTest) return
         viewModelScope.launch {
             _uiState.update { it.copy(isRunningInternetSpeedTest = true) }
             when (val result = internetSpeedTestRunner.run()) {
@@ -687,8 +706,8 @@ class SettingsViewModel @Inject constructor(
         syncActions.retryWarningAction(viewModelScope, providerId, action)
     }
 
-    fun deleteProvider(providerId: Long) {
-        providerActions.deleteProvider(viewModelScope, providerId)
+    fun deleteProvider(providerId: Long, onSuccess: () -> Unit = {}) {
+        providerActions.deleteProvider(viewModelScope, providerId, onSuccess)
     }
 
     fun userMessageShown() {
@@ -789,8 +808,8 @@ class SettingsViewModel @Inject constructor(
         epgActions.loadEpgAssignments(viewModelScope, providerId)
     }
 
-    fun addEpgSource(name: String, url: String) {
-        epgActions.addEpgSource(viewModelScope, name, url)
+    fun addEpgSource(name: String, url: String, onSuccess: () -> Unit = {}, onError: () -> Unit = {}) {
+        epgActions.addEpgSource(viewModelScope, name, url, onSuccess, onError)
     }
 
     fun setPendingDeleteEpgSource(id: Long?) {

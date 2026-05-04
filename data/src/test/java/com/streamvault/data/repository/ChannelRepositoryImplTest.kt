@@ -186,6 +186,20 @@ class ChannelRepositoryImplTest {
         whenever(channelDao.search(eq(7L), any(), any())).thenReturn(
             flow { throw SQLiteException("malformed MATCH expression") }
         )
+        whenever(channelDao.searchFallback(eq(7L), any(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    ChannelBrowseEntity(
+                        id = 99L,
+                        streamId = 199L,
+                        name = "News One",
+                        streamUrl = "https://stream/news",
+                        number = 9,
+                        providerId = 7L
+                    )
+                )
+            )
+        )
         whenever(preferencesRepository.liveChannelNumberingMode).thenReturn(flowOf(ChannelNumberingMode.PROVIDER))
         whenever(parentalControlManager.unlockedCategoriesForProvider(7L)).thenReturn(flowOf(emptySet()))
         whenever(favoriteDao.getAllByType(7L, ContentType.LIVE.name)).thenReturn(flowOf(emptyList()))
@@ -194,7 +208,7 @@ class ChannelRepositoryImplTest {
 
         val result = repository.searchChannels(7L, "news").first()
 
-        assertThat(result).isEmpty()
+        assertThat(result.map { it.name }).containsExactly("News One")
     }
 
     private fun createRepository() = ChannelRepositoryImpl(

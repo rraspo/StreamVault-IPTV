@@ -191,7 +191,6 @@ class HlsLiveCaptureEngine @Inject constructor(
                         playlist.segments.forEach { segment ->
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             if (segment.uri in seenSegments) return@forEach
-                            seenSegments += segment.uri
                             val bytes = try {
                                 fetchBytes(segment.uri, headers)
                             } catch (e: Throwable) {
@@ -207,6 +206,7 @@ class HlsLiveCaptureEngine @Inject constructor(
                                 bytes
                             }
                             sink.write(payload)
+                            seenSegments += segment.uri
                             bytesWritten += payload.size
                             newSegmentsThisRound = true
                             lastDataAt = System.currentTimeMillis()

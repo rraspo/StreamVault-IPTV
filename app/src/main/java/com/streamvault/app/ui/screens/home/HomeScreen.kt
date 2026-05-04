@@ -499,7 +499,7 @@ fun HomeScreen(
                     val canRestoreChannel = lastFocusedChannelId != null &&
                         uiState.filteredChannels.any { it.id == lastFocusedChannelId }
                     val canRestoreCategory = lastFocusedCategoryId != null &&
-                        uiState.categories.any { it.id == lastFocusedCategoryId }
+                        visibleCategories.any { it.id == lastFocusedCategoryId }
                     val restoreTarget = runCatching {
                         FocusRestoreTarget.valueOf(preferredRestoreTarget)
                     }.getOrDefault(FocusRestoreTarget.CHANNEL)
@@ -509,7 +509,7 @@ fun HomeScreen(
                         canRestoreChannel -> FocusRestoreTarget.CHANNEL
                         canRestoreCategory -> FocusRestoreTarget.CATEGORY
                         uiState.filteredChannels.isNotEmpty() -> FocusRestoreTarget.CHANNEL
-                        uiState.categories.isNotEmpty() -> FocusRestoreTarget.CATEGORY
+                        visibleCategories.isNotEmpty() -> FocusRestoreTarget.CATEGORY
                         else -> null
                     }
                     if (pendingRestoreTarget != null) {
@@ -531,12 +531,12 @@ fun HomeScreen(
                                 if (fallbackChannelId != null) {
                                     requestChannelFocus(fallbackChannelId)
                                 } else {
-                                    val fallbackCategoryId = uiState.categories.firstOrNull()?.id
+                                    val fallbackCategoryId = (unlockedVisibleCategories.firstOrNull() ?: visibleCategories.firstOrNull())?.id
                                     requestCategoryFocus(fallbackCategoryId)
                                 }
                             }
                             FocusRestoreTarget.CATEGORY -> {
-                                val fallbackCategoryId = uiState.categories.firstOrNull()?.id
+                                val fallbackCategoryId = (unlockedVisibleCategories.firstOrNull() ?: visibleCategories.firstOrNull())?.id
                                 requestCategoryFocus(fallbackCategoryId)
                             }
                         }
@@ -554,14 +554,14 @@ fun HomeScreen(
                         val canRestoreChannel = lastFocusedChannelId != null &&
                             uiState.filteredChannels.any { it.id == lastFocusedChannelId }
                         val canRestoreCategory = lastFocusedCategoryId != null &&
-                            uiState.categories.any { it.id == lastFocusedCategoryId }
+                            visibleCategories.any { it.id == lastFocusedCategoryId }
 
                         pendingRestoreTarget = when {
                             restoreTarget == FocusRestoreTarget.CATEGORY && canRestoreCategory -> FocusRestoreTarget.CATEGORY
                             canRestoreChannel -> FocusRestoreTarget.CHANNEL
                             canRestoreCategory -> FocusRestoreTarget.CATEGORY
                             uiState.filteredChannels.isNotEmpty() -> FocusRestoreTarget.CHANNEL
-                            uiState.categories.isNotEmpty() -> FocusRestoreTarget.CATEGORY
+                            visibleCategories.isNotEmpty() -> FocusRestoreTarget.CATEGORY
                             else -> null
                         }
                         if (pendingRestoreTarget != null) {

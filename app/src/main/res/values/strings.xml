@@ -89,6 +89,7 @@
     <string name="home_group_name_reserved">Cannot create group named \'Favorites\'</string>
     <string name="home_group_name_duplicate">Group \'%1$s\' already exists</string>
     <string name="home_group_name_invalid">Enter a group name</string>
+    <string name="home_group_requires_provider_scope">Select a single provider source to create groups</string>
 
     
     <string name="dashboard_title">Your Library, Ready</string>
@@ -376,6 +377,8 @@
     <string name="settings_default_playback_speed">Default Playback Speed</string>
     <string name="settings_audio_video_sync_default">A/V Sync Default</string>
     <string name="settings_audio_video_sync_default_subtitle">Positive values delay audio relative to video.</string>
+    <string name="settings_multiview_center_two_slot_layout">Center 2-Channel Multiview</string>
+    <string name="settings_multiview_center_two_slot_layout_subtitle">When exactly two multiview slots are active, place them side by side in the middle of the screen instead of using the top row of the 2x2 grid.</string>
     <string name="settings_media_session">System Media Session</string>
     <string name="settings_media_session_subtitle">Expose playback to Android system media controls. Disable this if playback crashes on a specific device when opening the player.</string>
     <string name="settings_live_timeshift">Enable Local Live Rewind</string>
@@ -802,6 +805,8 @@
     <string name="search_type_to_search">Type at least 2 characters to search</string>
     <string name="search_no_results">No results found for \'%1$s\'</string>
     <string name="search_no_results_title">No matches</string>
+    <string name="search_error_title">Search unavailable</string>
+    <string name="search_error_subtitle">Some results could not be loaded. Try again.</string>
     <string name="search_ready_title">Search the library</string>
     <string name="search_no_provider_title">No active provider</string>
     <string name="search_no_provider_subtitle">Add or activate a provider before searching the library.</string>
@@ -851,6 +856,7 @@
     <string name="setup_info_m3u_body">Use a playlist link or import a local file.</string>
     <string name="setup_info_manage_title">You can manage providers later</string>
     <string name="setup_info_manage_body">Refresh, edit, or replace it later from Settings.</string>
+    <string name="setup_import_backup">Import Backup</string>
     <string name="badge_beta">Beta</string>
     <string name="setup_xtream">Xtream Codes</string>
     <string name="setup_stalker">Stalker</string>
@@ -1077,6 +1083,8 @@
     <string name="epg_recording_conflict_cancel">Cancel</string>
     <string name="epg_program_reminder_cancel">Cancel Reminder</string>
     <string name="epg_program_reminder_loading">Updating Reminder...</string>
+    <string name="notification_permission_reminder_required">Enable notifications for StreamVault to receive program reminders.</string>
+    <string name="notification_permission_recording_alert_required">Enable notifications for StreamVault to receive recording failure alerts.</string>
     <string name="epg_hero_no_schedule_hint">This channel has no guide entries in the current window.</string>
     <string name="epg_hero_no_program_description">Program details are limited for this entry.</string>
     <string name="epg_filter_label">Guide Filter</string>
@@ -1238,6 +1246,9 @@
     <string name="movie_detail_play">Play</string>
     <string name="movie_detail_resume_from">Resume from %1$s</string>
     <string name="movie_detail_trailer">Trailer</string>
+    <string name="movie_detail_related">More Like This</string>
+    <string name="favorites_add">Add to favourites</string>
+    <string name="favorites_remove">Remove from favourites</string>
     <string name="movie_plot_fallback">No plot available</string>
     <string name="movie_detail_director">Directed By:</string>
     <string name="movie_detail_release_date">Release Date:</string>
@@ -1380,6 +1391,8 @@
     <string name="dashboard_open_series">Open Series</string>
     <string name="dashboard_library_ready">Your IPTV library is ready</string>
     <string name="dashboard_open_live_tv">Open Live TV</string>
+    <string name="dashboard_resume_unavailable">Watch history temporarily unavailable</string>
+    <string name="dashboard_resume_unavailable_detail">Resume content could not be loaded. It will restore automatically.</string>
     <string name="dashboard_pinned_channels_format">Pinned · %1$d channels</string>
     <string name="dashboard_channels_format">%1$d channels</string>
 

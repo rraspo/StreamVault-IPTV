@@ -3,10 +3,13 @@ package com.streamvault.data.repository
 import com.google.common.truth.Truth.assertThat
 import com.streamvault.data.local.DatabaseTransactionRunner
 import com.streamvault.data.local.dao.ProgramDao
+import com.streamvault.data.local.dao.ProviderDao
+import com.streamvault.data.local.entity.ProviderEntity
 import com.streamvault.data.local.entity.ProgramBrowseEntity
 import com.streamvault.data.local.entity.ProgramEntity
 import com.streamvault.data.parser.XmltvParser
 import com.streamvault.domain.model.Program
+import com.streamvault.domain.model.ProviderType
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
@@ -46,6 +49,7 @@ import java.util.zip.GZIPOutputStream
 class EpgRepositoryImplTest {
 
     private val programDao: ProgramDao = mock()
+    private val providerDao: ProviderDao = mock()
     private val xmltvParser: XmltvParser = mock()
     private val epgSourceRepository: EpgSourceRepository = mock()
     private val transactionRunner = object : DatabaseTransactionRunner {
@@ -56,6 +60,9 @@ class EpgRepositoryImplTest {
     fun setUp() {
         whenever(xmltvParser.maybeDecompressGzip(any(), any())).thenAnswer { invocation ->
             invocation.getArgument(1)
+        }
+        runBlocking {
+            whenever(providerDao.getById(any())).thenReturn(null)
         }
     }
 
@@ -86,6 +93,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -120,6 +128,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -165,6 +174,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -192,7 +202,7 @@ class EpgRepositoryImplTest {
         val activeParsers = AtomicInteger(0)
         val maxConcurrentParsers = AtomicInteger(0)
 
-        whenever(xmltvParser.parseStreaming(any(), any())).thenAnswer { invocation ->
+        whenever(xmltvParser.parseStreaming(any(), anyOrNull(), any())).thenAnswer { invocation ->
             val activeCount = activeParsers.incrementAndGet()
             maxConcurrentParsers.updateAndGet { current -> maxOf(current, activeCount) }
             val callIndex = parserCallOrder.incrementAndGet()
@@ -205,7 +215,7 @@ class EpgRepositoryImplTest {
                     secondParserEntered.complete(Unit)
                 }
 
-                val onProgram = invocation.getArgument<suspend (Program) -> Unit>(1)
+                val onProgram = invocation.getArgument<suspend (Program) -> Unit>(2)
                 runBlocking {
                     onProgram(
                         Program(
@@ -226,6 +236,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -256,6 +267,7 @@ class EpgRepositoryImplTest {
     fun `refreshEpg decompresses gzip xmltv responses`() = runTest {
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = XmltvParser(),
             okHttpClient = okHttpClientReturningBody(
                 gzip(
@@ -285,6 +297,7 @@ class EpgRepositoryImplTest {
     fun `refreshEpg does not double decompress when content encoding and gz suffix are both present`() = runTest {
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = XmltvParser(),
             okHttpClient = okHttpClientReturningBody(
                 body = gzip(
@@ -338,6 +351,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -357,6 +371,76 @@ class EpgRepositoryImplTest {
 
         assertThat(emissions.map { it?.title }).containsExactly("Current Show", "Next Show").inOrder()
         verify(programDao, times(2)).getNowPlaying(eq(7L), eq("bbc1.uk"), any())
+    }
+
+    @Test
+    fun `getNowPlayingForChannels refreshes over time for long lived subscriptions`() = runTest {
+        whenever(programDao.getNowPlayingForChannels(eq(7L), eq(listOf("bbc1.uk", "bbc2.uk")), any())).thenReturn(
+            flowOf(
+                listOf(
+                    ProgramBrowseEntity(
+                        id = 1L,
+                        providerId = 7L,
+                        channelId = "bbc1.uk",
+                        title = "Current One",
+                        startTime = 100L,
+                        endTime = 200L
+                    ),
+                    ProgramBrowseEntity(
+                        id = 2L,
+                        providerId = 7L,
+                        channelId = "bbc2.uk",
+                        title = "Current Two",
+                        startTime = 100L,
+                        endTime = 200L
+                    )
+                )
+            ),
+            flowOf(
+                listOf(
+                    ProgramBrowseEntity(
+                        id = 3L,
+                        providerId = 7L,
+                        channelId = "bbc1.uk",
+                        title = "Next One",
+                        startTime = 200L,
+                        endTime = 300L
+                    ),
+                    ProgramBrowseEntity(
+                        id = 4L,
+                        providerId = 7L,
+                        channelId = "bbc2.uk",
+                        title = "Next Two",
+                        startTime = 200L,
+                        endTime = 300L
+                    )
+                )
+            )
+        )
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            providerDao = providerDao,
+            xmltvParser = xmltvParser,
+            okHttpClient = okHttpClientReturningXml(),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository,
+            externalScope = backgroundScope
+        )
+
+        val emissions = mutableListOf<Map<String, Program?>>()
+        val collection = async {
+            repository.getNowPlayingForChannels(7L, listOf("bbc1.uk", "bbc2.uk"))
+                .take(2)
+                .toList(emissions)
+        }
+
+        advanceTimeBy(60_000L)
+        collection.await()
+
+        assertThat(emissions.map { it.getValue("bbc1.uk")?.title }).containsExactly("Current One", "Next One").inOrder()
+        assertThat(emissions.map { it.getValue("bbc2.uk")?.title }).containsExactly("Current Two", "Next Two").inOrder()
+        verify(programDao, times(2)).getNowPlayingForChannels(eq(7L), eq(listOf("bbc1.uk", "bbc2.uk")), any())
     }
 
     @Test
@@ -388,6 +472,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -415,7 +500,7 @@ class EpgRepositoryImplTest {
                 override fun read(): Int = throw IOException("EPG response too large (>200 MB)")
             }
         )
-        whenever(xmltvParser.parseStreaming(any(), any())).thenAnswer { invocation ->
+        whenever(xmltvParser.parseStreaming(any(), anyOrNull(), any())).thenAnswer { invocation ->
             val input = invocation.getArgument<java.io.InputStream>(0)
             input.read()
             Unit
@@ -423,6 +508,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = transactionRunner,
@@ -456,8 +542,8 @@ class EpgRepositoryImplTest {
             insertTransactionDepths += transactionDepth
             Unit
         }.whenever(programDao).insertAll(any())
-        whenever(xmltvParser.parseStreaming(any(), any())).thenAnswer { invocation ->
-            val onProgram = invocation.getArgument<suspend (Program) -> Unit>(1)
+        whenever(xmltvParser.parseStreaming(any(), anyOrNull(), any())).thenAnswer { invocation ->
+            val onProgram = invocation.getArgument<suspend (Program) -> Unit>(2)
             runBlocking {
                 repeat(600) { index ->
                     parserCallbackTransactionDepths += transactionDepth
@@ -478,6 +564,7 @@ class EpgRepositoryImplTest {
 
         val repository = EpgRepositoryImpl(
             programDao = programDao,
+            providerDao = providerDao,
             xmltvParser = xmltvParser,
             okHttpClient = okHttpClientReturningXml(),
             transactionRunner = trackingTransactionRunner,
@@ -492,6 +579,49 @@ class EpgRepositoryImplTest {
         assertThat(parserCallbackTransactionDepths.all { it == 0 }).isTrue()
         assertThat(insertTransactionDepths).isNotEmpty()
         assertThat(insertTransactionDepths.all { it > 0 }).isTrue()
+    }
+
+    @Test
+    fun `refreshEpg passes provider timezone to parser for no offset timestamps`() = runTest {
+        whenever(providerDao.getById(7L)).thenReturn(
+            ProviderEntity(
+                id = 7L,
+                name = "Provider",
+                type = ProviderType.M3U,
+                serverUrl = "https://provider.example.com",
+                stalkerDeviceTimezone = "America/New_York"
+            )
+        )
+        whenever(xmltvParser.parseStreaming(any(), anyOrNull(), any())).thenAnswer { invocation ->
+            val onProgram = invocation.getArgument<suspend (Program) -> Unit>(2)
+            runBlocking {
+                onProgram(
+                    Program(
+                        providerId = 7L,
+                        channelId = "channel-1",
+                        title = "News",
+                        description = "",
+                        startTime = 1L,
+                        endTime = 2L,
+                        lang = "en"
+                    )
+                )
+            }
+        }
+
+        val repository = EpgRepositoryImpl(
+            programDao = programDao,
+            providerDao = providerDao,
+            xmltvParser = xmltvParser,
+            okHttpClient = okHttpClientReturningXml(),
+            transactionRunner = transactionRunner,
+            epgSourceRepository = epgSourceRepository
+        )
+
+        val result = repository.refreshEpg(7L, "https://example.com/epg.xml")
+
+        assertThat(result.isSuccess).isTrue()
+        verify(xmltvParser).parseStreaming(any(), eq("America/New_York"), any())
     }
 
     private fun okHttpClientReturningXml(): OkHttpClient =

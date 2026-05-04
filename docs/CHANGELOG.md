@@ -2,6 +2,54 @@
 
 All notable product changes are recorded in this document.
 
+## [1.0.10] - 2026-05-02
+
+### Added
+
+- Added Import Backup to startup provider setup, so new installs can restore saved providers from a backup instead of entering provider details manually.
+
+### Fixed
+
+- Fixed favorites, recent live, and continue-watching provider scoping in all-providers mode.
+- Fixed favorites persistence: partition-safe reorder, atomic move/merge, duplicate-safe global favorites, correct group counts.
+- Fixed favorites screen empty-state so recent activity still appears when no favorites are saved.
+- Fixed playback-history resume persistence keeping continue-watching and movie/episode progress current during active playback.
+- Fixed provider onboarding completing with a warning instead of failing when saved providers have a failed initial sync.
+- Fixed Xtream and M3U onboarding validation: rejects embedded credentials, safe playlist-to-Xtream conversion, shared password validation.
+- Fixed Xtream Live TV categories showing zero items when providers only send category membership in `category_ids`.
+- Hardened playback session lifecycle for main, preview, and multiview engines; fixed stream renewal/catch-up/rewind losing headers, stale quality selections, and needless full re-prepares on metadata-only route updates.
+- Fixed live playback decoder startup crashes and Auto-mode stutter by preferring hardware first with one software fallback.
+- Fixed several DVR lifecycle edge cases around recording promotion, foreground-service startup, handoff, and recovery.
+- Fixed recording schedule backup/restore for padding, recurring rules, and partial import failures.
+- Fixed reminder and recording scheduling: exact-alarm enforcement, stale suppression, alarm identity/cleanup, OS alarm cancel on provider delete.
+- Fixed Android 13+ reminder and recording alert delivery by adding notification permission handling.
+- Fixed backup import applying preferences before Room restore completed.
+- Fixed movie and series filtered browse views returning drifted totals or broken paging.
+- Fixed persistence guardrails: single active provider, cross-provider favorite group assignments rejected.
+- Fixed Android TV app-shell re-entry for launcher and external navigation; rejected unsupported route payloads.
+- Fixed Watch Next, launcher recommendations, and Live Channels staying aligned during provider switches and deletes.
+- Fixed TV continue-watching and guide resilience: episode resume context preserved, Live Channels holds last-known-good rows during EPG gaps.
+- Fixed search oversampling to 500 candidates before reranking so alphabetical SQL order no longer drops better matches.
+- Fixed partial search failures showing as full empty state; sections now fail independently with a distinct "Search unavailable" notice.
+- Fixed dashboard combined-profile VOD/health sourcing from a non-member provider.
+- Fixed continue-watching in combined-profile mode now spanning all member providers.
+- Fixed continue-watching and recommendations degrading silently to empty on transient IO failures; explicit degraded state shown instead.
+- Fixed TV launcher recommendation channels being deleted on transient failures; channels preserved until a successful refresh confirms empty.
+- Fixed TV launcher recommendations in combined-profile mode sourcing from a validated member, not the globally active provider.
+- Fixed switching to a combined live profile not triggering a launcher recommendation refresh.
+- Fixed provider delete requiring no confirmation; now requires explicit confirmation, is blocked while in-flight, and reports success/failure.
+- Fixed active-provider switch writing preferences before the repository call succeeded.
+- Fixed combined M3U profiles allowing activation with no enabled members and removal/disabling of the last enabled member while active.
+- Fixed settings forms (combined M3U, EPG source add) dismissing before async operations complete; forms stay open with input intact on failure.
+- Fixed backup import dialog allowing double-confirm in-flight and confirmation with all sections disabled; guard is now an atomic state transition.
+- Fixed EPG source refresh only updating providers visible in the current settings session.
+- Fixed EPG assignment observer jobs accumulating for deleted providers; cleaned up immediately on provider removal.
+- Fixed recording storage settings (folder, pattern, retention, concurrency) racing on concurrent updates; writes serialized behind a mutex.
+- Fixed privacy toggle rows firing twice from outer surface and inner Switch; Switch is now a passive indicator.
+- Fixed internet speed test card allowing concurrent test runs.
+
+---
+
 ## [1.0.9] - 2026-04-27
 
 ### Added

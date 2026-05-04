@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import java.io.IOException
 
 class GetRecommendationsTest {
 
@@ -31,7 +32,9 @@ class GetRecommendationsTest {
 
         val result = useCase(providerId = 7L, limit = 2).first()
 
-        assertThat(result.map(Movie::id)).containsExactly(1L, 2L).inOrder()
+        assertThat(result).isInstanceOf(RecommendationsResult.Success::class.java)
+        assertThat((result as RecommendationsResult.Success).movies.map(Movie::id))
+            .containsExactly(1L, 2L).inOrder()
     }
 
     @Test
@@ -48,7 +51,9 @@ class GetRecommendationsTest {
 
         val result = useCase(providerId = 7L, limit = 2).first()
 
-        assertThat(result.map(Movie::id)).containsExactly(10L, 11L).inOrder()
+        assertThat(result).isInstanceOf(RecommendationsResult.Success::class.java)
+        assertThat((result as RecommendationsResult.Success).movies.map(Movie::id))
+            .containsExactly(10L, 11L).inOrder()
     }
 
     @Test
@@ -71,6 +76,21 @@ class GetRecommendationsTest {
 
         assertThat(thrown).isNotNull()
         assertThat(thrown?.message).isEqualTo(expected.message)
+    }
+
+    @Test
+    fun returns_degraded_on_io_failure() = runTest {
+        val useCase = GetRecommendations(
+            movieRepository = FakeMovieRepository(
+                recommendations = emptyList(),
+                topRated = emptyList(),
+                recommendationsFlow = flow { throw IOException("network failure") }
+            )
+        )
+
+        val result = useCase(providerId = 7L, limit = 2).first()
+
+        assertThat(result).isEqualTo(RecommendationsResult.Degraded)
     }
 
     private class FakeMovieRepository(
@@ -99,7 +119,6 @@ class GetRecommendationsTest {
         override suspend fun getMovieDetails(providerId: Long, movieId: Long): Result<Movie> = error("Not used in test")
         override suspend fun getStreamInfo(movie: Movie): Result<StreamInfo> = error("Not used in test")
         override suspend fun refreshMovies(providerId: Long): Result<Unit> = error("Not used in test")
-        override suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit> = error("Not used in test")
 
         private fun <T> unsupported(): Flow<T> = error("Not used in test")
     }

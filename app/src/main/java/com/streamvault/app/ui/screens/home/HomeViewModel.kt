@@ -153,7 +153,10 @@ class HomeViewModel @Inject constructor(
                                 selectedCombinedSourceProviderId = null
                             )
                         }
+                        recentChannelsJob?.cancel()
+                        recentChannelsJob = null
                         _localChannels.value = emptyList()
+                        observeCombinedRecentChannels(currentCombinedProviderIds())
                         loadCombinedCategoriesAndChannels(activeSource.profileId)
                     }
                     is ActiveLiveSource.ProviderSource -> {
@@ -187,6 +190,8 @@ class HomeViewModel @Inject constructor(
                         preferencesRepository.setLastActiveProviderId(provider.id)
                     }
                     null -> {
+                        recentChannelsJob?.cancel()
+                        recentChannelsJob = null
                         combinedCategoriesById = emptyMap()
                         _localChannels.value = emptyList()
                         _uiState.update {
@@ -294,10 +299,22 @@ class HomeViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            providerRepository.getActiveProvider()
-                .filterNotNull()
-                .flatMapLatest { provider ->
-                    parentalControlManager.unlockedCategoriesForProvider(provider.id)
+            _uiState
+                .map { state ->
+                    if (state.isCombinedLiveSource)
+                        state.currentCombinedProfileMembers.filter { it.enabled }.map { it.providerId }
+                    else
+                        state.provider?.id?.let(::listOf).orEmpty()
+                }
+                .distinctUntilChanged()
+                .flatMapLatest { providerIds ->
+                    when (providerIds.size) {
+                        0 -> flowOf(emptySet())
+                        1 -> parentalControlManager.unlockedCategoriesForProvider(providerIds.first())
+                        else -> combine(
+                            providerIds.map { id -> parentalControlManager.unlockedCategoriesForProvider(id) }
+                        ) { arrays -> arrays.toList().flatten().toSet() }
+                    }
                 }
                 .collectLatest { unlockedIds ->
                     _uiState.update { it.copy(unlockedCategoryIds = unlockedIds) }
@@ -548,7 +565,7 @@ class HomeViewModel @Inject constructor(
                         name = "Recent",
                         type = ContentType.LIVE,
                         isVirtual = true,
-                        count = 0
+                        count = _uiState.value.recentChannels.size
                     )
                     val allChannelsCategory = Category(
                         id = ChannelRepository.ALL_CHANNELS_ID,
@@ -826,6 +843,18 @@ class HomeViewModel @Inject constructor(
                 }
             )
         }
+        if (query.isNotBlank()) {
+            val state = _uiState.value
+            val selectedId = state.selectedCategory?.id
+            if (selectedId != null) {
+                val visibleCategoryIds = state.categories
+                    .filter { it.name.contains(query, ignoreCase = true) }
+                    .map { it.id }.toSet()
+                if (selectedId !in visibleCategoryIds) {
+                    clearVisibleChannelsForFilteredCategories()
+                }
+            }
+        }
     }
 
     fun applySavedCategoryFilter(filter: String) {
@@ -836,6 +865,19 @@ class HomeViewModel @Inject constructor(
                 categorySearchQuery = if (shouldClear) "" else filter,
                 activeCategoryFilter = if (shouldClear) null else filter
             )
+        }
+        val state = _uiState.value
+        val query = state.categorySearchQuery
+        if (query.isNotBlank()) {
+            val selectedId = state.selectedCategory?.id
+            if (selectedId != null) {
+                val visibleCategoryIds = state.categories
+                    .filter { it.name.contains(query, ignoreCase = true) }
+                    .map { it.id }.toSet()
+                if (selectedId !in visibleCategoryIds) {
+                    clearVisibleChannelsForFilteredCategories()
+                }
+            }
         }
     }
 
@@ -998,7 +1040,6 @@ class HomeViewModel @Inject constructor(
         if (_uiState.value.previewChannelId != channel.id) return false
         if (!livePreviewHandoffManager.beginFullscreenHandoff(channel.id, engine)) return false
 
-        engine.clearRenderBinding()
         previewSessionVersion++
         previewPlaybackJob?.cancel()
         previewErrorJob?.cancel()
@@ -1190,11 +1231,29 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             val providerId = resolveLiveWriteProviderId()
             if (providerId == null) {
-                _uiState.update { it.copy(userMessage = appContext.getString(R.string.home_error_load_failed)) }
+                _uiState.update { it.copy(userMessage = appContext.getString(R.string.home_group_requires_provider_scope)) }
                 return@launch
             }
             favoriteRepository.createGroup(providerId, trimmed, contentType = ContentType.LIVE)
             _uiState.update { it.copy(userMessage = appContext.getString(R.string.home_group_created, trimmed)) }
+        }
+    }
+
+    private fun observeCombinedRecentChannels(providerIds: List<Long>) {
+        recentChannelsJob?.cancel()
+        recentChannelsJob = viewModelScope.launch {
+            combine(
+                observeRecentLiveIds(providerIds, limit = 12)
+                    .flatMapLatest(::loadChannelsByOrderedIds),
+                preferencesRepository.parentalControlLevel
+            ) { channels, level ->
+                AdultContentVisibilityPolicy.filterForAggregatedSurface(
+                    channels, level
+                ) { isAdult || isUserProtected }
+            }.collect { visible ->
+                _uiState.update { it.copy(recentChannels = visible) }
+                updateRecentCategoryCount(visible.size)
+            }
         }
     }
 
@@ -1407,6 +1466,7 @@ class HomeViewModel @Inject constructor(
 
     suspend fun unlockCategoryWithPin(category: Category, pin: String): Result<Unit> {
         val providerId = _uiState.value.provider?.id
+            ?: combinedCategoriesById[category.id]?.bindings?.firstOrNull()?.providerId
             ?: return Result.error("Locked category context is unavailable.")
         val result = unlockParentalCategory(
             UnlockParentalCategoryCommand(

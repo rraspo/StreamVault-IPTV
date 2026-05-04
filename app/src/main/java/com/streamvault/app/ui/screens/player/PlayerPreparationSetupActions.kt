@@ -3,8 +3,45 @@ package com.streamvault.app.ui.screens.player
 import androidx.lifecycle.viewModelScope
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.DecoderMode
+import com.streamvault.domain.model.Episode
 import com.streamvault.domain.model.PlayerSurfaceMode
 import kotlinx.coroutines.launch
+
+internal data class ResolvedSeriesEpisodeIdentity(
+    val seriesId: Long,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?
+)
+
+internal suspend fun resolveSeriesEpisodeIdentity(
+    providerId: Long,
+    internalChannelId: Long,
+    seriesId: Long?,
+    seasonNumber: Int?,
+    episodeNumber: Int?,
+    lookupEpisode: suspend (Long) -> Episode?
+): ResolvedSeriesEpisodeIdentity? {
+    val normalizedSeriesId = seriesId?.takeIf { it > 0L }
+    if (normalizedSeriesId != null) {
+        return ResolvedSeriesEpisodeIdentity(
+            seriesId = normalizedSeriesId,
+            seasonNumber = seasonNumber,
+            episodeNumber = episodeNumber
+        )
+    }
+    if (providerId <= 0L || internalChannelId <= 0L) return null
+
+    val persistedEpisode = lookupEpisode(internalChannelId)
+        ?.takeIf { it.providerId == providerId }
+        ?.takeIf { it.seriesId > 0L }
+        ?: return null
+
+    return ResolvedSeriesEpisodeIdentity(
+        seriesId = persistedEpisode.seriesId,
+        seasonNumber = seasonNumber ?: persistedEpisode.seasonNumber,
+        episodeNumber = episodeNumber ?: persistedEpisode.episodeNumber
+    )
+}
 
 internal fun PlayerViewModel.applyPrepareSessionState(
     streamUrl: String,
@@ -19,6 +56,7 @@ internal fun PlayerViewModel.applyPrepareSessionState(
     seriesId: Long?,
     seasonNumber: Int?,
     episodeNumber: Int?,
+    episodeId: Long?,
     hasArchiveRequest: Boolean,
     preferredDecoderMode: DecoderMode,
     preferredSurfaceMode: PlayerSurfaceMode
@@ -37,6 +75,7 @@ internal fun PlayerViewModel.applyPrepareSessionState(
 
     clearSeekPreview()
     currentResolvedPlaybackUrl = ""
+    currentResolvedStreamInfo = null
     currentStreamUrl = streamUrl
     currentContentId = internalChannelId
     currentTitle = title
@@ -53,6 +92,7 @@ internal fun PlayerViewModel.applyPrepareSessionState(
     currentSeriesId = seriesId?.takeIf { it > 0L }
     currentSeasonNumber = seasonNumber
     currentEpisodeNumber = episodeNumber
+    currentStableEpisodeId = episodeId?.takeIf { it > 0L }
     val streamClassLabel = if (hasArchiveRequest) "Catch-up" else "Primary"
     applyDefaultPlaybackTimersIfNeeded()
 

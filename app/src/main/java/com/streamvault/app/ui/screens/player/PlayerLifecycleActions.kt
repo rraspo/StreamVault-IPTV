@@ -57,6 +57,7 @@ internal fun PlayerViewModel.startTokenRenewalMonitoring(expirationTime: Long?) 
             ) ?: return@launch
             if (!isActivePlaybackSession(requestVersion)) return@launch
             currentResolvedPlaybackUrl = refreshed.url
+            currentResolvedStreamInfo = refreshed
             playerEngine.renewStreamUrl(refreshed)
             startTokenRenewalMonitoring(refreshed.expirationTime)
             return@launch
@@ -117,7 +118,6 @@ fun PlayerViewModel.handOffPlaybackToMultiView() {
     }
     playerEngine.stopLiveTimeshift()
     livePreviewHandoffManager.clear(playerEngine)
-    playerEngine.release()
 }
 
 internal fun PlayerViewModel.cleanupAfterCleared(mainPlayerEngine: PlayerEngine) {
@@ -138,10 +138,15 @@ internal fun PlayerViewModel.cleanupAfterCleared(mainPlayerEngine: PlayerEngine)
     aspectRatioJob?.cancel()
     recentChannelsJob?.cancel()
     lastVisitedCategoryJob?.cancel()
+    thumbnailPreloadJob?.cancel()
+    inFlightThumbnailPreloadKey = null
+    lastCompletedThumbnailPreloadKey = null
     seekThumbnailProvider.clearCache()
     livePreviewHandoffManager.clear(playerEngine)
-    playerEngine.release()
-    if (mainPlayerEngine !== playerEngine) {
-        mainPlayerEngine.release()
+    if (playerEngine === mainPlayerEngine) {
+        mainPlayerEngine.resetForReuse()
+    } else {
+        playerEngine.release()
+        mainPlayerEngine.resetForReuse()
     }
 }

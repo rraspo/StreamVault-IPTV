@@ -17,7 +17,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
+import androidx.tv.material3.Icon
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import coil3.compose.AsyncImage
@@ -100,7 +106,10 @@ fun MovieDetailScreen(
                 resumePositionMs = uiState.resumePositionMs,
                 externalRatings = uiState.externalRatings,
                 isLoadingExternalRatings = uiState.isLoadingExternalRatings,
+                relatedContent = uiState.relatedContent,
                 onPlay = { onPlay(movie) },
+                onToggleFavorite = viewModel::toggleFavorite,
+                onRelatedClick = onPlay,
                 onBack = onBack
             )
         }
@@ -114,7 +123,10 @@ private fun MovieDetailContent(
     resumePositionMs: Long,
     externalRatings: ExternalRatings,
     isLoadingExternalRatings: Boolean,
+    relatedContent: List<Movie>,
     onPlay: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onRelatedClick: (Movie) -> Unit,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -198,6 +210,7 @@ private fun MovieDetailContent(
                             externalRatings = externalRatings,
                             isLoadingExternalRatings = isLoadingExternalRatings,
                             onPlay = onPlay,
+                            onToggleFavorite = onToggleFavorite,
                             playButtonFocusRequester = playButtonFocusRequester,
                             onPlayTrailer = {
                                 resolveTrailerUrl(movie.youtubeTrailer)?.let { trailerUrl ->
@@ -221,6 +234,7 @@ private fun MovieDetailContent(
                             externalRatings = externalRatings,
                             isLoadingExternalRatings = isLoadingExternalRatings,
                             onPlay = onPlay,
+                            onToggleFavorite = onToggleFavorite,
                             playButtonFocusRequester = playButtonFocusRequester,
                             onPlayTrailer = {
                                 resolveTrailerUrl(movie.youtubeTrailer)?.let { trailerUrl ->
@@ -231,6 +245,52 @@ private fun MovieDetailContent(
                             },
                             modifier = Modifier.fillMaxWidth()
                         )
+                    }
+                }
+            }
+
+            if (relatedContent.isNotEmpty()) {
+                item {
+                    Text(
+                        text = stringResource(R.string.movie_detail_related),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AppColors.TextPrimary
+                    )
+                }
+                item {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(relatedContent, key = { it.id }) { related ->
+                            TvClickableSurface(
+                                onClick = { onRelatedClick(related) },
+                                modifier = Modifier.width(120.dp)
+                            ) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .aspectRatio(2f / 3f)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(AppColors.SurfaceElevated)
+                                    ) {
+                                        AsyncImage(
+                                            model = rememberCrossfadeImageModel(related.posterUrl ?: related.backdropUrl),
+                                            contentDescription = related.name,
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    }
+                                    Text(
+                                        text = related.name,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = AppColors.TextPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -267,6 +327,7 @@ private fun MovieDetailHeroText(
     externalRatings: ExternalRatings,
     isLoadingExternalRatings: Boolean,
     onPlay: () -> Unit,
+    onToggleFavorite: () -> Unit,
     playButtonFocusRequester: FocusRequester,
     onPlayTrailer: () -> Unit,
     modifier: Modifier = Modifier
@@ -340,6 +401,20 @@ private fun MovieDetailHeroText(
                 ) {
                     Text(stringResource(R.string.movie_detail_trailer))
                 }
+            }
+            TvIconButton(
+                onClick = onToggleFavorite,
+                colors = ButtonDefaults.colors(
+                    containerColor = if (movie.isFavorite) AppColors.Brand else AppColors.SurfaceEmphasis,
+                    contentColor = if (movie.isFavorite) Color.White else AppColors.TextSecondary
+                )
+            ) {
+                Icon(
+                    imageVector = if (movie.isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                    contentDescription = stringResource(
+                        if (movie.isFavorite) R.string.favorites_remove else R.string.favorites_add
+                    )
+                )
             }
         }
 

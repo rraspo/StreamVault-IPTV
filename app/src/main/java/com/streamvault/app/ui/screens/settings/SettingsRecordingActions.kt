@@ -9,12 +9,19 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 internal class SettingsRecordingActions(
     private val appContext: Application,
     private val recordingManager: RecordingManager,
     private val uiState: MutableStateFlow<SettingsUiState>
 ) {
+    // Serializes all storage-config updates so that a concurrent read-modify-write
+    // (e.g. folder + retention changed close together) always builds from the latest
+    // committed RecordingStorageState rather than two stale copies of the same snapshot.
+    private val storageConfigMutex = Mutex()
+
     fun stopRecording(scope: CoroutineScope, recordingId: String) {
         scope.launch {
             val result = recordingManager.stopRecording(recordingId)
@@ -125,96 +132,108 @@ internal class SettingsRecordingActions(
 
     fun updateRecordingFolder(scope: CoroutineScope, treeUri: String?, displayName: String?) {
         scope.launch {
-            val current = uiState.value.recordingStorageState
-            val result = recordingManager.updateStorageConfig(
-                RecordingStorageConfig(
-                    treeUri = treeUri,
-                    displayName = displayName,
-                    fileNamePattern = current.fileNamePattern,
-                    retentionDays = current.retentionDays,
-                    maxSimultaneousRecordings = current.maxSimultaneousRecordings
+            storageConfigMutex.withLock {
+                val current = uiState.value.recordingStorageState
+                val result = recordingManager.updateStorageConfig(
+                    RecordingStorageConfig(
+                        treeUri = treeUri,
+                        displayName = displayName,
+                        fileNamePattern = current.fileNamePattern,
+                        retentionDays = current.retentionDays,
+                        maxSimultaneousRecordings = current.maxSimultaneousRecordings
+                    )
                 )
-            )
-            uiState.update {
-                it.copy(
-                    userMessage = if (result is Result.Error) {
-                        appContext.getString(R.string.settings_recording_storage_update_failed, result.message)
-                    } else {
-                        appContext.getString(R.string.settings_recording_storage_updated)
-                    }
-                )
+                uiState.update { state ->
+                    state.copy(
+                        recordingStorageState = if (result is Result.Success) result.data else state.recordingStorageState,
+                        userMessage = if (result is Result.Error) {
+                            appContext.getString(R.string.settings_recording_storage_update_failed, result.message)
+                        } else {
+                            appContext.getString(R.string.settings_recording_storage_updated)
+                        }
+                    )
+                }
             }
         }
     }
 
     fun updateRecordingFileNamePattern(scope: CoroutineScope, pattern: String) {
         scope.launch {
-            val current = uiState.value.recordingStorageState
-            val result = recordingManager.updateStorageConfig(
-                RecordingStorageConfig(
-                    treeUri = current.treeUri,
-                    displayName = current.displayName,
-                    fileNamePattern = pattern,
-                    retentionDays = current.retentionDays,
-                    maxSimultaneousRecordings = current.maxSimultaneousRecordings
+            storageConfigMutex.withLock {
+                val current = uiState.value.recordingStorageState
+                val result = recordingManager.updateStorageConfig(
+                    RecordingStorageConfig(
+                        treeUri = current.treeUri,
+                        displayName = current.displayName,
+                        fileNamePattern = pattern,
+                        retentionDays = current.retentionDays,
+                        maxSimultaneousRecordings = current.maxSimultaneousRecordings
+                    )
                 )
-            )
-            uiState.update {
-                it.copy(
-                    userMessage = if (result is Result.Error) {
-                        appContext.getString(R.string.settings_recording_pattern_failed, result.message)
-                    } else {
-                        appContext.getString(R.string.settings_recording_pattern_saved)
-                    }
-                )
+                uiState.update { state ->
+                    state.copy(
+                        recordingStorageState = if (result is Result.Success) result.data else state.recordingStorageState,
+                        userMessage = if (result is Result.Error) {
+                            appContext.getString(R.string.settings_recording_pattern_failed, result.message)
+                        } else {
+                            appContext.getString(R.string.settings_recording_pattern_saved)
+                        }
+                    )
+                }
             }
         }
     }
 
     fun updateRecordingRetentionDays(scope: CoroutineScope, retentionDays: Int?) {
         scope.launch {
-            val current = uiState.value.recordingStorageState
-            val result = recordingManager.updateStorageConfig(
-                RecordingStorageConfig(
-                    treeUri = current.treeUri,
-                    displayName = current.displayName,
-                    fileNamePattern = current.fileNamePattern,
-                    retentionDays = retentionDays,
-                    maxSimultaneousRecordings = current.maxSimultaneousRecordings
+            storageConfigMutex.withLock {
+                val current = uiState.value.recordingStorageState
+                val result = recordingManager.updateStorageConfig(
+                    RecordingStorageConfig(
+                        treeUri = current.treeUri,
+                        displayName = current.displayName,
+                        fileNamePattern = current.fileNamePattern,
+                        retentionDays = retentionDays,
+                        maxSimultaneousRecordings = current.maxSimultaneousRecordings
+                    )
                 )
-            )
-            uiState.update {
-                it.copy(
-                    userMessage = if (result is Result.Error) {
-                        appContext.getString(R.string.settings_recording_retention_failed, result.message)
-                    } else {
-                        appContext.getString(R.string.settings_recording_retention_saved)
-                    }
-                )
+                uiState.update { state ->
+                    state.copy(
+                        recordingStorageState = if (result is Result.Success) result.data else state.recordingStorageState,
+                        userMessage = if (result is Result.Error) {
+                            appContext.getString(R.string.settings_recording_retention_failed, result.message)
+                        } else {
+                            appContext.getString(R.string.settings_recording_retention_saved)
+                        }
+                    )
+                }
             }
         }
     }
 
     fun updateRecordingMaxSimultaneous(scope: CoroutineScope, maxSimultaneousRecordings: Int) {
         scope.launch {
-            val current = uiState.value.recordingStorageState
-            val result = recordingManager.updateStorageConfig(
-                RecordingStorageConfig(
-                    treeUri = current.treeUri,
-                    displayName = current.displayName,
-                    fileNamePattern = current.fileNamePattern,
-                    retentionDays = current.retentionDays,
-                    maxSimultaneousRecordings = maxSimultaneousRecordings
+            storageConfigMutex.withLock {
+                val current = uiState.value.recordingStorageState
+                val result = recordingManager.updateStorageConfig(
+                    RecordingStorageConfig(
+                        treeUri = current.treeUri,
+                        displayName = current.displayName,
+                        fileNamePattern = current.fileNamePattern,
+                        retentionDays = current.retentionDays,
+                        maxSimultaneousRecordings = maxSimultaneousRecordings
+                    )
                 )
-            )
-            uiState.update {
-                it.copy(
-                    userMessage = if (result is Result.Error) {
-                        appContext.getString(R.string.settings_recording_concurrency_failed, result.message)
-                    } else {
-                        appContext.getString(R.string.settings_recording_concurrency_saved)
-                    }
-                )
+                uiState.update { state ->
+                    state.copy(
+                        recordingStorageState = if (result is Result.Success) result.data else state.recordingStorageState,
+                        userMessage = if (result is Result.Error) {
+                            appContext.getString(R.string.settings_recording_concurrency_failed, result.message)
+                        } else {
+                            appContext.getString(R.string.settings_recording_concurrency_saved)
+                        }
+                    )
+                }
             }
         }
     }

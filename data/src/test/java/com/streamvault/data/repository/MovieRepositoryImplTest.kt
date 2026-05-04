@@ -28,11 +28,17 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.model.LibraryBrowseQuery
+import com.streamvault.domain.model.LibraryFilterBy
+import com.streamvault.domain.model.LibraryFilterType
+import com.streamvault.domain.model.LibrarySortBy
+import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.SyncMetadata
 import com.streamvault.domain.model.VodSyncMode
+import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.SyncMetadataRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -59,6 +65,7 @@ class MovieRepositoryImplTest {
     private val preferencesRepository: PreferencesRepository = mock()
     private val favoriteDao: FavoriteDao = mock()
     private val playbackHistoryDao: PlaybackHistoryDao = mock()
+    private val playbackHistoryRepository: PlaybackHistoryRepository = mock()
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver = mock()
     private val movieCategoryHydrationDao: MovieCategoryHydrationDao = mock()
     private val syncMetadataRepository: SyncMetadataRepository = mock()
@@ -389,13 +396,58 @@ class MovieRepositoryImplTest {
         whenever(movieDao.search(eq(7L), any(), any())).thenReturn(
             flow { throw SQLiteException("malformed MATCH expression") }
         )
+        whenever(movieDao.searchFallback(eq(7L), any(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    movieEntity(
+                        id = 101L,
+                        name = "Matrix Reloaded",
+                        genre = "Action",
+                        categoryId = 42L,
+                        rating = 8.0f
+                    )
+                )
+            )
+        )
         whenever(favoriteDao.getAllByType(7L, ContentType.MOVIE.name)).thenReturn(flowOf(emptyList()))
 
         val repository = createRepository()
 
         val result = repository.searchMovies(7L, "matrix").first()
 
-        assertThat(result).isEmpty()
+        assertThat(result.map { it.name }).containsExactly("Matrix Reloaded")
+    }
+
+    @Test
+    fun `browseMovies top rated excludes unrated entries and uses filtered total count`() = runTest {
+        whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
+        whenever(preferencesRepository.xtreamBase64TextCompatibility).thenReturn(flowOf(false))
+        whenever(movieDao.getTopRatedCountByProvider(7L)).thenReturn(flowOf(1))
+        whenever(movieDao.getTopRatedPreview(7L, 100)).thenReturn(
+            flowOf(
+                listOf(
+                    movieEntity(id = 1L, name = "Rated Movie", genre = "Drama", categoryId = 10L, rating = 8.5f),
+                    movieEntity(id = 2L, name = "Unrated Movie", genre = "Drama", categoryId = 10L, rating = 0f)
+                )
+            )
+        )
+        whenever(favoriteDao.getAllByType(7L, ContentType.MOVIE.name)).thenReturn(flowOf(emptyList()))
+        whenever(playbackHistoryDao.getByProvider(7L)).thenReturn(flowOf(emptyList()))
+
+        val repository = createRepository()
+
+        val result = repository.browseMovies(
+            LibraryBrowseQuery(
+                providerId = 7L,
+                sortBy = LibrarySortBy.RATING,
+                filterBy = LibraryFilterBy(LibraryFilterType.TOP_RATED),
+                offset = 0,
+                limit = 20
+            )
+        ).first()
+
+        assertThat(result.totalCount).isEqualTo(1)
+        assertThat(result.items.map { it.name }).containsExactly("Rated Movie")
     }
 
     private fun createRepository() = MovieRepositoryImpl(
@@ -408,6 +460,7 @@ class MovieRepositoryImplTest {
         preferencesRepository = preferencesRepository,
         favoriteDao = favoriteDao,
         playbackHistoryDao = playbackHistoryDao,
+        playbackHistoryRepository = playbackHistoryRepository,
         xtreamStreamUrlResolver = xtreamStreamUrlResolver,
         movieCategoryHydrationDao = movieCategoryHydrationDao,
         syncMetadataRepository = syncMetadataRepository,

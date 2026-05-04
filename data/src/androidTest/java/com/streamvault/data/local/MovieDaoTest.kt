@@ -87,4 +87,56 @@ class MovieDaoTest {
         assertThat(movie?.watchProgress).isEqualTo(0L)
         assertThat(movie?.lastWatchedAt).isEqualTo(0L)
     }
+
+    @Test
+    fun syncWatchProgressFromHistoryByProvider_updatesMatchingMoviesAndClearsStaleRows() = runTest {
+        movieDao.insertAll(
+            listOf(
+                MovieEntity(
+                    id = 7L,
+                    name = "Watched Movie",
+                    providerId = 3L,
+                    watchProgress = 0L,
+                    lastWatchedAt = 0L
+                ),
+                MovieEntity(
+                    id = 8L,
+                    name = "Stale Movie",
+                    providerId = 3L,
+                    watchProgress = 9_000L,
+                    lastWatchedAt = 12_000L
+                ),
+                MovieEntity(
+                    id = 9L,
+                    name = "Other Provider",
+                    providerId = 4L,
+                    watchProgress = 4_000L,
+                    lastWatchedAt = 5_000L
+                )
+            )
+        )
+        historyDao.insertOrUpdate(
+            PlaybackHistoryEntity(
+                contentId = 7L,
+                contentType = ContentType.MOVIE,
+                providerId = 3L,
+                resumePositionMs = 18_000L,
+                lastWatchedAt = 27_000L,
+                watchCount = 2
+            )
+        )
+
+        movieDao.syncWatchProgressFromHistoryByProvider(3L)
+
+        val watchedMovie = movieDao.getById(7L)
+        val staleMovie = movieDao.getById(8L)
+        val otherProviderMovie = movieDao.getById(9L)
+
+        assertThat(watchedMovie?.watchProgress).isEqualTo(18_000L)
+        assertThat(watchedMovie?.lastWatchedAt).isEqualTo(27_000L)
+        assertThat(staleMovie?.watchProgress).isEqualTo(0L)
+        assertThat(staleMovie?.lastWatchedAt).isEqualTo(0L)
+        assertThat(otherProviderMovie?.watchProgress).isEqualTo(4_000L)
+        assertThat(otherProviderMovie?.lastWatchedAt).isEqualTo(5_000L)
+    }
 }

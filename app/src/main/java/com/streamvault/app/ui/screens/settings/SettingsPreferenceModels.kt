@@ -43,6 +43,7 @@ internal data class SettingsPreferenceSnapshot(
     val playerSurfaceMode: PlayerSurfaceMode,
     val playerPlaybackSpeed: Float,
     val playerAudioVideoOffsetMs: Int,
+    val centerTwoSlotMultiviewLayout: Boolean,
     val playerControlsTimeoutSeconds: Int,
     val playerLiveOverlayTimeoutSeconds: Int,
     val playerNoticeTimeoutSeconds: Int,

@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -35,6 +36,8 @@ class RecordingForegroundService : Service() {
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val idleGate = RecordingForegroundIdleGate()
+    private var idleStopJob: Job? = null
     private var notificationJob: Job? = null
 
     override fun onCreate() {
@@ -43,8 +46,18 @@ class RecordingForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val action = intent?.action
+        if (action == ACTION_START_CAPTURE || action == ACTION_STOP_CAPTURE || action == ACTION_RECONCILE) {
+            beginPendingCommand()
+        }
         runCatching {
-            startForeground(NOTIFICATION_ID, buildNotification(activeCount = 0))
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(
+                    activeCount = idleGate.activeRecordingCount,
+                    pendingCommand = idleGate.hasPendingCommands
+                )
+            )
         }.onFailure { error ->
             Log.e("RecordingFgService", "Unable to enter foreground", error)
             stopSelf(startId)
@@ -52,23 +65,43 @@ class RecordingForegroundService : Service() {
         }
         ensureNotificationObserver()
         val manager = entryPoint().recordingManager()
-        when (intent?.action) {
+        when (action) {
             ACTION_START_CAPTURE -> {
                 val recordingId = intent.getStringExtra(EXTRA_RECORDING_ID).orEmpty()
-                serviceScope.launch { manager.promoteScheduledRecording(recordingId) }
+                serviceScope.launch {
+                    try {
+                        manager.promoteScheduledRecording(recordingId)
+                    } finally {
+                        finishPendingCommand()
+                    }
+                }
             }
             ACTION_STOP_CAPTURE -> {
                 val recordingId = intent.getStringExtra(EXTRA_RECORDING_ID).orEmpty()
-                serviceScope.launch { manager.stopRecording(recordingId) }
+                serviceScope.launch {
+                    try {
+                        manager.stopRecording(recordingId)
+                    } finally {
+                        finishPendingCommand()
+                    }
+                }
             }
             ACTION_RECONCILE -> {
-                serviceScope.launch { manager.reconcileRecordingState() }
+                serviceScope.launch {
+                    try {
+                        manager.reconcileRecordingState()
+                    } finally {
+                        finishPendingCommand()
+                    }
+                }
             }
+            else -> evaluateIdleState()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        idleStopJob?.cancel()
         notificationJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()
@@ -80,20 +113,18 @@ class RecordingForegroundService : Service() {
         if (notificationJob != null) return
         notificationJob = serviceScope.launch {
             entryPoint().recordingManager().observeActiveRecordingCount().collectLatest { activeCount ->
-                val count = activeCount.coerceAtLeast(0)
-                val manager = getSystemService(NotificationManager::class.java)
-                manager.notify(NOTIFICATION_ID, buildNotification(count))
-                if (count == 0) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+                idleGate.onActiveCountChanged(activeCount)
+                updateNotification()
+                evaluateIdleState()
             }
         }
     }
 
-    private fun buildNotification(activeCount: Int): Notification {
+    private fun buildNotification(activeCount: Int, pendingCommand: Boolean): Notification {
         val title = if (activeCount > 0) {
             "$activeCount recording${if (activeCount == 1) "" else "s"} in progress"
+        } else if (pendingCommand) {
+            "Starting recording service"
         } else {
             "Preparing recording service"
         }
@@ -101,7 +132,7 @@ class RecordingForegroundService : Service() {
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle("StreamVault DVR")
             .setContentText(title)
-            .setOngoing(activeCount > 0)
+            .setOngoing(activeCount > 0 || pendingCommand)
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -135,12 +166,54 @@ class RecordingForegroundService : Service() {
     private fun entryPoint(): RecordingServiceEntryPoint =
         EntryPointAccessors.fromApplication(applicationContext, RecordingServiceEntryPoint::class.java)
 
+    private fun beginPendingCommand() {
+        idleGate.onCommandStarted()
+        idleStopJob?.cancel()
+        idleStopJob = null
+        updateNotification()
+    }
+
+    private fun finishPendingCommand() {
+        idleGate.onCommandFinished()
+        updateNotification()
+        evaluateIdleState()
+    }
+
+    private fun updateNotification() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        manager.notify(
+            NOTIFICATION_ID,
+            buildNotification(
+                activeCount = idleGate.activeRecordingCount,
+                pendingCommand = idleGate.hasPendingCommands
+            )
+        )
+    }
+
+    private fun evaluateIdleState() {
+        if (idleGate.shouldKeepAlive()) {
+            idleStopJob?.cancel()
+            idleStopJob = null
+            return
+        }
+        if (idleStopJob?.isActive == true) return
+        idleStopJob = serviceScope.launch {
+            delay(IDLE_GRACE_MS)
+            if (!idleGate.shouldKeepAlive()) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+    }
+
     companion object {
         private const val CHANNEL_ID = "streamvault_recording"
         private const val NOTIFICATION_ID = 4102
+        private const val IDLE_GRACE_MS = 3_000L
         private const val ACTION_START_CAPTURE = "com.streamvault.data.recording.service.START_CAPTURE"
         private const val ACTION_STOP_CAPTURE = "com.streamvault.data.recording.service.STOP_CAPTURE"
         private const val ACTION_RECONCILE = "com.streamvault.data.recording.service.RECONCILE"
+        private const val ACTION_EVALUATE_IDLE = "com.streamvault.data.recording.service.EVALUATE_IDLE"
         private const val EXTRA_RECORDING_ID = "recording_id"
 
         fun startCapture(context: Context, recordingId: String) {
@@ -164,7 +237,9 @@ class RecordingForegroundService : Service() {
         }
 
         fun stopIfIdle(context: Context) {
-            context.stopService(Intent(context, RecordingForegroundService::class.java))
+            val intent = Intent(context, RecordingForegroundService::class.java)
+                .setAction(ACTION_EVALUATE_IDLE)
+            ContextCompat.startForegroundService(context, intent)
         }
     }
 }

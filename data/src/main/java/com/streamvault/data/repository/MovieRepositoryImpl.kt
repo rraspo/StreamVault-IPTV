@@ -1,6 +1,7 @@
 package com.streamvault.data.repository
 
 import android.database.sqlite.SQLiteException
+import android.util.Log
 import com.streamvault.data.local.DatabaseTransactionRunner
 import com.streamvault.data.local.dao.CategoryDao
 import com.streamvault.data.local.dao.FavoriteDao
@@ -31,6 +32,7 @@ import com.streamvault.domain.model.LibraryBrowseQuery
 import com.streamvault.domain.model.LibrarySortBy
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.PagedResult
+import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.Result.Success
@@ -38,6 +40,7 @@ import com.streamvault.domain.model.StreamInfo
 import com.streamvault.domain.model.StreamType
 import com.streamvault.domain.model.VodSyncMode
 import com.streamvault.domain.repository.MovieRepository
+import com.streamvault.domain.repository.PlaybackHistoryRepository
 import com.streamvault.domain.repository.SyncMetadataRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -74,13 +77,16 @@ class MovieRepositoryImpl @Inject constructor(
     private val preferencesRepository: PreferencesRepository,
     private val favoriteDao: FavoriteDao,
     private val playbackHistoryDao: PlaybackHistoryDao,
+    private val playbackHistoryRepository: PlaybackHistoryRepository,
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver,
     private val movieCategoryHydrationDao: MovieCategoryHydrationDao,
     private val syncMetadataRepository: SyncMetadataRepository,
     private val transactionRunner: DatabaseTransactionRunner
 ) : MovieRepository {
     private companion object {
+        const val TAG = "MovieRepository"
         const val SEARCH_RESULT_LIMIT = 200
+        const val SEARCH_OVERSAMPLE_LIMIT = 500
         const val MIN_SEARCH_QUERY_LENGTH = 2
         const val BROWSE_WINDOW_BUFFER = 80
         const val XTREAM_MOVIE_HYDRATION_TIMEOUT_MILLIS = 60_000L
@@ -288,8 +294,8 @@ class MovieRepositoryImpl @Inject constructor(
                     getTopRatedPreview(providerId, limit = maxOf(limit * 4, 32))
                 ) { categoryItems, topRated ->
                     buildRelatedContent(
-                        movies = (categoryItems + topRated).distinctBy { it.id },
-                        movieId = movieId,
+                        target = targetMovie,
+                        candidates = (categoryItems + topRated).distinctBy { it.id }.filterNot { it.id == movieId },
                         limit = limit
                     )
                 }
@@ -340,7 +346,11 @@ class MovieRepositoryImpl @Inject constructor(
             if (ftsQuery.isNullOrBlank()) {
             flowOf(emptyList())
             } else combine(
-                safeMovieSearchFlow(movieDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT)),
+                safeMovieSearchFlow(
+                    source = movieDao.search(providerId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
+                    fallback = movieDao.searchFallback(providerId, query.trim().toSqlLikePattern(), SEARCH_OVERSAMPLE_LIMIT),
+                    rawQuery = query.trim()
+                ),
                 preferencesRepository.parentalControlLevel
             ) { entities, level: Int ->
                 if (level >= 3) {
@@ -434,13 +444,6 @@ class MovieRepositoryImpl @Inject constructor(
     override suspend fun refreshMovies(providerId: Long): Result<Unit> =
         Result.success(Unit) // Handled by ProviderRepository
 
-    override suspend fun updateWatchProgress(movieId: Long, progress: Long): Result<Unit> = try {
-        movieDao.updateWatchProgress(movieId, progress)
-        Result.success(Unit)
-    } catch (e: Exception) {
-        Result.error("Failed to update movie watch progress", e)
-    }
-
     private fun buildRecommendations(
         movies: List<Movie>,
         favoriteIds: Set<Long>,
@@ -481,15 +484,12 @@ class MovieRepositoryImpl @Inject constructor(
     }
 
     private fun buildRelatedContent(
-        movies: List<Movie>,
-        movieId: Long,
+        target: Movie,
+        candidates: List<Movie>,
         limit: Int
     ): List<Movie> {
-        val target = movies.firstOrNull { it.id == movieId } ?: return emptyList()
-
-        return movies
+        return candidates
             .asSequence()
-            .filterNot { it.id == movieId }
             .map { movie -> movie to relatedScore(target, movie) }
             .filter { (_, score) -> score > 0f }
             .sortedWith(
@@ -555,7 +555,16 @@ class MovieRepositoryImpl @Inject constructor(
                 val ftsQuery = normalizedSearch.toFtsPrefixQuery() ?: return flowOf(emptyList())
                 query.categoryId?.let { categoryId ->
                     combine(
-                        safeMovieSearchFlow(movieDao.searchByCategory(query.providerId, categoryId, ftsQuery, SEARCH_RESULT_LIMIT)),
+                        safeMovieSearchFlow(
+                            source = movieDao.searchByCategory(query.providerId, categoryId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
+                            fallback = movieDao.searchByCategoryFallback(
+                                query.providerId,
+                                categoryId,
+                                normalizedSearch.toSqlLikePattern(),
+                                SEARCH_OVERSAMPLE_LIMIT
+                            ),
+                            rawQuery = normalizedSearch
+                        ),
                         preferencesRepository.parentalControlLevel
                     ) { entities, level ->
                         if (level >= 3) entities.filter { !it.isUserProtected } else entities
@@ -770,6 +779,16 @@ class MovieRepositoryImpl @Inject constructor(
                     movieDao.getCountByCategory(query.providerId, categoryId)
                 } ?: movieDao.getCount(query.providerId)
             }
+            normalizedSearch.isBlank() && query.filterBy.type == LibraryFilterType.TOP_RATED -> {
+                query.categoryId?.let { categoryId ->
+                    movieDao.getTopRatedCountByCategory(query.providerId, categoryId)
+                } ?: movieDao.getTopRatedCountByProvider(query.providerId)
+            }
+            normalizedSearch.isBlank() && query.filterBy.type == LibraryFilterType.RECENTLY_UPDATED -> {
+                query.categoryId?.let { categoryId ->
+                    movieDao.getFreshCountByCategory(query.providerId, categoryId)
+                } ?: movieDao.getFreshCountByProvider(query.providerId)
+            }
             query.filterBy.type in setOf(LibraryFilterType.ALL, LibraryFilterType.TOP_RATED, LibraryFilterType.RECENTLY_UPDATED) &&
                 query.sortBy in setOf(LibrarySortBy.LIBRARY, LibrarySortBy.TITLE, LibrarySortBy.RELEASE, LibrarySortBy.UPDATED, LibrarySortBy.RATING) -> {
                 query.categoryId?.let { categoryId ->
@@ -958,8 +977,6 @@ class MovieRepositoryImpl @Inject constructor(
                     LibrarySortBy.UPDATED,
                     LibrarySortBy.RATING
                 ) -> true
-            query.filterBy.type == LibraryFilterType.TOP_RATED -> true
-            query.filterBy.type == LibraryFilterType.RECENTLY_UPDATED -> true
             else -> false
         }
     }
@@ -1010,14 +1027,31 @@ class MovieRepositoryImpl @Inject constructor(
             .any { value -> value.lowercase().contains(normalizedQuery) }
     }
 
-    private fun safeMovieSearchFlow(source: Flow<List<MovieBrowseEntity>>): Flow<List<MovieBrowseEntity>> =
+    private fun safeMovieSearchFlow(
+        source: Flow<List<MovieBrowseEntity>>,
+        fallback: Flow<List<MovieBrowseEntity>>,
+        rawQuery: String
+    ): Flow<List<MovieBrowseEntity>> =
         source.catch { error ->
             if (error is SQLiteException) {
-                emit(emptyList<MovieBrowseEntity>())
+                Log.w(TAG, "FTS movie search failed for query '$rawQuery'; falling back to LIKE search", error)
+                emitAll(fallback)
             } else {
                 throw error
             }
         }
+
+    private fun String.toSqlLikePattern(): String {
+        val escaped = buildString(length) {
+            this@toSqlLikePattern.forEach { char ->
+                when (char) {
+                    '%', '_', '\\' -> append('\\')
+                }
+                append(char)
+            }
+        }
+        return "%$escaped%"
+    }
 
     private suspend fun ensureXtreamCategoryLoaded(
         providerId: Long,

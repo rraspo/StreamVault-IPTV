@@ -20,6 +20,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,6 +41,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
 ) : PlaybackHistoryRepository {
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pendingResumeUpdates = ConcurrentHashMap<PlaybackKey, PlaybackHistory>()
+    private val pendingResumeUpdatesState = MutableStateFlow<Map<PlaybackKey, PlaybackHistory>>(emptyMap())
     private val isIncognito: StateFlow<Boolean> =
         preferencesRepository.isIncognitoMode
             .stateIn(repositoryScope, SharingStarted.Eagerly, false)
@@ -53,11 +56,27 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
     }
 
     override fun getRecentlyWatched(limit: Int): Flow<List<PlaybackHistory>> {
-        return dao.getRecentlyWatched(limit).map { list -> list.map { it.toDomain() } }
+        return mergedRecentHistory(
+            persisted = dao.getRecentlyWatched(limit).map { list -> list.map { it.toDomain() } },
+            limit = limit
+        ) { true }
     }
 
     override fun getRecentlyWatchedByProvider(providerId: Long, limit: Int): Flow<List<PlaybackHistory>> {
-        return dao.getRecentlyWatchedByProvider(providerId, limit).map { list -> list.map { it.toDomain() } }
+        return mergedRecentHistory(
+            persisted = dao.getRecentlyWatchedByProvider(providerId, limit).map { list -> list.map { it.toDomain() } },
+            limit = limit
+        ) { history -> history.providerId == providerId }
+    }
+
+    override fun getRecentlyWatchedByProviders(providerIds: Set<Long>, limit: Int): Flow<List<PlaybackHistory>> {
+        if (providerIds.isEmpty()) {
+            return kotlinx.coroutines.flow.flowOf(emptyList())
+        }
+        return mergedRecentHistory(
+            persisted = dao.getRecentlyWatchedByProviders(providerIds, limit).map { list -> list.map { it.toDomain() } },
+            limit = limit
+        ) { history -> history.providerId in providerIds }
     }
 
     override fun getUnwatchedCount(providerId: Long, seriesId: Long): Flow<Int> {
@@ -68,7 +87,17 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
         )
     }
 
-    override suspend fun getPlaybackHistory(contentId: Long, contentType: ContentType, providerId: Long): PlaybackHistory? {
+    override suspend fun getPlaybackHistory(
+        contentId: Long,
+        contentType: ContentType,
+        providerId: Long,
+        seriesId: Long?,
+        seasonNumber: Int?,
+        episodeNumber: Int?
+    ): PlaybackHistory? {
+        val key = PlaybackKey(contentId, contentType, providerId)
+        pendingResumeUpdates[key]?.let { return it }
+
         val directMatch = dao.get(contentId, contentType.name, providerId)?.toDomain()
         if (directMatch != null) {
             return directMatch
@@ -77,7 +106,12 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
         return when (contentType) {
             ContentType.MOVIE -> dao.getLatestMovieHistoryBySharedTmdb(contentId, providerId)?.toDomain()
             ContentType.SERIES -> dao.getLatestSeriesHistoryBySharedTmdb(contentId, providerId)?.toDomain()
-            ContentType.SERIES_EPISODE,
+            ContentType.SERIES_EPISODE -> {
+                if (seriesId != null && seasonNumber != null && episodeNumber != null) {
+                    dao.getLatestEpisodeHistoryByCoordinates(providerId, seriesId, seasonNumber, episodeNumber)
+                        ?.toDomain()
+                } else null
+            }
             ContentType.LIVE -> null
         }
     }
@@ -88,7 +122,8 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 return Result.success(Unit)
             }
 
-            val existing = takePendingResumeUpdate(history.playbackKey())
+            val key = history.playbackKey()
+            val existing = pendingResumeUpdates[history.playbackKey()]
                 ?: dao.get(history.contentId, history.contentType.name, history.providerId)?.toDomain()
             val resolvedTotalDuration = history.totalDurationMs.takeIf { it > 0L } ?: existing?.totalDurationMs ?: 0L
             val resolvedResumePosition = when {
@@ -108,6 +143,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 dao.insertOrUpdate(updatedHistory.toEntity())
                 syncDenormalizedProgress(updatedHistory.contentId, updatedHistory.contentType, updatedHistory.providerId)
             }
+            clearPendingResumeUpdate(key)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.error("Failed to mark content as watched", e)
@@ -120,7 +156,8 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 return Result.success(Unit)
             }
 
-            val existing = takePendingResumeUpdate(history.playbackKey())
+            val key = history.playbackKey()
+            val existing = pendingResumeUpdates[key]
                 ?: dao.get(history.contentId, history.contentType.name, history.providerId)?.toDomain()
             val updatedHistory = history.copy(
                 streamUrl = XtreamUrlFactory.sanitizePersistedStreamUrl(history.streamUrl, history.providerId),
@@ -138,6 +175,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 dao.insertOrUpdate(updatedHistory.toEntity())
                 syncDenormalizedProgress(updatedHistory.contentId, updatedHistory.contentType, updatedHistory.providerId)
             }
+            clearPendingResumeUpdate(key)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.error("Failed to record playback history", e)
@@ -150,7 +188,8 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 return Result.success(Unit)
             }
 
-            val existing = pendingResumeUpdates[history.playbackKey()]
+            val key = history.playbackKey()
+            val existing = pendingResumeUpdates[key]
                 ?: dao.get(history.contentId, history.contentType.name, history.providerId)?.toDomain()
 
             val updatedHistory = history.copy(
@@ -164,6 +203,11 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
                 lastWatchedAt = System.currentTimeMillis()
             )
             pendingResumeUpdates[history.playbackKey()] = updatedHistory
+            publishPendingResumeUpdates()
+            transactionRunner.inTransaction {
+                dao.insertOrUpdate(updatedHistory.toEntity())
+                syncDenormalizedProgress(updatedHistory.contentId, updatedHistory.contentType, updatedHistory.providerId)
+            }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.error("Failed to update playback resume position", e)
@@ -221,18 +265,50 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
 
     private suspend fun flushPendingResumeUpdates() {
         val snapshot = pendingResumeUpdates.entries.toList()
+        var changed = false
         snapshot.forEach { (key, history) ->
             if (pendingResumeUpdates.remove(key, history)) {
+                changed = true
                 transactionRunner.inTransaction {
                     dao.insertOrUpdate(history.toEntity())
                     syncDenormalizedProgress(history.contentId, history.contentType, history.providerId)
                 }
             }
         }
+        if (changed) {
+            publishPendingResumeUpdates()
+        }
     }
 
-    private fun takePendingResumeUpdate(key: PlaybackKey): PlaybackHistory? =
-        pendingResumeUpdates.remove(key)
+    private fun clearPendingResumeUpdate(key: PlaybackKey) {
+        if (pendingResumeUpdates.remove(key) != null) {
+            publishPendingResumeUpdates()
+        }
+    }
+
+    private fun publishPendingResumeUpdates() {
+        pendingResumeUpdatesState.value = pendingResumeUpdates.toMap()
+    }
+
+    private fun mergedRecentHistory(
+        persisted: Flow<List<PlaybackHistory>>,
+        limit: Int,
+        includePending: (PlaybackHistory) -> Boolean
+    ): Flow<List<PlaybackHistory>> = combine(persisted, pendingResumeUpdatesState) { persistedItems, pendingItems ->
+        val mergedByKey = LinkedHashMap<PlaybackKey, PlaybackHistory>()
+        persistedItems.forEach { history ->
+            mergedByKey[history.playbackKey()] = history
+        }
+        pendingItems.values
+            .asSequence()
+            .filter(includePending)
+            .forEach { history ->
+                mergedByKey[history.playbackKey()] = history
+            }
+        mergedByKey.values
+            .sortedByDescending(PlaybackHistory::lastWatchedAt)
+            .take(limit)
+    }
 
     private suspend fun syncDenormalizedProgress(contentId: Long, contentType: ContentType, providerId: Long) {
         when (contentType) {
@@ -241,6 +317,7 @@ class PlaybackHistoryRepositoryImpl @Inject constructor(
             else -> Unit
         }
     }
+
 
     private suspend fun syncDenormalizedProgressForProvider(providerId: Long) {
         movieDao.syncWatchProgressFromHistoryByProvider(providerId)

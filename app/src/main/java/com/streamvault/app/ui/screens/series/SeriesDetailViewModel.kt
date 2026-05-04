@@ -16,6 +16,7 @@ import com.streamvault.domain.repository.SeriesRepository
 import com.streamvault.domain.repository.ProviderRepository
 import com.streamvault.domain.util.isPlaybackComplete
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,52 +42,64 @@ class SeriesDetailViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(SeriesDetailUiState())
     val uiState: StateFlow<SeriesDetailUiState> = _uiState.asStateFlow()
 
+    private var providerDetailJob: Job? = null
+
     init {
-        loadSeriesDetails()
-    }
-
-    private fun loadSeriesDetails() {
         viewModelScope.launch {
-            try {
-                _uiState.update { it.copy(isLoading = true, error = null) }
-
-                val provider = providerRepository.getActiveProvider().first()
+            providerRepository.getActiveProvider().collect { provider ->
+                providerDetailJob?.cancel()
+                _uiState.value = SeriesDetailUiState(isLoading = true)
                 if (provider == null) {
                     _uiState.update { it.copy(isLoading = false, error = "No active provider") }
-                    return@launch
+                    return@collect
                 }
-
-                observeUnwatchedCount(provider.id)
-
-                when (val result = seriesRepository.getSeriesDetails(provider.id, seriesId)) {
-                    is Result.Success -> {
-                        loadExternalRatings(result.data)
-                        _uiState.update {
-                            it.copy(
-                                isLoading = false,
-                                series = result.data,
-                                selectedSeason = result.data.seasons.firstOrNull(),
-                                resumeEpisode = findResumeEpisode(result.data),
-                                error = null
-                            )
+                providerDetailJob = launch {
+                    launch {
+                        playbackHistoryRepository.getUnwatchedCount(
+                            providerId = provider.id,
+                            seriesId = seriesId
+                        ).collect { count ->
+                            _uiState.update { it.copy(unwatchedEpisodeCount = count) }
                         }
                     }
-                    is Result.Error -> {
-                        _uiState.update {
-                            it.copy(isLoading = false, error = result.message)
-                        }
-                    }
-                    is Result.Loading -> {
-                        _uiState.update { it.copy(isLoading = true) }
+                    loadSeriesDetailsForProvider(provider.id)
+                }
+            }
+        }
+    }
+
+    private suspend fun loadSeriesDetailsForProvider(providerId: Long) {
+        try {
+            _uiState.update { it.copy(isLoading = true, error = null) }
+
+            when (val result = seriesRepository.getSeriesDetails(providerId, seriesId)) {
+                is Result.Success -> {
+                    loadExternalRatings(result.data)
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            series = result.data,
+                            selectedSeason = result.data.seasons.firstOrNull(),
+                            resumeEpisode = findResumeEpisode(result.data),
+                            error = null
+                        )
                     }
                 }
-            } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        isLoading = false,
-                        error = e.message ?: "Failed to load series details"
-                    )
+                is Result.Error -> {
+                    _uiState.update {
+                        it.copy(isLoading = false, error = result.message)
+                    }
                 }
+                is Result.Loading -> {
+                    _uiState.update { it.copy(isLoading = true) }
+                }
+            }
+        } catch (e: Exception) {
+            _uiState.update {
+                it.copy(
+                    isLoading = false,
+                    error = e.message ?: "Failed to load series details"
+                )
             }
         }
     }
@@ -114,14 +127,6 @@ class SeriesDetailViewModel @Inject constructor(
                     )
                     is Result.Loading -> currentState
                 }
-            }
-        }
-    }
-
-    private fun observeUnwatchedCount(providerId: Long) {
-        viewModelScope.launch {
-            playbackHistoryRepository.getUnwatchedCount(providerId = providerId, seriesId = seriesId).collect { count ->
-                _uiState.update { it.copy(unwatchedEpisodeCount = count) }
             }
         }
     }

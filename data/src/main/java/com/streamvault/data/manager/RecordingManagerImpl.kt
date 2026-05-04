@@ -6,6 +6,7 @@ import android.net.NetworkCapabilities
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import com.streamvault.data.local.DatabaseTransactionRunner
 import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.RecordingRunDao
 import com.streamvault.data.local.dao.RecordingScheduleDao
@@ -18,6 +19,7 @@ import com.streamvault.data.manager.recording.HlsLiveCaptureEngine
 import com.streamvault.data.manager.recording.RecordingAlarmScheduler
 import com.streamvault.data.manager.recording.RecordingForegroundService
 import com.streamvault.data.manager.recording.RecordingOutputTarget
+import com.streamvault.data.manager.recording.RecordingServiceLauncher
 import com.streamvault.data.manager.recording.RecordingSourceResolver
 import com.streamvault.data.manager.recording.ResolvedRecordingSource
 import com.streamvault.data.manager.recording.TsPassThroughCaptureEngine
@@ -74,6 +76,7 @@ private const val FAILURE_NOTIFICATION_ID_BASE = 5000
 class RecordingManagerImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val gson: Gson,
+    private val transactionRunner: DatabaseTransactionRunner,
     private val providerDao: ProviderDao,
     private val recordingScheduleDao: RecordingScheduleDao,
     private val recordingRunDao: RecordingRunDao,
@@ -82,7 +85,8 @@ class RecordingManagerImpl @Inject constructor(
     private val tsPassThroughCaptureEngine: TsPassThroughCaptureEngine,
     private val hlsLiveCaptureEngine: HlsLiveCaptureEngine,
     private val alarmScheduler: RecordingAlarmScheduler,
-    private val preferencesRepository: PreferencesRepository
+    private val preferencesRepository: PreferencesRepository,
+    private val recordingServiceLauncher: RecordingServiceLauncher
 ) : RecordingManager {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -133,24 +137,8 @@ class RecordingManagerImpl @Inject constructor(
             if (!storage.isWritable) {
                 return@withContext Result.error("Recording storage is not writable.")
             }
-
-            val scheduleId = recordingScheduleDao.insert(
-                RecordingScheduleEntity(
-                    providerId = request.providerId,
-                    channelId = request.channelId,
-                    channelName = request.channelName,
-                    streamUrl = request.streamUrl,
-                    programTitle = request.programTitle,
-                    requestedStartMs = request.scheduledStartMs,
-                    requestedEndMs = request.scheduledEndMs,
-                    recurrence = RecordingRecurrence.NONE,
-                    enabled = true,
-                    isManual = true,
-                    priority = request.priority
-                )
-            )
-
-            val recordingId = UUID.randomUUID().toString()
+            ensureExactRecordingAlarmsAvailableOrThrow()
+            validateRecordingWindowOrThrow(request.scheduledStartMs, request.scheduledEndMs, request.providerId)
             val source = resolveRecordableSource(request.providerId, request.channelId, request.streamUrl)
             val outputTarget = createOutputTarget(
                 context = context,
@@ -162,50 +150,20 @@ class RecordingManagerImpl @Inject constructor(
                     pattern = storage.fileNamePattern
                 )
             )
-            val (outputUri, outputDisplayPath) = outputTarget.asPersistenceValues()
-            val now = System.currentTimeMillis()
-            val run = RecordingRunEntity(
-                id = recordingId,
-                scheduleId = scheduleId,
-                providerId = request.providerId,
-                channelId = request.channelId,
-                channelName = request.channelName,
-                streamUrl = request.streamUrl,
-                programTitle = request.programTitle,
-                scheduledStartMs = request.scheduledStartMs,
-                scheduledEndMs = request.scheduledEndMs,
-                recurrence = RecordingRecurrence.NONE,
-                status = RecordingStatus.RECORDING,
-                sourceType = source.sourceType,
-                resolvedUrl = source.url,
-                headersJson = headersToJson(source.headers),
-                userAgent = source.userAgent,
-                expirationTime = source.expirationTime,
-                providerLabel = source.providerLabel,
-                outputUri = outputUri,
-                outputDisplayPath = outputDisplayPath,
-                startedAtMs = now,
-                scheduleEnabled = true,
-                priority = request.priority,
-                alarmStopAtMs = request.scheduledEndMs,
-                createdAt = now,
-                updatedAt = now
-            )
-
-            recordingMutex.withLock {
-                validateRecordingWindow(request.scheduledStartMs, request.scheduledEndMs, request.providerId)
-                    ?.let { return@withContext Result.error(it) }
-                recordingRunDao.insert(run)
+            val run = try {
+                persistManualRun(request, source, outputTarget)
+            } catch (error: Throwable) {
+                val (outputUri, outputDisplayPath) = outputTarget.asPersistenceValues()
+                deleteOutputTarget(context, outputUri, outputDisplayPath)
+                throw error
             }
 
-            alarmScheduler.scheduleStop(recordingId, request.scheduledEndMs)
-            when (val startResult = startCapture(run)) {
-                is Result.Success -> Unit
-                is Result.Error -> {
-                markRunFailed(run.id, startResult.message ?: "Capture failed to start.", inferFailureCategory(startResult.exception))
-                    throw IllegalStateException(startResult.message, startResult.exception)
-                }
-                Result.Loading -> Unit
+            scheduleStopAlarmOrFail(run.id, request.scheduledEndMs)
+            try {
+                recordingServiceLauncher.startCapture(context, run.id)
+            } catch (error: Throwable) {
+                markRunFailed(run.id, error.message ?: "Capture failed to start.", inferFailureCategory(error))
+                throw IllegalStateException(error.message ?: "Capture failed to start.", error)
             }
             run.toStandaloneDomain()
         }.fold(
@@ -220,37 +178,13 @@ class RecordingManagerImpl @Inject constructor(
             if (!storage.isWritable) {
                 return@withContext Result.error("Recording storage is not writable.")
             }
+            ensureExactRecordingAlarmsAvailableOrThrow()
 
             val recurringRuleId = request.recurringRuleId
                 ?: request.recurrence.takeIf { it != RecordingRecurrence.NONE }?.let { UUID.randomUUID().toString() }
-            val scheduleId = recordingScheduleDao.insert(
-                RecordingScheduleEntity(
-                    providerId = request.providerId,
-                    channelId = request.channelId,
-                    channelName = request.channelName,
-                    streamUrl = request.streamUrl,
-                    programTitle = request.programTitle,
-                    requestedStartMs = request.scheduledStartMs,
-                    requestedEndMs = request.scheduledEndMs,
-                    recurrence = request.recurrence,
-                    recurringRuleId = recurringRuleId,
-                    enabled = true,
-                    isManual = false,
-                    priority = request.priority
-                )
-            )
-            val run = createPendingRun(
-                scheduleId = scheduleId,
-                request = request.copy(recurringRuleId = recurringRuleId)
-            )
+            val run = persistScheduledRun(request, recurringRuleId)
 
-            recordingMutex.withLock {
-                validateRecordingWindow(request.scheduledStartMs, request.scheduledEndMs, request.providerId)
-                    ?.let { return@withContext Result.error(it) }
-                recordingRunDao.insert(run)
-            }
-
-            alarmScheduler.scheduleStart(run.id, run.scheduledStartMs)
+            scheduleStartAlarmOrFail(run.id, run.scheduledStartMs)
             run.toStandaloneDomain()
         }.fold(
             onSuccess = { Result.success(it) },
@@ -348,6 +282,7 @@ class RecordingManagerImpl @Inject constructor(
             if (!storage.isWritable) {
                 return@withContext Result.error("Recording storage is not writable.")
             }
+            ensureExactRecordingAlarmsAvailableOrThrow()
 
             val recurringRuleId = request.recurringRuleId
                 ?: request.recurrence.takeIf { it != RecordingRecurrence.NONE }?.let { UUID.randomUUID().toString() }
@@ -393,7 +328,7 @@ class RecordingManagerImpl @Inject constructor(
                 recordingRunDao.insert(run)
             }
 
-            alarmScheduler.scheduleStart(run.id, run.scheduledStartMs)
+            scheduleStartAlarmOrFail(run.id, run.scheduledStartMs)
             run.toStandaloneDomain()
         }.fold(
             onSuccess = { Result.success(it) },
@@ -413,6 +348,7 @@ class RecordingManagerImpl @Inject constructor(
 
     override suspend fun retryRecording(recordingId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
+            ensureExactRecordingAlarmsAvailableOrThrow()
             val run = recordingRunDao.getById(recordingId) ?: return@withContext Result.error("Recording not found")
             val schedule = recordingScheduleDao.getById(run.scheduleId) ?: return@withContext Result.error("Recording schedule not found")
             val now = System.currentTimeMillis()
@@ -439,7 +375,7 @@ class RecordingManagerImpl @Inject constructor(
                     )
                 )
                 recordingRunDao.insert(retriedRun)
-                alarmScheduler.scheduleStart(retriedRun.id, retriedRun.scheduledStartMs)
+                scheduleStartAlarmOrFail(retriedRun.id, retriedRun.scheduledStartMs)
             } else {
                 val retriedRun = createPendingRun(
                     scheduleId = schedule.id,
@@ -457,7 +393,7 @@ class RecordingManagerImpl @Inject constructor(
                     )
                 )
                 recordingRunDao.insert(retriedRun)
-                alarmScheduler.scheduleStart(retriedRun.id, retriedRun.scheduledStartMs)
+                scheduleStartAlarmOrFail(retriedRun.id, retriedRun.scheduledStartMs)
             }
         }.fold(
             onSuccess = { Result.success(Unit) },
@@ -466,13 +402,16 @@ class RecordingManagerImpl @Inject constructor(
     }
 
     override suspend fun setScheduleEnabled(recordingId: String, enabled: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        if (enabled && !alarmScheduler.canScheduleExactAlarms()) {
+            return@withContext Result.error(RecordingAlarmScheduler.EXACT_ALARM_PERMISSION_MESSAGE)
+        }
         val run = recordingRunDao.getById(recordingId) ?: return@withContext Result.error("Recording not found")
         val schedule = recordingScheduleDao.getById(run.scheduleId) ?: return@withContext Result.error("Recording schedule not found")
         val now = System.currentTimeMillis()
         recordingScheduleDao.update(schedule.copy(enabled = enabled, updatedAt = now))
         recordingRunDao.update(run.copy(scheduleEnabled = enabled, updatedAt = now))
         if (enabled && run.status == RecordingStatus.SCHEDULED) {
-            alarmScheduler.scheduleStart(run.id, run.scheduledStartMs)
+            scheduleStartAlarmOrFail(run.id, run.scheduledStartMs)
         } else {
             alarmScheduler.cancel(run.id)
         }
@@ -515,14 +454,17 @@ class RecordingManagerImpl @Inject constructor(
                     if (run.scheduledEndMs <= System.currentTimeMillis()) {
                         markRunFailed(run.id, "Recording window expired before capture started.", RecordingFailureCategory.UNKNOWN)
                     } else {
-                        alarmScheduler.scheduleStart(run.id, run.scheduledStartMs)
+                        when (val result = alarmScheduler.scheduleStart(run.id, run.scheduledStartMs)) {
+                            is Result.Error -> markRunFailed(run.id, result.message, RecordingFailureCategory.UNKNOWN)
+                            else -> Unit
+                        }
                     }
                 }
             recordingRunDao.getRecordingRuns().forEach { run ->
                 if (run.scheduledEndMs <= System.currentTimeMillis()) {
                     stopRecording(run.id)
                 } else if (!isActiveJob(run.id)) {
-                    RecordingForegroundService.startCapture(context, run.id)
+                    markInterruptedRun(run)
                 }
             }
         }.fold(
@@ -532,10 +474,10 @@ class RecordingManagerImpl @Inject constructor(
     }
 
     override suspend fun promoteScheduledRecording(recordingId: String): Result<Unit> = withContext(Dispatchers.IO) {
-        recordingMutex.withLock {
+        val runToStart = recordingMutex.withLock {
             val run = recordingRunDao.getById(recordingId) ?: return@withContext Result.error("Recording not found")
             when (run.status) {
-                RecordingStatus.RECORDING -> startCapture(run)
+                RecordingStatus.RECORDING -> run
                 RecordingStatus.SCHEDULED -> {
                     val source = resolveRecordableSource(run.providerId, run.channelId, run.streamUrl)
                     val storage = ensureStorageStateSync()
@@ -577,19 +519,26 @@ class RecordingManagerImpl @Inject constructor(
                         alarmStopAtMs = run.scheduledEndMs
                     )
                     recordingRunDao.update(updatedRun)
-                    alarmScheduler.scheduleStop(updatedRun.id, updatedRun.scheduledEndMs)
-                    recordingMutex.withLock { spawnNextRecurringRunIfNeeded(updatedRun) }
-                    startCapture(updatedRun)
+                    when (val alarmResult = alarmScheduler.scheduleStop(updatedRun.id, updatedRun.scheduledEndMs)) {
+                        is Result.Error -> {
+                            markRunFailed(updatedRun.id, alarmResult.message, RecordingFailureCategory.UNKNOWN)
+                            return@withContext Result.error(alarmResult.message, alarmResult.exception)
+                        }
+                        else -> Unit
+                    }
+                    spawnNextRecurringRunIfNeeded(updatedRun)
+                    updatedRun
                 }
-                else -> Result.error("Recording is no longer active.")
+                else -> return@withContext Result.error("Recording is no longer active.")
             }
         }
+        startCaptureOrFail(runToStart)
     }
 
     internal suspend fun onCaptureFinished(recordingId: String) {
         val remaining = observeActiveRecordingCountSync().coerceAtLeast(0)
         if (remaining == 0) {
-            RecordingForegroundService.stopIfIdle(context)
+            recordingServiceLauncher.stopIfIdle(context)
         }
     }
 
@@ -773,6 +722,20 @@ class RecordingManagerImpl @Inject constructor(
         alarmScheduler.cancel(recordingId)
     }
 
+    private suspend fun startCaptureOrFail(run: RecordingRunEntity): Result<Unit> =
+        when (val startResult = startCapture(run)) {
+            is Result.Success -> Result.success(Unit)
+            is Result.Error -> {
+                markRunFailed(
+                    run.id,
+                    startResult.message ?: "Capture failed to start.",
+                    inferFailureCategory(startResult.exception)
+                )
+                Result.error(startResult.message ?: "Capture failed to start.", startResult.exception)
+            }
+            Result.Loading -> Result.success(Unit)
+        }
+
     private suspend fun markRunFailed(recordingId: String, reason: String, category: RecordingFailureCategory) {
         val run = recordingRunDao.getById(recordingId) ?: return
         if (run.bytesWritten == 0L) {
@@ -813,6 +776,115 @@ class RecordingManagerImpl @Inject constructor(
             .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
             .build()
         notificationManager.notify(FAILURE_NOTIFICATION_ID_BASE + channelName.hashCode(), notification)
+    }
+
+    private suspend fun markInterruptedRun(run: RecordingRunEntity) {
+        markRunFailed(
+            recordingId = run.id,
+            reason = "Recording was interrupted after the app process stopped. Capture was not resumed to avoid overwriting the existing recording.",
+            category = RecordingFailureCategory.UNKNOWN
+        )
+    }
+
+    private suspend fun persistManualRun(
+        request: RecordingRequest,
+        source: ResolvedRecordingSource,
+        outputTarget: RecordingOutputTarget
+    ): RecordingRunEntity = recordingMutex.withLock {
+        validateRecordingWindowOrThrow(request.scheduledStartMs, request.scheduledEndMs, request.providerId)
+        transactionRunner.inTransaction {
+            val scheduleId = recordingScheduleDao.insert(
+                buildScheduleEntity(
+                    request = request,
+                    recurrence = RecordingRecurrence.NONE,
+                    recurringRuleId = null,
+                    isManual = true
+                )
+            )
+            val run = createManualRun(scheduleId, request, source, outputTarget)
+            recordingRunDao.insert(run)
+            run
+        }
+    }
+
+    private suspend fun persistScheduledRun(
+        request: RecordingRequest,
+        recurringRuleId: String?
+    ): RecordingRunEntity = recordingMutex.withLock {
+        validateRecordingWindowOrThrow(request.scheduledStartMs, request.scheduledEndMs, request.providerId)
+        transactionRunner.inTransaction {
+            val scheduleId = recordingScheduleDao.insert(
+                buildScheduleEntity(
+                    request = request,
+                    recurrence = request.recurrence,
+                    recurringRuleId = recurringRuleId,
+                    isManual = false
+                )
+            )
+            val run = createPendingRun(
+                scheduleId = scheduleId,
+                request = request.copy(recurringRuleId = recurringRuleId)
+            )
+            recordingRunDao.insert(run)
+            run
+        }
+    }
+
+    private fun buildScheduleEntity(
+        request: RecordingRequest,
+        recurrence: RecordingRecurrence,
+        recurringRuleId: String?,
+        isManual: Boolean
+    ): RecordingScheduleEntity = RecordingScheduleEntity(
+        providerId = request.providerId,
+        channelId = request.channelId,
+        channelName = request.channelName,
+        streamUrl = request.streamUrl,
+        programTitle = request.programTitle,
+        requestedStartMs = request.scheduledStartMs,
+        requestedEndMs = request.scheduledEndMs,
+        recurrence = recurrence,
+        recurringRuleId = recurringRuleId,
+        enabled = true,
+        isManual = isManual,
+        priority = request.priority
+    )
+
+    private fun createManualRun(
+        scheduleId: Long,
+        request: RecordingRequest,
+        source: ResolvedRecordingSource,
+        outputTarget: RecordingOutputTarget
+    ): RecordingRunEntity {
+        val (outputUri, outputDisplayPath) = outputTarget.asPersistenceValues()
+        val now = System.currentTimeMillis()
+        return RecordingRunEntity(
+            id = UUID.randomUUID().toString(),
+            scheduleId = scheduleId,
+            providerId = request.providerId,
+            channelId = request.channelId,
+            channelName = request.channelName,
+            streamUrl = request.streamUrl,
+            programTitle = request.programTitle,
+            scheduledStartMs = request.scheduledStartMs,
+            scheduledEndMs = request.scheduledEndMs,
+            recurrence = RecordingRecurrence.NONE,
+            status = RecordingStatus.RECORDING,
+            sourceType = source.sourceType,
+            resolvedUrl = source.url,
+            headersJson = headersToJson(source.headers),
+            userAgent = source.userAgent,
+            expirationTime = source.expirationTime,
+            providerLabel = source.providerLabel,
+            outputUri = outputUri,
+            outputDisplayPath = outputDisplayPath,
+            startedAtMs = now,
+            scheduleEnabled = true,
+            priority = request.priority,
+            alarmStopAtMs = request.scheduledEndMs,
+            createdAt = now,
+            updatedAt = now
+        )
     }
 
     private suspend fun createPendingRun(scheduleId: Long, request: RecordingRequest): RecordingRunEntity {
@@ -915,7 +987,10 @@ class RecordingManagerImpl @Inject constructor(
                 updatedAt = now
             )
             recordingRunDao.insert(nextRun)
-            alarmScheduler.scheduleStart(nextRun.id, nextRun.scheduledStartMs)
+            when (val alarmResult = alarmScheduler.scheduleStart(nextRun.id, nextRun.scheduledStartMs)) {
+                is Result.Error -> markRunFailed(nextRun.id, alarmResult.message, RecordingFailureCategory.UNKNOWN)
+                else -> Unit
+            }
             return
         }
 
@@ -954,6 +1029,40 @@ class RecordingManagerImpl @Inject constructor(
             return "Recording exceeds the provider connection limit for this account."
         }
         return null
+    }
+
+    private suspend fun validateRecordingWindowOrThrow(startMs: Long, endMs: Long, providerId: Long) {
+        validateRecordingWindow(startMs, endMs, providerId)?.let { message ->
+            throw IllegalStateException(message)
+        }
+    }
+
+    private fun ensureExactRecordingAlarmsAvailableOrThrow() {
+        if (!alarmScheduler.canScheduleExactAlarms()) {
+            throw IllegalStateException(RecordingAlarmScheduler.EXACT_ALARM_PERMISSION_MESSAGE)
+        }
+    }
+
+    private suspend fun scheduleStartAlarmOrFail(recordingId: String, whenMs: Long) {
+        when (val result = alarmScheduler.scheduleStart(recordingId, whenMs)) {
+            is Result.Success -> Unit
+            is Result.Error -> {
+                markRunFailed(recordingId, result.message, RecordingFailureCategory.UNKNOWN)
+                throw IllegalStateException(result.message, result.exception)
+            }
+            Result.Loading -> Unit
+        }
+    }
+
+    private suspend fun scheduleStopAlarmOrFail(recordingId: String, whenMs: Long) {
+        when (val result = alarmScheduler.scheduleStop(recordingId, whenMs)) {
+            is Result.Success -> Unit
+            is Result.Error -> {
+                markRunFailed(recordingId, result.message, RecordingFailureCategory.UNKNOWN)
+                throw IllegalStateException(result.message, result.exception)
+            }
+            Result.Loading -> Unit
+        }
     }
 
     private suspend fun registerActiveJob(id: String, job: Job) {

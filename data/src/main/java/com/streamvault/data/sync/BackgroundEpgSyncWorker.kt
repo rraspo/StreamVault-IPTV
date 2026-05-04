@@ -54,7 +54,20 @@ class BackgroundEpgSyncWorker(
                 BackgroundEpgSyncWorkerEntryPoint::class.java
             )
             when (val result = entryPoint.syncManager().syncEpg(providerId, force = force)) {
-                is com.streamvault.domain.model.Result.Success -> Result.success()
+                is com.streamvault.domain.model.Result.Success -> {
+                    // A successful EPG sync may still have transient partial failures
+                    // (e.g. network hiccup on one provider section). Check the published
+                    // sync state and retry if it signals a retryable EPG failure so
+                    // WorkManager backoff can heal it without manual intervention.
+                    val syncState = entryPoint.syncManager().currentSyncState(providerId)
+                    if (syncState is com.streamvault.domain.model.SyncState.Partial &&
+                            syncState.hasRetryableEpgFailure) {
+                        Log.i(TAG, "Scheduling retry for provider $providerId: EPG completed with retryable failure")
+                        Result.retry()
+                    } else {
+                        Result.success()
+                    }
+                }
                 is com.streamvault.domain.model.Result.Error -> {
                     if (result.message.contains("not found", ignoreCase = true)) {
                         Result.success()
@@ -134,7 +147,9 @@ class BackgroundEpgSyncWorker(
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 uniqueWorkName(providerId),
-                ExistingWorkPolicy.KEEP,
+                // Force-refresh requests must displace any queued stale work so the new
+                // parameters (force=true) actually run; KEEP would silently drop them.
+                if (force) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
                 request
             )
         }

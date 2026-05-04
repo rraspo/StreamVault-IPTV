@@ -10,6 +10,7 @@ import com.streamvault.data.local.dao.ChannelEpgMappingDao
 import com.streamvault.data.local.dao.EpgChannelDao
 import com.streamvault.data.local.dao.EpgProgrammeDao
 import com.streamvault.data.local.dao.EpgSourceDao
+import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.ProviderEpgSourceDao
 import com.streamvault.data.local.entity.ChannelEpgMappingEntity
 import com.streamvault.data.local.entity.EpgChannelEntity
@@ -17,12 +18,14 @@ import com.streamvault.data.local.entity.EpgProgrammeEntity
 import com.streamvault.data.local.entity.EpgSourceEntity
 import com.streamvault.data.local.entity.ProviderEpgSourceEntity
 import com.streamvault.data.mapper.toDomain
+import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.domain.model.EpgMatchType
 import com.streamvault.domain.model.EpgOverrideCandidate
 import com.streamvault.domain.model.EpgSourceType
 import com.streamvault.data.parser.XmltvParser
 import com.streamvault.data.util.UrlSecurityPolicy
 import com.streamvault.domain.model.ChannelEpgMapping
+import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.EpgResolutionSummary
 import com.streamvault.domain.model.EpgSource
 import com.streamvault.domain.model.Program
@@ -31,6 +34,7 @@ import com.streamvault.domain.model.Result
 import com.streamvault.domain.repository.EpgSourceRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -52,12 +56,14 @@ class EpgSourceRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
     private val epgSourceDao: EpgSourceDao,
     private val providerEpgSourceDao: ProviderEpgSourceDao,
+    private val providerDao: ProviderDao,
     private val channelEpgMappingDao: ChannelEpgMappingDao,
     private val epgChannelDao: EpgChannelDao,
     private val epgProgrammeDao: EpgProgrammeDao,
     private val xmltvParser: XmltvParser,
     private val okHttpClient: OkHttpClient,
     private val resolutionEngine: EpgResolutionEngine,
+    private val preferencesRepository: PreferencesRepository,
     private val transactionRunner: DatabaseTransactionRunner
 ) : EpgSourceRepository {
 
@@ -162,20 +168,20 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 priority = priority
             )
         )
-        resolveForProvider(providerId, emptySet())
+        resolveProviderUsingPreferences(providerId)
         return Result.success(Unit)
     }
 
     override suspend fun unassignSourceFromProvider(providerId: Long, epgSourceId: Long) {
         providerEpgSourceDao.delete(providerId, epgSourceId)
-        resolveForProvider(providerId, emptySet())
+        resolveProviderUsingPreferences(providerId)
     }
 
     override suspend fun updateAssignmentPriority(providerId: Long, epgSourceId: Long, priority: Int) {
         val assignments = providerEpgSourceDao.getForProviderSync(providerId)
         val target = assignments.find { it.epgSourceId == epgSourceId } ?: return
         providerEpgSourceDao.update(target.copy(priority = priority))
-        resolveForProvider(providerId, emptySet())
+        resolveProviderUsingPreferences(providerId)
     }
 
     override suspend fun swapAssignmentPriorities(
@@ -192,7 +198,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
             target1.copy(priority = newPriority1),
             target2.copy(priority = newPriority2)
         )
-        resolveForProvider(providerId, emptySet())
+        resolveProviderUsingPreferences(providerId)
     }
 
     // ── Refresh / Ingestion ────────────────────────────────────────
@@ -248,6 +254,9 @@ class EpgSourceRepositoryImpl @Inject constructor(
                         response.close()
                         val now = System.currentTimeMillis()
                         epgSourceDao.updateRefreshSuccess(sourceId, now)
+                        if (resolveAffectedProviders) {
+                            resolveAffectedProviders(providerEpgSourceDao.getProviderIdsForSourceSync(sourceId))
+                        }
                         return@withLock Result.success(Unit)
                     }
 
@@ -291,8 +300,8 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 // Stage new data under a negative source ID to avoid clobbering
                 // live data during download/parse. Swap atomically on success.
                 val stagingId = -sourceId
-                epgChannelDao.deleteBySource(stagingId)
-                epgProgrammeDao.deleteBySource(stagingId)
+                val sourceTimezoneId = resolveSourceTimezoneId(sourceId)
+                prepareStagingSource(source, stagingId)
 
                 rawInputStream.use { raw ->
                     val limited = object : FilterInputStream(raw) {
@@ -309,6 +318,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
                     xmltvParser.maybeDecompressGzip(source.url, limited).use { decompressed ->
                         xmltvParser.parseStreamingWithChannels(
                             inputStream = decompressed,
+                            timezoneId = sourceTimezoneId,
                             onChannel = { xmltvChannel ->
                                 channelBatch.add(
                                     EpgChannelEntity(
@@ -366,6 +376,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
                     epgProgrammeDao.deleteBySource(sourceId)
                     epgChannelDao.moveToSource(stagingId, sourceId)
                     epgProgrammeDao.moveToSource(stagingId, sourceId)
+                    epgSourceDao.delete(stagingId)
                 }
 
                 epgSourceDao.updateRefreshSuccess(sourceId, System.currentTimeMillis())
@@ -380,8 +391,11 @@ class EpgSourceRepositoryImpl @Inject constructor(
                 // Clean up any staged rows on failure
                 val stagingId = -sourceId
                 runCatching {
-                    epgChannelDao.deleteBySource(stagingId)
-                    epgProgrammeDao.deleteBySource(stagingId)
+                    transactionRunner.inTransaction {
+                        epgProgrammeDao.deleteBySource(stagingId)
+                        epgChannelDao.deleteBySource(stagingId)
+                        epgSourceDao.delete(stagingId)
+                    }
                 }
                 val isOversizeError = e is IOException && e.message?.contains("too large", ignoreCase = true) == true
                 val statusMessage = if (isOversizeError) {
@@ -506,7 +520,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
         }
         // Delete the pinned row so the next resolution pass can auto-assign via ID/name match.
         channelEpgMappingDao.deleteForChannel(providerId, channelId)
-        resolveForProvider(providerId, emptySet())
+        resolveProviderUsingPreferences(providerId)
         return Result.success(Unit)
     }
 
@@ -526,7 +540,58 @@ class EpgSourceRepositoryImpl @Inject constructor(
             .filter { it > 0L }
             .distinct()
             .forEach { providerId ->
-                resolveForProvider(providerId, emptySet())
+                resolveProviderUsingPreferences(providerId)
             }
+    }
+
+    private suspend fun resolveProviderUsingPreferences(providerId: Long) {
+        val hiddenLiveCategoryIds = preferencesRepository
+            .getHiddenCategoryIds(providerId, ContentType.LIVE)
+            .first()
+        resolveForProvider(providerId, hiddenLiveCategoryIds)
+    }
+
+    private suspend fun prepareStagingSource(source: EpgSourceEntity, stagingId: Long) {
+        val now = System.currentTimeMillis()
+        transactionRunner.inTransaction {
+            epgProgrammeDao.deleteBySource(stagingId)
+            epgChannelDao.deleteBySource(stagingId)
+            epgSourceDao.delete(stagingId)
+            epgSourceDao.insert(
+                EpgSourceEntity(
+                    id = stagingId,
+                    name = "${source.name} staging",
+                    url = "streamvault://epg-source-staging/${source.id}",
+                    enabled = false,
+                    priority = Int.MAX_VALUE,
+                    createdAt = now,
+                    updatedAt = now
+                )
+            )
+        }
+    }
+
+    private suspend fun resolveSourceTimezoneId(sourceId: Long): String? {
+        val providerTimezoneIds = providerEpgSourceDao.getProviderIdsForSourceSync(sourceId)
+            .distinct()
+            .mapNotNull { providerId ->
+                providerDao.getById(providerId)
+                    ?.stalkerDeviceTimezone
+                    ?.trim()
+                    ?.takeIf(String::isNotEmpty)
+            }
+            .distinct()
+
+        return when (providerTimezoneIds.size) {
+            0 -> null
+            1 -> providerTimezoneIds.single()
+            else -> {
+                Log.w(
+                    TAG,
+                    "Source $sourceId has multiple provider timezones $providerTimezoneIds; defaulting no-offset XMLTV timestamps to system timezone"
+                )
+                null
+            }
+        }
     }
 }

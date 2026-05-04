@@ -112,6 +112,7 @@ class PreferencesRepository @Inject constructor(
         val MULTIVIEW_PRESET_2 = stringPreferencesKey("multiview_preset_2")
         val MULTIVIEW_PRESET_3 = stringPreferencesKey("multiview_preset_3")
         val MULTIVIEW_PERFORMANCE_MODE = stringPreferencesKey("multiview_performance_mode")
+        val MULTIVIEW_CENTER_TWO_SLOT_LAYOUT = booleanPreferencesKey("multiview_center_two_slot_layout")
         val IS_INCOGNITO_MODE = booleanPreferencesKey("is_incognito_mode")
         val PLAYER_MUTED = booleanPreferencesKey("player_muted")
         val PLAYER_MEDIA_SESSION_ENABLED = booleanPreferencesKey("player_media_session_enabled")
@@ -1490,6 +1491,16 @@ class PreferencesRepository @Inject constructor(
     suspend fun setMultiViewPerformanceMode(mode: String) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.MULTIVIEW_PERFORMANCE_MODE] = mode
+        }
+    }
+
+    val multiViewCenterTwoSlotLayout: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.MULTIVIEW_CENTER_TWO_SLOT_LAYOUT] ?: false
+    }
+
+    suspend fun setMultiViewCenterTwoSlotLayout(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.MULTIVIEW_CENTER_TWO_SLOT_LAYOUT] = enabled
         }
     }
 

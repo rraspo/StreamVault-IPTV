@@ -44,7 +44,7 @@ fun AddToGroupDialog(
     onToggleFavorite: () -> Unit,
     onAddToGroup: (Category) -> Unit,
     onRemoveFromGroup: (Category) -> Unit,
-    onCreateGroup: (String) -> Unit,
+    onCreateGroup: ((String) -> Unit)? = null,
     isQueuedForSplitScreen: Boolean = false,
     onOpenSplitScreenPlanner: (() -> Unit)? = null,
     onRemoveFromRecent: (() -> Unit)? = null
@@ -77,15 +77,15 @@ fun AddToGroupDialog(
     val safeToggleFavorite = { if (canInteract) onToggleFavorite() }
     val safeOpenSplitScreenPlanner = { if (canInteract) onOpenSplitScreenPlanner?.invoke() }
     val safeRemoveFromRecent = { if (canInteract) onRemoveFromRecent?.invoke() }
-    val safeCreateGroup = { if (canInteract) showCreateGroup = true }
+    val safeCreateGroup = { if (canInteract && onCreateGroup != null) showCreateGroup = true }
     val safeAddToGroup: (Category) -> Unit = { group -> if (canInteract) onAddToGroup(group) }
     val safeRemoveFromGroup: (Category) -> Unit = { group -> if (canInteract) onRemoveFromGroup(group) }
 
-    if (showCreateGroup) {
+    if (showCreateGroup && onCreateGroup != null) {
         CreateGroupDialog(
             onDismissRequest = { showCreateGroup = false },
             onConfirm = { name ->
-                onCreateGroup(name)
+                onCreateGroup.invoke(name)
                 showCreateGroup = false
             }
         )
@@ -325,7 +325,7 @@ fun AddToGroupDialog(
                             }
                         }
 
-                    item {
+                    if (onCreateGroup != null) item {
                         var isFocused by remember { mutableStateOf(false) }
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedButton(

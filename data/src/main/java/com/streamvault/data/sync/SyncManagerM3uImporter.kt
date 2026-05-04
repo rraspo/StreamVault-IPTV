@@ -160,13 +160,19 @@ internal class SyncManagerM3uImporter(
 
             flushChannelBatch(provider.id, sessionId, channelBatch)
             flushMovieBatch(provider.id, sessionId, movieBatch)
+            // Only commit a section if it produced at least one entry. Committing an
+            // empty stage with includeLive=true runs stale deletion and wipes the entire
+            // live-TV catalog — even though the absence of entries may reflect a server
+            // error or a filtered playlist rather than a legitimate empty provider.
+            val effectiveLive = includeLive && liveCount > 0
+            val effectiveMovies = includeMovies && movieCount > 0
             syncCatalogStore.finalizeStagedImport(
                 providerId = provider.id,
                 sessionId = sessionId,
-                liveCategories = if (includeLive) liveCategories.entities() else null,
-                movieCategories = if (includeMovies) movieCategories.entities() else null,
-                includeLive = includeLive,
-                includeMovies = includeMovies
+                liveCategories = if (effectiveLive) liveCategories.entities() else null,
+                movieCategories = if (effectiveMovies) movieCategories.entities() else null,
+                includeLive = effectiveLive,
+                includeMovies = effectiveMovies
             )
         } finally {
             syncCatalogStore.discardStagedImport(provider.id, sessionId)

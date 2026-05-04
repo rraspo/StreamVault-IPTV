@@ -72,4 +72,67 @@ class EpisodeDaoTest {
         assertThat(episode?.watchProgress).isEqualTo(18_000L)
         assertThat(episode?.lastWatchedAt).isEqualTo(27_000L)
     }
+
+    @Test
+    fun syncWatchProgressFromHistoryByProvider_updatesMatchingEpisodesAndClearsStaleRows() = runTest {
+        episodeDao.insertAll(
+            listOf(
+                EpisodeEntity(
+                    id = 11L,
+                    episodeId = 201L,
+                    title = "Episode 1",
+                    episodeNumber = 1,
+                    seasonNumber = 1,
+                    seriesId = 91L,
+                    providerId = 5L,
+                    watchProgress = 0L,
+                    lastWatchedAt = 0L
+                ),
+                EpisodeEntity(
+                    id = 12L,
+                    episodeId = 202L,
+                    title = "Episode 2",
+                    episodeNumber = 2,
+                    seasonNumber = 1,
+                    seriesId = 91L,
+                    providerId = 5L,
+                    watchProgress = 13_000L,
+                    lastWatchedAt = 14_000L
+                ),
+                EpisodeEntity(
+                    id = 21L,
+                    episodeId = 301L,
+                    title = "Other Provider Episode",
+                    episodeNumber = 1,
+                    seasonNumber = 1,
+                    seriesId = 101L,
+                    providerId = 6L,
+                    watchProgress = 3_000L,
+                    lastWatchedAt = 4_000L
+                )
+            )
+        )
+        historyDao.insertOrUpdate(
+            PlaybackHistoryEntity(
+                contentId = 11L,
+                contentType = ContentType.SERIES_EPISODE,
+                providerId = 5L,
+                resumePositionMs = 18_000L,
+                lastWatchedAt = 27_000L
+            )
+        )
+
+        episodeDao.syncWatchProgressFromHistoryByProvider(5L)
+
+        val watchedEpisode = episodeDao.getById(11L)
+        val staleEpisode = episodeDao.getById(12L)
+        val otherProviderEpisode = episodeDao.getById(21L)
+
+        assertThat(watchedEpisode?.watchProgress).isEqualTo(18_000L)
+        assertThat(watchedEpisode?.lastWatchedAt).isEqualTo(27_000L)
+        assertThat(staleEpisode?.watchProgress).isEqualTo(0L)
+        assertThat(staleEpisode?.lastWatchedAt).isEqualTo(0L)
+        assertThat(otherProviderEpisode?.watchProgress).isEqualTo(3_000L)
+        assertThat(otherProviderEpisode?.lastWatchedAt).isEqualTo(4_000L)
+    }
 }

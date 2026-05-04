@@ -154,6 +154,8 @@ class TvInputChannelSyncManager @Inject constructor(
         channel: Channel,
         existingChannelIds: MutableMap<String, Long>
     ) {
+        if (!shouldReplaceTvPrograms(channel, programs)) return
+
         val resolver = context.contentResolver
         var activeChannelId = channelId
 
@@ -295,4 +297,9 @@ class TvInputChannelSyncManager @Inject constructor(
         const val ENTRY_SEPARATOR = ":"
         val syncMutex = Mutex()
     }
+}
+
+internal fun shouldReplaceTvPrograms(channel: Channel, programs: List<Program>): Boolean {
+    if (programs.isNotEmpty()) return true
+    return channel.epgChannelId.isNullOrBlank()
 }

@@ -164,7 +164,7 @@ internal fun EnhancedMultiViewControlHud(
             } else {
                 TvButton(
                     onClick = onPinAudioToFocusedSlot,
-                    enabled = focused != null && !focused.isEmpty,
+                    enabled = focused != null && !focused.isEmpty && focused.performanceBlockedReason == null,
                     colors = ButtonDefaults.colors(
                         containerColor = Color(0xFF203A5C),
                         contentColor = Color.White,

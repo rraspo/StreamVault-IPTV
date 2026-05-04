@@ -8,6 +8,9 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.util.TimeZone
+import java.util.zip.GZIPOutputStream
 
 /**
  * Unit tests for [XmltvParser].
@@ -148,6 +151,69 @@ class XmltvParserTest {
         val expected09UTC = 1_735_722_000_000L
         assertThat(prog.startTime).isEqualTo(expected09UTC)
     }
+
+    @Test
+    fun `parse_noOffsetTimestamp_usesProvidedTimezone`() {
+        val xml = """
+            <?xml version="1.0"?>
+            <tv>
+              <programme start="20250101120000" stop="20250101130000" channel="ch1">
+                <title>Timezone Test</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+
+        val programs = parser.parse(xml.byteInputStream(), timezoneId = "America/New_York")
+
+        assertThat(programs).hasSize(1)
+        assertThat(programs.single().startTime).isEqualTo(1_735_750_800_000L)
+    }
+
+    @Test
+    fun `parse_noOffsetTimestamp_defaultsToSystemTimezoneWhenTimezoneMissing`() {
+        val originalTimeZone = TimeZone.getDefault()
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("Europe/Berlin"))
+            val xml = """
+                <?xml version="1.0"?>
+                <tv>
+                  <programme start="20250101120000" stop="20250101130000" channel="ch1">
+                    <title>Timezone Test</title>
+                  </programme>
+                </tv>
+            """.trimIndent()
+
+            val programs = parser.parse(xml.byteInputStream())
+
+            assertThat(programs).hasSize(1)
+            assertThat(programs.single().startTime).isEqualTo(1_735_729_200_000L)
+        } finally {
+            TimeZone.setDefault(originalTimeZone)
+        }
+    }
+
+      @Test
+      fun `parse_noOffsetTimestamp_defaultsToSystemTimezoneWhenTimezoneInvalid`() {
+        val originalTimeZone = TimeZone.getDefault()
+        try {
+          TimeZone.setDefault(TimeZone.getTimeZone("Europe/Berlin"))
+          val xml = """
+            <?xml version="1.0"?>
+            <tv>
+              <programme start="20250101120000" stop="20250101130000" channel="ch1">
+              <title>Timezone Test</title>
+              </programme>
+            </tv>
+          """.trimIndent()
+
+          val programs = parser.parse(xml.byteInputStream(), timezoneId = "Mars/Olympus")
+
+          assertThat(programs).hasSize(1)
+          assertThat(programs.single().startTime).isEqualTo(1_735_729_200_000L)
+        } finally {
+          TimeZone.setDefault(originalTimeZone)
+        }
+      }
 
     @Test
     fun `parse_emptyStream_returnsEmpty`() {
@@ -369,9 +435,68 @@ class XmltvParserTest {
     }
 
     @Test
-    fun `maybeDecompressGzip_nonGzUrl_returnsOriginal`() {
+    fun `parseStreamingWithChannels_skipsMalformedProgrammes`() = runTest {
+        val xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <tv>
+              <channel id="ch1">
+                <display-name>BBC One</display-name>
+              </channel>
+              <programme start="20250101120000 +0000" stop="20250101130000 +0000" channel="ch1">
+                <title>Valid News</title>
+              </programme>
+              <programme start="20250101130000 +0000" channel="ch1">
+                <title>Missing Stop</title>
+              </programme>
+              <programme start="invalid" stop="20250101150000 +0000" channel="ch1">
+                <title>Invalid Start</title>
+              </programme>
+              <programme start="20250101160000 +0000" stop="20250101160000 +0000" channel="ch1">
+                <title>Zero Length</title>
+              </programme>
+            </tv>
+        """.trimIndent()
+
+        val programmes = mutableListOf<XmltvProgramme>()
+        parser.parseStreamingWithChannels(
+            inputStream = xml.byteInputStream(),
+            onChannel = { },
+            onProgramme = { programmes.add(it) }
+        )
+
+        assertThat(programmes).hasSize(1)
+        assertThat(programmes.single().title).isEqualTo("Valid News")
+    }
+
+    @Test
+    fun `maybeDecompressGzip_nonGzUrl_returnsReadableStream`() {
         val original = "hello".byteInputStream()
         val result = parser.maybeDecompressGzip("http://example.com/epg.xml", original)
-        assertThat(result).isSameInstanceAs(original)
+      assertThat(String(result.readBytes(), Charsets.UTF_8)).isEqualTo("hello")
+    }
+
+    @Test
+    fun `maybeDecompressGzip_detectsGzipByMagicBytesWithoutGzSuffix`() {
+      val xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tv>
+          <channel id="myepg.ch1">
+          <display-name>MyEPG Channel</display-name>
+          </channel>
+        </tv>
+      """.trimIndent()
+
+      val result = parser.maybeDecompressGzip(
+        "https://myepg.example/download?order=private&key=redacted",
+        gzip(xml.toByteArray(Charsets.UTF_8)).inputStream()
+      )
+
+      assertThat(String(result.readBytes(), Charsets.UTF_8)).isEqualTo(xml)
+    }
+
+    private fun gzip(bytes: ByteArray): ByteArray {
+      val output = ByteArrayOutputStream()
+      GZIPOutputStream(output).use { it.write(bytes) }
+      return output.toByteArray()
     }
 }

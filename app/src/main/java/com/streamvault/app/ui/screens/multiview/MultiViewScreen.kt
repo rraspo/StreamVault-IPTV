@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.BasicTextField
@@ -100,6 +101,10 @@ fun MultiViewScreen(
     val firstControlFocusRequester = remember { FocusRequester() }
     var showReplacementPicker by remember { mutableStateOf(false) }
     var showControls by rememberSaveable { mutableStateOf(false) }
+    val occupiedSlots = remember(uiState.slots) { uiState.slots.filterNot { it.isEmpty } }
+    val useCenteredTwoSlotLayout = uiState.centerTwoSlotLayout && occupiedSlots.size == 2
+    val visibleSlots = if (useCenteredTwoSlotLayout) occupiedSlots else uiState.slots
+    val firstVisibleSlotIndex = visibleSlots.firstOrNull()?.index ?: 0
 
     BackHandler(enabled = showReplacementPicker) {
         if (uiState.pickerState.selectedCategory != null) {
@@ -112,8 +117,8 @@ fun MultiViewScreen(
     BackHandler(enabled = showControls) { showControls = false }
     BackHandler(enabled = !showReplacementPicker && !showControls) { onBack() }
 
+    // initSlots() is driven by the ON_START lifecycle observer below; do not call it here.
     LaunchedEffect(Unit) {
-        viewModel.initSlots()
         try {
             kotlinx.coroutines.delay(100)
             firstSlotFocusRequester.requestFocus()
@@ -130,6 +135,12 @@ fun MultiViewScreen(
             } catch (_: Exception) {
                 // No-op: focus handoff can fail during composition transitions.
             }
+        }
+    }
+
+    LaunchedEffect(useCenteredTwoSlotLayout, firstVisibleSlotIndex, uiState.focusedSlotIndex) {
+        if (useCenteredTwoSlotLayout && visibleSlots.none { it.index == uiState.focusedSlotIndex }) {
+            viewModel.setFocus(firstVisibleSlotIndex)
         }
     }
 
@@ -212,65 +223,27 @@ fun MultiViewScreen(
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
-            Row(modifier = Modifier.weight(1f)) {
-                PlayerCell(
-                    slot = uiState.slots.getOrNull(0),
-                    isFocused = uiState.focusedSlotIndex == 0,
+            if (useCenteredTwoSlotLayout) {
+                CenteredTwoSlotLayout(
+                    slots = visibleSlots,
+                    focusedSlotIndex = uiState.focusedSlotIndex,
                     showSelectionBorder = uiState.showSelectionBorder,
-                    onClick = { showControls = !showControls },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .focusRequester(firstSlotFocusRequester)
-                        .focusProperties {
-                            canFocus = !showControls
-                            if (showControls) down = firstControlFocusRequester
-                        },
-                    onFocused = { viewModel.setFocus(0) }
+                    showControls = showControls,
+                    firstSlotFocusRequester = firstSlotFocusRequester,
+                    firstControlFocusRequester = firstControlFocusRequester,
+                    onSlotClick = { showControls = !showControls },
+                    onSlotFocused = viewModel::setFocus
                 )
-                PlayerCell(
-                    slot = uiState.slots.getOrNull(1),
-                    isFocused = uiState.focusedSlotIndex == 1,
+            } else {
+                StandardMultiViewGrid(
+                    slots = uiState.slots,
+                    focusedSlotIndex = uiState.focusedSlotIndex,
                     showSelectionBorder = uiState.showSelectionBorder,
-                    onClick = { showControls = !showControls },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .focusProperties {
-                            canFocus = !showControls
-                            if (showControls) down = firstControlFocusRequester
-                        },
-                    onFocused = { viewModel.setFocus(1) }
-                )
-            }
-            Row(modifier = Modifier.weight(1f)) {
-                PlayerCell(
-                    slot = uiState.slots.getOrNull(2),
-                    isFocused = uiState.focusedSlotIndex == 2,
-                    showSelectionBorder = uiState.showSelectionBorder,
-                    onClick = { showControls = !showControls },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .focusProperties {
-                            canFocus = !showControls
-                            if (showControls) down = firstControlFocusRequester
-                        },
-                    onFocused = { viewModel.setFocus(2) }
-                )
-                PlayerCell(
-                    slot = uiState.slots.getOrNull(3),
-                    isFocused = uiState.focusedSlotIndex == 3,
-                    showSelectionBorder = uiState.showSelectionBorder,
-                    onClick = { showControls = !showControls },
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .focusProperties {
-                            canFocus = !showControls
-                            if (showControls) down = firstControlFocusRequester
-                        },
-                    onFocused = { viewModel.setFocus(3) }
+                    showControls = showControls,
+                    firstSlotFocusRequester = firstSlotFocusRequester,
+                    firstControlFocusRequester = firstControlFocusRequester,
+                    onSlotClick = { showControls = !showControls },
+                    onSlotFocused = viewModel::setFocus
                 )
             }
         }
@@ -311,6 +284,150 @@ fun MultiViewScreen(
             }
         }
     }
+}
+
+@Composable
+private fun StandardMultiViewGrid(
+    slots: List<MultiViewSlot>,
+    focusedSlotIndex: Int,
+    showSelectionBorder: Boolean,
+    showControls: Boolean,
+    firstSlotFocusRequester: FocusRequester,
+    firstControlFocusRequester: FocusRequester,
+    onSlotClick: () -> Unit,
+    onSlotFocused: (Int) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.weight(1f)) {
+            GridPlayerCell(
+                slot = slots.getOrNull(0),
+                slotIndex = 0,
+                focusedSlotIndex = focusedSlotIndex,
+                showSelectionBorder = showSelectionBorder,
+                showControls = showControls,
+                onClick = onSlotClick,
+                onFocused = onSlotFocused,
+                firstSlotFocusRequester = firstSlotFocusRequester,
+                firstControlFocusRequester = firstControlFocusRequester,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+            GridPlayerCell(
+                slot = slots.getOrNull(1),
+                slotIndex = 1,
+                focusedSlotIndex = focusedSlotIndex,
+                showSelectionBorder = showSelectionBorder,
+                showControls = showControls,
+                onClick = onSlotClick,
+                onFocused = onSlotFocused,
+                firstSlotFocusRequester = null,
+                firstControlFocusRequester = firstControlFocusRequester,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+        Row(modifier = Modifier.weight(1f)) {
+            GridPlayerCell(
+                slot = slots.getOrNull(2),
+                slotIndex = 2,
+                focusedSlotIndex = focusedSlotIndex,
+                showSelectionBorder = showSelectionBorder,
+                showControls = showControls,
+                onClick = onSlotClick,
+                onFocused = onSlotFocused,
+                firstSlotFocusRequester = null,
+                firstControlFocusRequester = firstControlFocusRequester,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+            GridPlayerCell(
+                slot = slots.getOrNull(3),
+                slotIndex = 3,
+                focusedSlotIndex = focusedSlotIndex,
+                showSelectionBorder = showSelectionBorder,
+                showControls = showControls,
+                onClick = onSlotClick,
+                onFocused = onSlotFocused,
+                firstSlotFocusRequester = null,
+                firstControlFocusRequester = firstControlFocusRequester,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+    }
+}
+
+@Composable
+private fun CenteredTwoSlotLayout(
+    slots: List<MultiViewSlot>,
+    focusedSlotIndex: Int,
+    showSelectionBorder: Boolean,
+    showControls: Boolean,
+    firstSlotFocusRequester: FocusRequester,
+    firstControlFocusRequester: FocusRequester,
+    onSlotClick: () -> Unit,
+    onSlotFocused: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.Center
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 72.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            slots.forEachIndexed { index, slot ->
+                GridPlayerCell(
+                    slot = slot,
+                    slotIndex = slot.index,
+                    focusedSlotIndex = focusedSlotIndex,
+                    showSelectionBorder = showSelectionBorder,
+                    showControls = showControls,
+                    onClick = onSlotClick,
+                    onFocused = onSlotFocused,
+                    firstSlotFocusRequester = if (index == 0) firstSlotFocusRequester else null,
+                    firstControlFocusRequester = firstControlFocusRequester,
+                    modifier = Modifier
+                        .weight(1f)
+                        .aspectRatio(16f / 9f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun GridPlayerCell(
+    slot: MultiViewSlot?,
+    slotIndex: Int,
+    focusedSlotIndex: Int,
+    showSelectionBorder: Boolean,
+    showControls: Boolean,
+    onClick: () -> Unit,
+    onFocused: (Int) -> Unit,
+    firstSlotFocusRequester: FocusRequester?,
+    firstControlFocusRequester: FocusRequester,
+    modifier: Modifier
+) {
+    PlayerCell(
+        slot = slot,
+        isFocused = focusedSlotIndex == slotIndex,
+        showSelectionBorder = showSelectionBorder,
+        onClick = onClick,
+        modifier = modifier
+            .then(if (firstSlotFocusRequester != null) Modifier.focusRequester(firstSlotFocusRequester) else Modifier)
+            .focusProperties {
+                canFocus = !showControls
+                if (showControls) down = firstControlFocusRequester
+            },
+        onFocused = { onFocused(slotIndex) }
+    )
 }
 
 @OptIn(UnstableApi::class)

@@ -65,6 +65,7 @@ import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.ui.components.dialogs.PremiumDialog
 import com.streamvault.app.ui.components.dialogs.PremiumDialogFooterButton
 import com.streamvault.app.ui.components.shell.StatusPill
+import com.streamvault.app.ui.screens.settings.BackupImportPreviewDialog
 import com.streamvault.app.ui.theme.*
 import com.streamvault.data.util.ProviderInputSanitizer
 import com.streamvault.domain.model.ProviderEpgSyncMode
@@ -156,6 +157,10 @@ fun ProviderSetupScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: android.net.Uri? -> if (uri != null) importM3uUri(uri) }
 
+    val backupImportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: android.net.Uri? -> uri?.let { viewModel.inspectBackup(it.toString()) } }
+
     // ?? Effects ???????????????????????????????????????????????????????????????
     LaunchedEffect(knownLocalM3uUrls) {
         cleanupOldImportedM3uFilesAsync(context.filesDir, knownLocalM3uUrls, 20)
@@ -170,8 +175,8 @@ fun ProviderSetupScreen(
         runCatching { android.net.Uri.parse(importUri) }.getOrNull()?.let(::importM3uUri)
     }
 
-    LaunchedEffect(uiState.loginSuccess) {
-        if (uiState.loginSuccess) {
+    LaunchedEffect(uiState.loginSuccess, uiState.completionWarning) {
+        if (uiState.loginSuccess && uiState.completionWarning == null) {
             val previousLocal = uiState.m3uUrl.takeIf { it.startsWith("file://") }
             val selectedLocal = m3uUrl.takeIf { it.startsWith("file://") }
             val protectedUris = buildSet {
@@ -183,6 +188,25 @@ fun ProviderSetupScreen(
             cleanupOldImportedM3uFilesAsync(context.filesDir, protectedUris, 20)
             onProviderAdded()
         }
+    }
+
+    LaunchedEffect(uiState.backupImportSuccess) {
+        if (uiState.backupImportSuccess) {
+            onProviderAdded()
+        }
+    }
+
+    if (uiState.loginSuccess && uiState.completionWarning != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { viewModel.dismissCompletionWarning() },
+            title = { Text("Provider Saved") },
+            text = { Text(uiState.completionWarning ?: "") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.dismissCompletionWarning() }) {
+                    Text("Continue", color = Primary)
+                }
+            }
+        )
     }
 
     if (uiState.pendingCombinedAttachProfileId != null) {
@@ -332,6 +356,9 @@ fun ProviderSetupScreen(
                         onToggleFastSync = { viewModel.updateXtreamFastSyncEnabled(!uiState.xtreamFastSyncEnabled) },
                         onToggleM3uVodClassification = { viewModel.updateM3uVodClassificationEnabled(!uiState.m3uVodClassificationEnabled) },
                         onSelectEpgSyncMode = viewModel::updateEpgSyncMode,
+                        showImportBackupButton = !uiState.isEditing,
+                        isImportingBackup = uiState.isImportingBackup || uiState.syncProgress != null,
+                        onImportBackup = { backupImportLauncher.launch(arrayOf("application/json")) },
                         modifier = Modifier.weight(1f).fillMaxHeight()
                     )
                 }
@@ -366,6 +393,9 @@ fun ProviderSetupScreen(
                         onToggleFastSync = { viewModel.updateXtreamFastSyncEnabled(!uiState.xtreamFastSyncEnabled) },
                         onToggleM3uVodClassification = { viewModel.updateM3uVodClassificationEnabled(!uiState.m3uVodClassificationEnabled) },
                         onSelectEpgSyncMode = viewModel::updateEpgSyncMode,
+                        showImportBackupButton = !uiState.isEditing,
+                        isImportingBackup = uiState.isImportingBackup || uiState.syncProgress != null,
+                        onImportBackup = { backupImportLauncher.launch(arrayOf("application/json")) },
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     )
                 }
@@ -375,6 +405,24 @@ fun ProviderSetupScreen(
 
     if (uiState.syncProgress != null) {
         SyncProgressDialog(message = uiState.syncProgress!!)
+    }
+
+    val backupPreview = uiState.backupPreview
+    if (backupPreview != null && uiState.pendingBackupUri != null) {
+        BackupImportPreviewDialog(
+            preview = backupPreview,
+            plan = uiState.backupImportPlan,
+            onDismiss = { viewModel.dismissBackupPreview() },
+            onStrategySelected = { viewModel.setBackupConflictStrategy(it) },
+            onImportPreferencesChanged = { viewModel.setImportPreferences(it) },
+            onImportProvidersChanged = { viewModel.setImportProviders(it) },
+            onImportSavedLibraryChanged = { viewModel.setImportSavedLibrary(it) },
+            onImportPlaybackHistoryChanged = { viewModel.setImportPlaybackHistory(it) },
+            onImportMultiViewChanged = { viewModel.setImportMultiViewPresets(it) },
+            onImportRecordingSchedulesChanged = { viewModel.setImportRecordingSchedules(it) },
+            isImporting = uiState.isImportingBackup,
+            onConfirm = { viewModel.confirmBackupImport() }
+        )
     }
 
     if (showDiscardDraftDialog) {
@@ -425,6 +473,9 @@ private fun ProviderFormContent(
     onToggleFastSync: () -> Unit,
     onToggleM3uVodClassification: () -> Unit,
     onSelectEpgSyncMode: (ProviderEpgSyncMode) -> Unit,
+    showImportBackupButton: Boolean,
+    isImportingBackup: Boolean,
+    onImportBackup: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -623,6 +674,13 @@ private fun ProviderFormContent(
                         onClick = onAddM3u
                     )
                 }
+            }
+            if (showImportBackupButton) {
+                SmallActionButton(
+                    text = androidx.compose.ui.res.stringResource(R.string.setup_import_backup),
+                    isLoading = isImportingBackup,
+                    onClick = onImportBackup
+                )
             }
         }
     }
@@ -982,7 +1040,6 @@ private fun SourceTypeSelectorPanel(
                 style = MaterialTheme.typography.bodySmall,
                 color = OnSurfaceDim
             )
-            Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = androidx.compose.ui.res.stringResource(R.string.setup_source_type_label),
                 style = MaterialTheme.typography.labelSmall,
@@ -1452,6 +1509,7 @@ fun SyncProgressDialog(message: String) {
         subtitle = androidx.compose.ui.res.stringResource(R.string.settings_syncing_subtitle),
         onDismissRequest = {},
         widthFraction = 0.32f,
+        heightFraction = null,
         content = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -1482,6 +1540,35 @@ private fun ActionButton(
     isLoading: Boolean = false,
     onClick: () -> Unit
 ) {
+    ProviderActionButton(
+        text = text,
+        height = 52.dp,
+        isLoading = isLoading,
+        onClick = onClick
+    )
+}
+
+@Composable
+private fun SmallActionButton(
+    text: String,
+    isLoading: Boolean = false,
+    onClick: () -> Unit
+) {
+    ProviderActionButton(
+        text = text,
+        height = 40.dp,
+        isLoading = isLoading,
+        onClick = onClick
+    )
+}
+
+@Composable
+private fun ProviderActionButton(
+    text: String,
+    height: androidx.compose.ui.unit.Dp,
+    isLoading: Boolean = false,
+    onClick: () -> Unit
+) {
     var isFocused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(if (isFocused) 1.03f else 1f, tween(150), label = "scale")
 
@@ -1489,7 +1576,7 @@ private fun ActionButton(
         onClick = { if (!isLoading) onClick() },
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(height)
             .scale(scale)
             .onFocusEvent { isFocused = it.hasFocus }
             .mouseClickable(enabled = !isLoading, onClick = onClick),
@@ -1626,7 +1713,10 @@ private fun cleanupOldImportedM3uFiles(
         .toSet()
 
     val importedFiles = filesDir
-        .listFiles { file -> file.isFile && file.name.startsWith("m3u_") && file.name.endsWith(".m3u") }
+        .listFiles { file ->
+            file.isFile && file.name.startsWith("m3u_") &&
+                (file.name.endsWith(".m3u") || file.name.endsWith(".m3u8"))
+        }
         ?.sortedByDescending { it.lastModified() }
         ?: return
 

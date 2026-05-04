@@ -23,6 +23,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.kotlin.any
 import org.mockito.kotlin.argumentCaptor
+import org.mockito.kotlin.doAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
@@ -37,11 +38,12 @@ class SyncCatalogStoreTest {
     private val categoryDao: CategoryDao = mock()
     private val catalogSyncDao: CatalogSyncDao = mock()
     private val tmdbIdentityDao: TmdbIdentityDao = mock()
-    private val transactionRunner = object : DatabaseTransactionRunner {
-        override suspend fun <T> inTransaction(block: suspend () -> T): T = block()
-    }
+    private val defaultTransactionRunner = TrackingTransactionRunner()
 
-    private fun store(sizeLimits: CatalogSizeLimits = CatalogSizeLimits()) = SyncCatalogStore(
+    private fun store(
+        sizeLimits: CatalogSizeLimits = CatalogSizeLimits(),
+        transactionRunner: DatabaseTransactionRunner = defaultTransactionRunner
+    ) = SyncCatalogStore(
         channelDao = channelDao,
         movieDao = movieDao,
         seriesDao = seriesDao,
@@ -120,6 +122,7 @@ class SyncCatalogStoreTest {
         store().applyStagedMovieCatalog(providerId, sessionId, categories = null)
 
         verify(catalogSyncDao).updateChangedMoviesFromStage(providerId, sessionId)
+        verify(catalogSyncDao).rebuildMovieFts()
         verify(movieDao).restoreWatchProgress(providerId)
     }
 
@@ -130,6 +133,173 @@ class SyncCatalogStoreTest {
         store().applyStagedSeriesCatalog(providerId, sessionId, categories = null)
 
         verify(catalogSyncDao).updateChangedSeriesFromStage(providerId, sessionId)
+        verify(catalogSyncDao).rebuildSeriesFts()
+    }
+
+    @Test
+    fun `applyStagedLiveCatalog rebuilds channel fts inside transaction`() = runTest {
+        val runner = TrackingTransactionRunner()
+        doAnswer {
+            assertThat(runner.isInTransaction).isTrue()
+            Unit
+        }.whenever(catalogSyncDao).rebuildChannelFts()
+
+        store(transactionRunner = runner).applyStagedLiveCatalog(providerId = 7L, sessionId = 55L, categories = null)
+
+        assertThat(runner.calls).isEqualTo(1)
+        verify(catalogSyncDao).rebuildChannelFts()
+    }
+
+    @Test
+    fun `replaceSeriesCatalog stages provider-native series ids`() = runTest {
+        val providerId = 7L
+        whenever(seriesDao.getByProviderSync(providerId)).thenReturn(emptyList())
+        whenever(catalogSyncDao.getSeriesStages(eq(providerId), any())).thenReturn(emptyList())
+
+        val acceptedCount = store().replaceSeriesCatalog(
+            providerId = providerId,
+            categories = null,
+            series = sequenceOf(
+                SeriesEntity(
+                    seriesId = 256103980L,
+                    providerSeriesId = "55000:55000",
+                    name = "Composite Series",
+                    providerId = providerId,
+                    syncFingerprint = ""
+                )
+            )
+        )
+
+        assertThat(acceptedCount).isEqualTo(1)
+        val insertedStages = argumentCaptor<List<SeriesImportStageEntity>>()
+        verify(catalogSyncDao).insertSeriesStages(insertedStages.capture())
+        assertThat(insertedStages.firstValue.single().providerSeriesId).isEqualTo("55000:55000")
+        assertThat(insertedStages.firstValue.single().providerSeriesKey).isEqualTo("55000:55000")
+    }
+
+    @Test
+    fun `stageMovieBatch preserves movie metadata needed by staged apply`() = runTest {
+        val providerId = 7L
+        val sessionId = 88L
+        val movie = MovieEntity(
+            streamId = 1001L,
+            name = "Late Night Feature",
+            posterUrl = "https://img.example.test/movie-poster.jpg",
+            backdropUrl = "https://img.example.test/movie-backdrop.jpg",
+            categoryId = 42L,
+            categoryName = "Thriller",
+            streamUrl = "https://stream.example.test/movie.m3u8",
+            containerExtension = "mp4",
+            plot = "A staged sync guardrail.",
+            cast = "Lead Actor",
+            director = "Director Name",
+            genre = "Thriller",
+            releaseDate = "2026-05-02",
+            duration = "01:45:00",
+            durationSeconds = 6_300,
+            rating = 8.4f,
+            year = "2026",
+            tmdbId = 555001L,
+            youtubeTrailer = "trailer123",
+            providerId = providerId,
+            isAdult = true,
+            addedAt = 123_456L
+        )
+
+        store().stageMovieBatch(providerId, sessionId, listOf(movie))
+
+        val insertedStages = argumentCaptor<List<MovieImportStageEntity>>()
+        verify(catalogSyncDao).insertMovieStages(insertedStages.capture())
+        val stagedMovie = insertedStages.firstValue.single()
+        assertThat(stagedMovie.copy(syncFingerprint = "")).isEqualTo(
+            MovieImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                streamId = movie.streamId,
+                name = movie.name,
+                posterUrl = movie.posterUrl,
+                backdropUrl = movie.backdropUrl,
+                categoryId = movie.categoryId,
+                categoryName = movie.categoryName,
+                streamUrl = movie.streamUrl,
+                containerExtension = movie.containerExtension,
+                plot = movie.plot,
+                cast = movie.cast,
+                director = movie.director,
+                genre = movie.genre,
+                releaseDate = movie.releaseDate,
+                duration = movie.duration,
+                durationSeconds = movie.durationSeconds,
+                rating = movie.rating,
+                year = movie.year,
+                tmdbId = movie.tmdbId,
+                youtubeTrailer = movie.youtubeTrailer,
+                isAdult = movie.isAdult,
+                syncFingerprint = "",
+                addedAt = movie.addedAt
+            )
+        )
+        assertThat(stagedMovie.syncFingerprint).isNotEmpty()
+    }
+
+    @Test
+    fun `stageSeriesBatch preserves provider identity and metadata needed by staged apply`() = runTest {
+        val providerId = 7L
+        val sessionId = 89L
+        val series = SeriesEntity(
+            seriesId = 256103980L,
+            providerSeriesId = "55000:55000",
+            name = "Composite Series",
+            posterUrl = "https://img.example.test/series-poster.jpg",
+            backdropUrl = "https://img.example.test/series-backdrop.jpg",
+            categoryId = 77L,
+            categoryName = "Drama",
+            plot = "Series staging guardrail.",
+            cast = "Ensemble Cast",
+            director = "Showrunner",
+            genre = "Drama",
+            releaseDate = "2026-05-02",
+            rating = 9.1f,
+            tmdbId = 777001L,
+            youtubeTrailer = "seriesTrailer",
+            episodeRunTime = "52",
+            lastModified = 9_999L,
+            providerId = providerId,
+            isAdult = true
+        )
+
+        store().stageSeriesBatch(providerId, sessionId, listOf(series))
+
+        val insertedStages = argumentCaptor<List<SeriesImportStageEntity>>()
+        verify(catalogSyncDao).insertSeriesStages(insertedStages.capture())
+        val stagedSeries = insertedStages.firstValue.single()
+        assertThat(stagedSeries.copy(syncFingerprint = "")).isEqualTo(
+            SeriesImportStageEntity(
+                sessionId = sessionId,
+                providerId = providerId,
+                seriesId = series.seriesId,
+                providerSeriesId = series.providerSeriesId,
+                providerSeriesKey = series.providerSeriesId!!,
+                name = series.name,
+                posterUrl = series.posterUrl,
+                backdropUrl = series.backdropUrl,
+                categoryId = series.categoryId,
+                categoryName = series.categoryName,
+                plot = series.plot,
+                cast = series.cast,
+                director = series.director,
+                genre = series.genre,
+                releaseDate = series.releaseDate,
+                rating = series.rating,
+                tmdbId = series.tmdbId,
+                youtubeTrailer = series.youtubeTrailer,
+                episodeRunTime = series.episodeRunTime,
+                lastModified = series.lastModified,
+                isAdult = series.isAdult,
+                syncFingerprint = ""
+            )
+        )
+        assertThat(stagedSeries.syncFingerprint).isNotEmpty()
     }
 
     @Test
@@ -198,6 +368,7 @@ class SyncCatalogStoreTest {
         val insertedChannels = argumentCaptor<List<ChannelImportStageEntity>>()
         verify(catalogSyncDao).insertChannelStages(insertedChannels.capture())
         assertThat(insertedChannels.firstValue.map { it.streamId }).containsExactly(1002L, 1003L).inOrder()
+        verify(catalogSyncDao).rebuildChannelFts()
     }
 
     @Test
@@ -219,5 +390,54 @@ class SyncCatalogStoreTest {
         val insertedMovies = argumentCaptor<List<MovieImportStageEntity>>()
         verify(catalogSyncDao).insertMovieStages(insertedMovies.capture())
         assertThat(insertedMovies.firstValue.map { it.streamId }).containsExactly(2002L, 2003L).inOrder()
+        verify(catalogSyncDao).rebuildMovieFts()
+    }
+
+    @Test
+    fun `finalizeStagedImport rebuilds live and movie fts inside transaction`() = runTest {
+        val runner = TrackingTransactionRunner()
+        whenever(categoryDao.getByProviderAndTypeSync(7L, ContentType.LIVE.name)).thenReturn(emptyList())
+        whenever(categoryDao.getByProviderAndTypeSync(7L, ContentType.MOVIE.name)).thenReturn(emptyList())
+        whenever(catalogSyncDao.getCategoryStages(eq(7L), any(), eq(ContentType.LIVE.name))).thenReturn(emptyList())
+        whenever(catalogSyncDao.getCategoryStages(eq(7L), any(), eq(ContentType.MOVIE.name))).thenReturn(emptyList())
+        doAnswer {
+            assertThat(runner.isInTransaction).isTrue()
+            Unit
+        }.whenever(catalogSyncDao).rebuildChannelFts()
+        doAnswer {
+            assertThat(runner.isInTransaction).isTrue()
+            Unit
+        }.whenever(catalogSyncDao).rebuildMovieFts()
+
+        store(transactionRunner = runner).finalizeStagedImport(
+            providerId = 7L,
+            sessionId = 66L,
+            liveCategories = null,
+            movieCategories = null,
+            includeLive = true,
+            includeMovies = true
+        )
+
+        verify(catalogSyncDao).rebuildChannelFts()
+        verify(catalogSyncDao).rebuildMovieFts()
+        verify(movieDao).restoreWatchProgress(7L)
+    }
+
+    private class TrackingTransactionRunner : DatabaseTransactionRunner {
+        var calls: Int = 0
+        private var depth: Int = 0
+
+        val isInTransaction: Boolean
+            get() = depth > 0
+
+        override suspend fun <T> inTransaction(block: suspend () -> T): T {
+            calls += 1
+            depth += 1
+            return try {
+                block()
+            } finally {
+                depth -= 1
+            }
+        }
     }
 }

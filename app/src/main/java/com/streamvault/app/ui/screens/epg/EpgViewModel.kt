@@ -1,5 +1,6 @@
 package com.streamvault.app.ui.screens.epg
 
+import com.streamvault.app.ui.model.isArchivePlayable
 import com.streamvault.app.ui.model.guideLookupKey
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -407,7 +408,7 @@ class EpgViewModel @Inject constructor(
 
     private fun schedulePrefetchNextPage(snapshot: GuideBaseSnapshot) {
         if (!snapshot.hasMoreChannels) return
-        prefetchJob = viewModelScope.async<GuidePrefetchedPage?>(Dispatchers.IO) {
+        prefetchJob = viewModelScope.async<GuidePrefetchedPage?> {
             val channels = fetchGuideChannelPage(
                 providerId = snapshot.providerId,
                 categoryId = snapshot.selectedCategoryId,
@@ -440,16 +441,15 @@ class EpgViewModel @Inject constructor(
         favoriteChannelIds: Set<Long>
     ): List<Channel> {
         if (providerId <= 0L) return emptyList()
-        // Favorites and virtual group categories aren't offset-pageable; All Channels is a negative sentinel but is pageable.
-        if (categoryId != ChannelRepository.ALL_CHANNELS_ID &&
+        if (
+            categoryId != ChannelRepository.ALL_CHANNELS_ID &&
             (categoryId == VirtualCategoryIds.FAVORITES || categoryId < 0L)
         ) return emptyList()
         val withoutErrors = channelRepository.getChannelsWithoutErrorsPageOffset(providerId, categoryId, MAX_CHANNELS, offset)
         val raw = withoutErrors.ifEmpty {
             channelRepository.getChannelsByCategoryPageOffset(providerId, categoryId, MAX_CHANNELS, offset)
         }
-        val filtered = if (hiddenCategoryIds.isEmpty()) raw
-        else raw.filterNot { it.categoryId in hiddenCategoryIds }
+        val filtered = if (hiddenCategoryIds.isEmpty()) raw else raw.filterNot { it.categoryId in hiddenCategoryIds }
         return if (favoritesOnly) filtered.filter { it.id in favoriteChannelIds } else filtered
     }
 
@@ -687,27 +687,23 @@ class EpgViewModel @Inject constructor(
     }
 
     fun jumpToTomorrow() {
-        updateGuideAnchorTime(System.currentTimeMillis() + DAY_SHIFT_MS)
+        updateGuideAnchorTime(shiftGuideAnchorByDays(System.currentTimeMillis(), 1))
     }
 
     fun jumpToPrimeTime() {
-        val selectedDayStart = (guideAnchorTime.value / DAY_SHIFT_MS) * DAY_SHIFT_MS
-        updateGuideAnchorTime(selectedDayStart + (PRIME_TIME_HOUR * 60 * 60 * 1000L))
+        updateGuideAnchorTime(guidePrimeTimeAnchor(guideAnchorTime.value, PRIME_TIME_HOUR))
     }
 
     fun jumpToPreviousDay() {
-        updateGuideAnchorTime((guideAnchorTime.value - DAY_SHIFT_MS).coerceAtLeast(0L))
+        updateGuideAnchorTime(shiftGuideAnchorByDays(guideAnchorTime.value, -1).coerceAtLeast(0L))
     }
 
     fun jumpToNextDay() {
-        updateGuideAnchorTime(guideAnchorTime.value + DAY_SHIFT_MS)
+        updateGuideAnchorTime(shiftGuideAnchorByDays(guideAnchorTime.value, 1))
     }
 
     fun jumpToDay(dayStartMillis: Long) {
-        val currentTimeOfDay = guideAnchorTime.value
-            .mod(DAY_SHIFT_MS)
-            .let { if (it < 0L) it + DAY_SHIFT_MS else it }
-        updateGuideAnchorTime(dayStartMillis + currentTimeOfDay)
+        updateGuideAnchorTime(jumpGuideAnchorToDay(guideAnchorTime.value, dayStartMillis))
     }
 
     fun toggleScheduledOnly() {
@@ -764,9 +760,7 @@ class EpgViewModel @Inject constructor(
                 providerRepository.getActiveProvider()
             ) { activeSource, activeProvider ->
                 Pair(activeSource ?: activeProvider?.id?.let { ActiveLiveSource.ProviderSource(it) }, activeProvider)
-            }.distinctUntilChanged { old, new ->
-                old.first == new.first && old.second?.id == new.second?.id
-            }.collectLatest { (activeSource, activeProvider) ->
+            }.distinctUntilChanged().collectLatest { (activeSource, activeProvider) ->
                 if (activeSource == null && activeProvider == null) {
                     guideFallbackJob?.cancel()
                     baseGuideSnapshot.value = null
@@ -1047,11 +1041,18 @@ class EpgViewModel @Inject constructor(
         }
     }
 
-    private fun combinedGuideChannels(profileId: Long, categoryId: Long, providerIds: List<Long>) =
-        if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
+    private fun combinedGuideChannels(
+        profileId: Long,
+        categoryId: Long,
+        providerIds: List<Long>
+    ): Flow<List<Channel>> {
+        return if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
             val flows = combinedCategoriesById.values.map { combinedM3uRepository.getCombinedChannels(profileId, it) }
-            if (flows.isEmpty()) kotlinx.coroutines.flow.flowOf(emptyList())
-            else combine(flows) { arrays -> arrays.toList().flatMap { it } }
+            if (flows.isEmpty()) {
+                kotlinx.coroutines.flow.flowOf(emptyList<Channel>())
+            } else {
+                combine(flows) { arrays: Array<List<Channel>> -> arrays.toList().flatMap { it } }
+            }
         } else if (categoryId == VirtualCategoryIds.FAVORITES) {
             observeLiveFavorites(providerIds)
                 .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
@@ -1062,9 +1063,13 @@ class EpgViewModel @Inject constructor(
                 .flatMapLatest(::loadGuideChannelsByOrderedIds)
         } else {
             val combinedCategory = combinedCategoriesById[categoryId]
-            if (combinedCategory == null) kotlinx.coroutines.flow.flowOf(emptyList())
-            else combinedM3uRepository.getCombinedChannels(profileId, combinedCategory)
+            if (combinedCategory == null) {
+                kotlinx.coroutines.flow.flowOf(emptyList<Channel>())
+            } else {
+                combinedM3uRepository.getCombinedChannels(profileId, combinedCategory)
+            }
         }
+    }
 
     private fun guideSelectionSeedFlow(): Flow<GuideSelectionSeed> =
         combine(
@@ -1197,14 +1202,12 @@ class EpgViewModel @Inject constructor(
                     return@collectLatest
                 }
 
-                val displaySnapshot = withContext(Dispatchers.Default) {
-                    buildGuideDisplaySnapshot(
-                        baseSnapshot = baseSnapshot,
-                        searchQuery = presentation.searchQuery,
-                        scheduledOnly = presentation.scheduledOnly,
-                        channelMode = presentation.channelMode
-                    )
-                }
+                val displaySnapshot = buildGuideDisplaySnapshot(
+                    baseSnapshot = baseSnapshot,
+                    searchQuery = presentation.searchQuery,
+                    scheduledOnly = presentation.scheduledOnly,
+                    channelMode = presentation.channelMode
+                )
 
                 _uiState.update {
                     it.copy(
@@ -1351,16 +1354,29 @@ class EpgViewModel @Inject constructor(
         providerId: Long,
         categoryId: Long,
         favoritesOnly: Boolean
-    ): Flow<List<Channel>> = combine(
-        channelRepository.getChannelsByCategoryPage(providerId, categoryId, MAX_CHANNELS),
-        channelRepository.getChannelsWithoutErrorsPage(providerId, categoryId, MAX_CHANNELS),
+    ): Flow<List<Channel>> = if (favoritesOnly) {
         favoriteRepository.getFavorites(providerId, ContentType.LIVE)
-    ) { channelsByNumber, healthyChannels, favorites ->
-        val favoriteIds = favorites.map { it.contentId }.toSet()
-        if (favoritesOnly) {
-            healthyChannels.filter { it.id in favoriteIds }
-                .ifEmpty { channelsByNumber.filter { it.id in favoriteIds } }
-        } else {
+            .map { favorites -> favorites.sortedBy { it.position }.map { it.contentId } }
+            .flatMapLatest { favoriteIds ->
+                val favoriteChannels = loadGuideChannelsByOrderedIds(favoriteIds, providerId)
+                if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
+                    favoriteChannels
+                } else {
+                    combine(
+                        favoriteChannels,
+                        channelRepository.getChannelsByCategory(providerId, categoryId)
+                    ) { orderedFavorites, categoryChannels ->
+                        val categoryChannelIds = categoryChannels.map(Channel::id).toSet()
+                        orderedFavorites.filter { it.id in categoryChannelIds }
+                    }
+                }
+            }
+    } else {
+        combine(
+            channelRepository.getChannelsByCategoryPage(providerId, categoryId, MAX_CHANNELS),
+            channelRepository.getChannelsWithoutErrorsPage(providerId, categoryId, MAX_CHANNELS),
+            favoriteRepository.getFavorites(providerId, ContentType.LIVE)
+        ) { channelsByNumber, healthyChannels, _ ->
             healthyChannels.ifEmpty { channelsByNumber }
         }
     }
@@ -1401,43 +1417,36 @@ class EpgViewModel @Inject constructor(
         windowStart: Long,
         windowEnd: Long
     ): GuideProgramsResult {
-        return withContext(Dispatchers.IO) {
-            if (channels.isEmpty()) {
-                return@withContext GuideProgramsResult(emptyMap(), failedCount = 0)
-            }
-
-            val guideKeys = channels.mapNotNull(Channel::guideLookupKey).distinct()
-
-            // 1. Try the multi-source resolved path first
-            val channelIds = channels.map { it.id }
-            val resolvedPrograms = runCatching {
-                epgRepository.getResolvedProgramsForChannels(providerId, channelIds, windowStart, windowEnd)
-            }.getOrElse { emptyMap() }
-
-            // 2. For channels not covered by resolution, fall back to legacy provider-native query
-            val unresolvedChannels = channels.filter { channel ->
-                val key = channel.guideLookupKey()
-                key == null || resolvedPrograms[key].isNullOrEmpty()
-            }
-            val legacyPrograms = if (unresolvedChannels.isNotEmpty()) {
-                val xmltvKeys = unresolvedChannels.mapNotNull {
-                    it.epgChannelId?.trim()?.takeIf(String::isNotEmpty)
-                }.distinct()
-                runCatching {
-                    if (xmltvKeys.isEmpty()) emptyMap()
-                    else epgRepository.getProgramsForChannelsSnapshot(providerId, xmltvKeys, windowStart, windowEnd)
-                }.getOrElse { emptyMap() }
-            } else {
-                emptyMap()
-            }
-
-            val programsByChannel = resolvedPrograms + legacyPrograms
-
-            GuideProgramsResult(
-                programsByChannel = programsByChannel,
-                failedCount = countMissingGuideEntries(channels, programsByChannel)
-            )
+        if (channels.isEmpty()) {
+            return GuideProgramsResult(emptyMap(), failedCount = 0)
         }
+
+        // 1. Try the multi-source resolved path first.
+        val channelIds = channels.map { it.id }
+        val resolvedPrograms: Map<String, List<Program>> = runCatching {
+            epgRepository.getResolvedProgramsForChannels(providerId, channelIds, windowStart, windowEnd)
+        }.getOrElse { emptyMap() }
+
+        // 2. For channels not covered by resolution, fall back to legacy provider-native query.
+        val unresolvedChannels = channels.filter { channel ->
+            val key = channel.guideLookupKey()
+            key == null || resolvedPrograms[key].isNullOrEmpty()
+        }
+        val legacyPrograms: Map<String, List<Program>> = if (unresolvedChannels.isNotEmpty()) {
+            val fallbackGuideKeys = unresolvedChannels.mapNotNull(Channel::guideLookupKey).distinct()
+            runCatching {
+                if (fallbackGuideKeys.isEmpty()) emptyMap()
+                else epgRepository.getProgramsForChannelsSnapshot(providerId, fallbackGuideKeys, windowStart, windowEnd)
+            }.getOrElse { emptyMap() }
+        } else {
+            emptyMap()
+        }
+
+        val programsByChannel = resolvedPrograms + legacyPrograms
+        return GuideProgramsResult(
+            programsByChannel = programsByChannel,
+            failedCount = countMissingGuideEntries(channels, programsByChannel)
+        )
     }
 
     private suspend fun loadCombinedGuidePrograms(
@@ -1630,7 +1639,9 @@ class EpgViewModel @Inject constructor(
                 GuideChannelMode.ANCHORED -> programs.any { program ->
                     baseSnapshot.guideAnchorTime in program.startTime until program.endTime
                 }
-                GuideChannelMode.ARCHIVE_READY -> channel.catchUpSupported || programs.any { it.hasArchive }
+                GuideChannelMode.ARCHIVE_READY -> programs.any { program ->
+                    channel.isArchivePlayable(program, baseSnapshot.guideAnchorTime)
+                }
             }
             matchesScheduled && matchesMode
         }
@@ -1656,23 +1667,91 @@ class EpgViewModel @Inject constructor(
         baseSnapshot: GuideBaseSnapshot,
         searchQuery: String
     ): Pair<List<Channel>, Map<String, List<Program>>> {
-        val matchedProgramsByChannel = baseSnapshot.baseProgramsByChannel
-            .mapValues { (_, programs) ->
-                programs.filter { program ->
-                    program.title.contains(searchQuery, ignoreCase = true) ||
-                        program.description.contains(searchQuery, ignoreCase = true)
+        val scopedChannels = loadGuideSearchScopeChannels(baseSnapshot)
+        val scopedChannelsByLookup = scopedChannels.mapNotNull { channel ->
+            channel.guideLookupKey()?.let { lookupKey -> lookupKey to channel }
+        }.toMap()
+
+        val metadataMatchedLookupKeys = scopedChannels.filter { channel ->
+            channel.matchesGuideMetadataSearch(searchQuery)
+        }.mapNotNull(Channel::guideLookupKey).toSet()
+
+        val repositoryMatchedPrograms = epgRepository.searchPrograms(
+            providerId = baseSnapshot.providerId,
+            query = searchQuery,
+            startTime = baseSnapshot.guideWindowStart,
+            endTime = baseSnapshot.guideWindowEnd,
+            categoryId = baseSnapshot.selectedCategoryId.takeIf { it >= 0L }
+        ).first().groupBy { it.channelId }
+
+        val repositoryMatchedLookupKeys = repositoryMatchedPrograms.keys
+        val matchedLookupKeys = buildList {
+            scopedChannels.forEach { channel ->
+                val lookupKey = channel.guideLookupKey() ?: return@forEach
+                if (lookupKey in metadataMatchedLookupKeys || lookupKey in repositoryMatchedLookupKeys) {
+                    add(lookupKey)
                 }
             }
-            .filterValues { it.isNotEmpty() }
-
-        val matchedChannels = baseSnapshot.visibleChannels.filter { channel ->
-            channel.name.contains(searchQuery, ignoreCase = true) ||
-                channel.categoryName?.contains(searchQuery, ignoreCase = true) == true ||
-                channel.guideLookupKey()?.let(matchedProgramsByChannel::containsKey) == true
         }.take(MAX_CHANNELS)
 
-        val matchedChannelKeys = matchedChannels.mapNotNull(Channel::guideLookupKey).toSet()
-        return matchedChannels to matchedProgramsByChannel.filterKeys { it in matchedChannelKeys }
+        val missingMetadataLookupKeys = matchedLookupKeys.filter { lookupKey ->
+            lookupKey in metadataMatchedLookupKeys && lookupKey !in baseSnapshot.baseProgramsByChannel
+        }
+        val missingMetadataPrograms = if (missingMetadataLookupKeys.isEmpty()) {
+            emptyMap()
+        } else {
+            epgRepository.getProgramsForChannelsSnapshot(
+                providerId = baseSnapshot.providerId,
+                channelIds = missingMetadataLookupKeys,
+                startTime = baseSnapshot.guideWindowStart,
+                endTime = baseSnapshot.guideWindowEnd
+            )
+        }
+
+        val matchedChannels = matchedLookupKeys.mapNotNull(scopedChannelsByLookup::get)
+        val matchedPrograms = matchedLookupKeys.associateWith { lookupKey ->
+            if (lookupKey in metadataMatchedLookupKeys) {
+                baseSnapshot.baseProgramsByChannel[lookupKey]
+                    ?: missingMetadataPrograms[lookupKey]
+                    ?: emptyList()
+            } else {
+                repositoryMatchedPrograms[lookupKey].orEmpty()
+            }
+        }
+        return matchedChannels to matchedPrograms
+    }
+
+    private suspend fun loadGuideSearchScopeChannels(baseSnapshot: GuideBaseSnapshot): List<Channel> {
+        val rawChannels = when {
+            baseSnapshot.showFavoritesOnly || baseSnapshot.selectedCategoryId < 0L -> baseSnapshot.allChannels
+            baseSnapshot.selectedCategoryId == ChannelRepository.ALL_CHANNELS_ID ->
+                channelRepository.getChannels(baseSnapshot.providerId).first()
+            else -> channelRepository.getChannelsByCategory(baseSnapshot.providerId, baseSnapshot.selectedCategoryId).first()
+        }
+        if (baseSnapshot.selectedCategoryId != ChannelRepository.ALL_CHANNELS_ID) {
+            return rawChannels.filterNot { channel ->
+                channel.categoryId != null && channel.categoryId in baseSnapshot.hiddenCategoryIds
+            }
+        }
+
+        val accessibleCategoryIds = baseSnapshot.categories.filter { category ->
+            isGuideCategoryAccessible(
+                category = category,
+                parentalControlLevel = baseSnapshot.parentalControlLevel,
+                unlockedCategoryIds = emptySet()
+            )
+        }.map(Category::id).toSet()
+
+        return rawChannels.filterNot { channel ->
+            channel.categoryId != null && channel.categoryId in baseSnapshot.hiddenCategoryIds
+        }.filter { channel ->
+            channel.categoryId == null || channel.categoryId in accessibleCategoryIds
+        }
+    }
+
+    private fun Channel.matchesGuideMetadataSearch(searchQuery: String): Boolean {
+        return name.contains(searchQuery, ignoreCase = true) ||
+            categoryName?.contains(searchQuery, ignoreCase = true) == true
     }
 
     private fun resolveGuideCategorySelection(

@@ -9,7 +9,9 @@ import com.streamvault.data.local.dao.PlaybackHistoryDao
 import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.SeriesDao
 import com.streamvault.data.local.dao.SeriesCategoryHydrationDao
+import com.streamvault.data.local.entity.EpisodeEntity
 import com.streamvault.data.local.entity.SeriesEntity
+import com.streamvault.data.local.entity.SeriesBrowseEntity
 import com.streamvault.data.local.entity.ProviderEntity
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.remote.stalker.StalkerCategoryRecord
@@ -28,9 +30,15 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.domain.model.ContentType
+import com.streamvault.domain.model.LibraryBrowseQuery
+import com.streamvault.domain.model.LibraryFilterBy
+import com.streamvault.domain.model.LibraryFilterType
+import com.streamvault.domain.model.LibrarySortBy
+import com.streamvault.domain.model.PlaybackHistory
 import com.streamvault.domain.model.ProviderStatus
 import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.Result
+import com.streamvault.domain.repository.PlaybackHistoryRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
@@ -53,6 +61,7 @@ class SeriesRepositoryImplTest {
     private val categoryDao: CategoryDao = mock()
     private val favoriteDao: FavoriteDao = mock()
     private val playbackHistoryDao: PlaybackHistoryDao = mock()
+    private val playbackHistoryRepository: PlaybackHistoryRepository = mock()
     private val providerDao: ProviderDao = mock()
     private val stalkerApiService: StalkerApiService = mock()
     private val xtreamApiService: XtreamApiService = mock()
@@ -213,6 +222,38 @@ class SeriesRepositoryImplTest {
 
         verify(stalkerApiService).getSeriesPage(any(), any(), anyOrNull(), eq(1))
         verify(stalkerApiService, never()).getSeriesPage(any(), any(), anyOrNull(), eq(2))
+    }
+
+    @Test
+    fun `browseSeries recently updated excludes stale entries and uses filtered total count`() = runTest {
+        whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
+        whenever(preferencesRepository.xtreamBase64TextCompatibility).thenReturn(flowOf(false))
+        whenever(seriesDao.getFreshCountByProvider(7L)).thenReturn(flowOf(1))
+        whenever(seriesDao.getFreshPreview(7L, 100)).thenReturn(
+            flowOf(
+                listOf(
+                    SeriesBrowseEntity(id = 1L, seriesId = 101L, name = "Fresh Series", providerId = 7L, lastModified = 10_000L),
+                    SeriesBrowseEntity(id = 2L, seriesId = 102L, name = "Stale Series", providerId = 7L, lastModified = 0L)
+                )
+            )
+        )
+        whenever(favoriteDao.getAllByType(7L, ContentType.SERIES.name)).thenReturn(flowOf(emptyList()))
+        whenever(playbackHistoryDao.getByProvider(7L)).thenReturn(flowOf(emptyList()))
+
+        val repository = createRepository()
+
+        val result = repository.browseSeries(
+            LibraryBrowseQuery(
+                providerId = 7L,
+                sortBy = LibrarySortBy.UPDATED,
+                filterBy = LibraryFilterBy(LibraryFilterType.RECENTLY_UPDATED),
+                offset = 0,
+                limit = 20
+            )
+        ).first()
+
+        assertThat(result.totalCount).isEqualTo(1)
+        assertThat(result.items.map { it.name }).containsExactly("Fresh Series")
     }
 
     @Test
@@ -391,13 +432,25 @@ class SeriesRepositoryImplTest {
         whenever(seriesDao.search(eq(7L), any(), any())).thenReturn(
             flow { throw SQLiteException("malformed MATCH expression") }
         )
+        whenever(seriesDao.searchFallback(eq(7L), any(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    SeriesBrowseEntity(
+                        id = 15L,
+                        seriesId = 1500L,
+                        name = "Drama House",
+                        providerId = 7L
+                    )
+                )
+            )
+        )
         whenever(favoriteDao.getAllByType(7L, ContentType.SERIES.name)).thenReturn(flowOf(emptyList()))
 
         val repository = createRepository()
 
         val result = repository.searchSeries(7L, "drama").first()
 
-        assertThat(result).isEmpty()
+        assertThat(result.map { it.name }).containsExactly("Drama House")
     }
 
     private fun createRepository() = SeriesRepositoryImpl(
@@ -406,6 +459,7 @@ class SeriesRepositoryImplTest {
         categoryDao = categoryDao,
         favoriteDao = favoriteDao,
         playbackHistoryDao = playbackHistoryDao,
+        playbackHistoryRepository = playbackHistoryRepository,
         providerDao = providerDao,
         stalkerApiService = stalkerApiService,
         xtreamApiService = xtreamApiService,

@@ -116,7 +116,6 @@ internal fun PlayerViewModel.finalizePreparedPlaybackContext(
                     }
                 )
                 if (currentContentType == ContentType.LIVE) {
-                    recordLivePlayback(channel)
                     requestEpg(
                         providerId = currentProviderId,
                         epgChannelId = channel.epgChannelId,

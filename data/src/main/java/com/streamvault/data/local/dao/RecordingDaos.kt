@@ -30,6 +30,9 @@ interface RecordingScheduleDao {
 
 @Dao
 interface RecordingRunDao {
+    @Query("SELECT id FROM recording_runs WHERE provider_id = :providerId")
+    suspend fun getIdsByProvider(providerId: Long): List<String>
+
     @Query(
         """
         SELECT
@@ -156,15 +159,17 @@ interface RecordingStorageDao {
 
 @Dao
 interface ProgramReminderDao {
+    @Query("SELECT id FROM program_reminders WHERE provider_id = :providerId")
+    suspend fun getIdsByProvider(providerId: Long): List<Long>
+
     @Query(
         """
         SELECT * FROM program_reminders
         WHERE is_dismissed = 0
-          AND program_start_time >= :now
         ORDER BY remind_at ASC, program_start_time ASC
         """
     )
-    fun observeUpcoming(now: Long = System.currentTimeMillis()): Flow<List<ProgramReminderEntity>>
+        fun observeUpcoming(): Flow<List<ProgramReminderEntity>>
 
     @Query(
         """

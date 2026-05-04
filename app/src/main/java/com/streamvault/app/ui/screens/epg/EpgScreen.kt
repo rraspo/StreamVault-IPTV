@@ -1,6 +1,7 @@
 package com.streamvault.app.ui.screens.epg
 
 import android.view.inputmethod.InputMethodManager
+import com.streamvault.app.ui.model.isArchivePlayable
 import com.streamvault.app.ui.model.guideLookupKey
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -88,6 +89,7 @@ import com.streamvault.app.R
 import com.streamvault.app.device.rememberIsTelevisionDevice
 import com.streamvault.app.ui.components.ChannelLogoBadge
 import com.streamvault.app.navigation.Routes
+import com.streamvault.app.ui.notifications.rememberNotificationPermissionGate
 import com.streamvault.app.ui.components.SelectionChip
 import com.streamvault.app.ui.components.SelectionChipRow
 import kotlinx.coroutines.launch
@@ -155,6 +157,13 @@ fun FullEpgScreen(
     var pendingLockedAction by remember { mutableStateOf<LockedGuideAction?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val notificationPermissionGate = rememberNotificationPermissionGate(
+        onNotificationsBlocked = { message ->
+            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+        },
+        reminderBlockedMessage = stringResource(R.string.notification_permission_reminder_required),
+        recordingBlockedMessage = stringResource(R.string.notification_permission_recording_alert_required)
+    )
     val returnRoute = remember(uiState.selectedCategoryId, uiState.guideAnchorTime, uiState.showFavoritesOnly) {
         Routes.epg(
             categoryId = uiState.selectedCategoryId.takeIf { it != ChannelRepository.ALL_CHANNELS_ID },
@@ -240,7 +249,13 @@ fun FullEpgScreen(
                 )
             },
             confirmButton = {
-                androidx.compose.material3.TextButton(onClick = { viewModel.forceScheduleRecording() }) {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.forceScheduleRecording()
+                        }
+                    }
+                ) {
                     androidx.compose.material3.Text(
                         text = stringResource(R.string.epg_recording_conflict_replace),
                         color = com.streamvault.app.ui.theme.Primary
@@ -582,6 +597,7 @@ fun FullEpgScreen(
             } else {
                 null
             }
+            val canWatchArchive = channel.isArchivePlayable(program, currentGuideNow())
             CompactGuideProgramDialog(
                 channel = channel,
                 program = program,
@@ -602,7 +618,7 @@ fun FullEpgScreen(
                         )
                     }
                 },
-                onWatchArchive = if (program.hasArchive || channel.catchUpSupported) {
+                onWatchArchive = if (canWatchArchive) {
                     {
                         selectedProgram = null
                         if (isGuideChannelLocked(channel, categoriesById, uiState.parentalControlLevel)) {
@@ -623,20 +639,40 @@ fun FullEpgScreen(
                 },
                 reminderButtonLabel = reminderButtonLabel,
                 onToggleReminder = reminderButtonLabel?.let {
-                    { viewModel.toggleProgramReminder(channel, program) }
+                    {
+                        if (reminderStateMatches && programReminderUiState.isScheduled) {
+                            viewModel.toggleProgramReminder(channel, program)
+                        } else {
+                            notificationPermissionGate.runReminderAction {
+                                viewModel.toggleProgramReminder(channel, program)
+                            }
+                        }
+                    }
                 },
                 onScheduleRecording = if (channel.streamUrl.isNotBlank() && program.endTime > currentGuideNow()) {
-                    { viewModel.scheduleRecording(channel, program) }
+                    {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleRecording(channel, program)
+                        }
+                    }
                 } else {
                     null
                 },
                 onScheduleDailyRecording = if (channel.streamUrl.isNotBlank() && program.endTime > currentGuideNow()) {
-                    { viewModel.scheduleRecording(channel, program, com.streamvault.domain.model.RecordingRecurrence.DAILY) }
+                    {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleRecording(channel, program, com.streamvault.domain.model.RecordingRecurrence.DAILY)
+                        }
+                    }
                 } else {
                     null
                 },
                 onScheduleWeeklyRecording = if (channel.streamUrl.isNotBlank() && program.endTime > currentGuideNow()) {
-                    { viewModel.scheduleRecording(channel, program, com.streamvault.domain.model.RecordingRecurrence.WEEKLY) }
+                    {
+                        notificationPermissionGate.runRecordingAction {
+                            viewModel.scheduleRecording(channel, program, com.streamvault.domain.model.RecordingRecurrence.WEEKLY)
+                        }
+                    }
                 } else {
                     null
                 }

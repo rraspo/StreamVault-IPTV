@@ -36,6 +36,37 @@ class XtreamProvider(
 ) : IptvProvider {
     companion object {
         private const val TAG = "XtreamProvider"
+
+        /**
+         * Offset-aware formatters for Xtream EPG textual timestamps.
+         * Only [OffsetDateTime] is attempted with these; we never fall back to
+         * [LocalDateTime] on these formatters, which would silently drop the
+         * timezone and produce a time that is wrong by several hours.
+         */
+        private val xtreamEpgOffsetFormats: List<DateTimeFormatter> = listOf(
+            // ISO 8601 with colon offset: "2025-01-01T12:00:00+03:00"
+            DateTimeFormatter.ISO_OFFSET_DATE_TIME,
+            // Space-separated with colon offset: "2025-01-01 12:00:00+03:00"
+            DateTimeFormatterBuilder()
+                .parseCaseInsensitive()
+                .appendPattern("yyyy-MM-dd HH:mm:ssXXX")
+                .toFormatter(Locale.US),
+            // Space-separated with numeric offset: "2025-01-01 12:00:00+0300"
+            DateTimeFormatterBuilder()
+                .parseCaseInsensitive()
+                .appendPattern("yyyy-MM-dd HH:mm:ssxx")
+                .toFormatter(Locale.US)
+        )
+
+        /**
+         * Local (no timezone) formatters for Xtream EPG textual timestamps.
+         * Values parsed with these are assumed to be UTC, which is the
+         * convention used by Xtream Codes providers.
+         */
+        private val xtreamEpgLocalFormats: List<DateTimeFormatter> = listOf(
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.US),
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        )
     }
 
     private enum class XtreamTextDecodeMode {
@@ -300,16 +331,19 @@ class XtreamProvider(
             val resolvedSeasonNumber = seasonNum.toIntOrNull() ?: episodes.firstNotNullOfOrNull { episode ->
                 episode.season.takeIf { it > 0 }
             } ?: 0
-            val mappedEpisodes = episodes.mapNotNull { ep ->
-                val episodeId = ep.id.toLongOrNull()?.takeIf { it > 0 } ?: return@mapNotNull null
+            val mappedEpisodes = episodes.mapIndexedNotNull { index, ep ->
+                val episodeId = ep.id.toLongOrNull()?.takeIf { it > 0 }
+                    ?: ep.episodeNum.takeIf { it > 0 }?.let { resolvedSeasonNumber * 10000L + it }
+                    ?: ((index + 1).let { resolvedSeasonNumber * 10000L + it })
+                val normalizedEpisodeNum = if (ep.episodeNum > 0) ep.episodeNum else index + 1
                 val normalizedExtension = normalizeContainerExtension(ep.containerExtension)
                 Episode(
                     id = episodeId,
                     title = decodeXtreamText(
-                        ep.title.ifBlank { decodeXtreamNullableText(ep.info?.name, XtreamTextDecodeMode.RAW) ?: "Episode ${ep.episodeNum}" },
+                        ep.title.ifBlank { decodeXtreamNullableText(ep.info?.name, XtreamTextDecodeMode.RAW) ?: "Episode $normalizedEpisodeNum" },
                         XtreamTextDecodeMode.RAW
                     ),
-                    episodeNumber = ep.episodeNum,
+                    episodeNumber = normalizedEpisodeNum,
                     seasonNumber = ep.season.takeIf { it > 0 } ?: resolvedSeasonNumber,
                     containerExtension = normalizedExtension,
                     coverUrl = sanitizeAssetValue(ep.info?.movieImage),
@@ -372,7 +406,7 @@ class XtreamProvider(
                 extraQueryParams = mapOf("stream_id" to streamId.toString())
             )
         )
-        Result.success(response.epgListings.map { it.toDomain() })
+        Result.success(response.epgListings.mapNotNull { it.toDomainOrNull() })
     } catch (e: Exception) {
         Result.error(XtreamErrorFormatter.message("Failed to load EPG", e), e)
     }
@@ -391,7 +425,7 @@ class XtreamProvider(
                 )
             )
         )
-        Result.success(response.epgListings.map { it.toDomain() })
+        Result.success(response.epgListings.mapNotNull { it.toDomainOrNull() })
     } catch (e: Exception) {
         Result.error(XtreamErrorFormatter.message("Failed to load EPG", e), e)
     }
@@ -663,7 +697,7 @@ class XtreamProvider(
 
     private fun XtreamStream.toChannel(adultCategoryIds: Set<Long>): Channel? {
         if (streamId <= 0) return null
-        val category = resolveXtreamCategory(ContentType.LIVE, categoryId, categoryName)
+        val category = resolveXtreamCategory(ContentType.LIVE, primaryCategoryId(), categoryName)
         val primaryContainerExtension = preferredLiveContainerExtension(containerExtension)
         val resolvedName = decodeXtreamNullableText(name, XtreamTextDecodeMode.RAW)?.ifBlank { null } ?: "Channel $streamId"
         val sanitizedLogoUrl = sanitizeAssetValue(streamIcon)
@@ -707,7 +741,7 @@ class XtreamProvider(
 
     private fun XtreamStream.toMovie(adultCategoryIds: Set<Long>): Movie? {
         if (streamId <= 0) return null
-        val category = resolveXtreamCategory(ContentType.MOVIE, categoryId, categoryName)
+        val category = resolveXtreamCategory(ContentType.MOVIE, primaryCategoryId(), categoryName)
         val resolvedName = decodeXtreamNullableText(name, XtreamTextDecodeMode.RAW)?.ifBlank { null } ?: "Movie $streamId"
         val normalizedContainerExtension = normalizeContainerExtension(containerExtension)
         val sanitizedDirectSource = sanitizeAssetValue(directSource)
@@ -871,7 +905,18 @@ class XtreamProvider(
         )
     }
 
-    private fun XtreamEpgListing.toDomain(): Program {
+    private fun XtreamEpgListing.toDomainOrNull(): Program? {
+        // Resolve start and end independently: use the numeric timestamp when present
+        // (> 0), otherwise fall back to the textual field. Using per-field resolution
+        // prevents a valid numeric startTimestamp from being discarded just because
+        // stopTimestamp is absent (some providers omit one but not the other).
+        val resolvedStart = if (startTimestamp > 0L) startTimestamp * 1000L
+                            else parseXtreamEpgTimestamp(start)
+        val resolvedEnd   = if (stopTimestamp  > 0L) stopTimestamp  * 1000L
+                            else parseXtreamEpgTimestamp(end)
+        // Skip silently rather than emitting an epoch-zero programme that corrupts the guide.
+        if (resolvedStart <= 0L || resolvedEnd <= resolvedStart) return null
+
         // Xtream sometimes base64-encodes title and description
         val decodedTitle = decodeXtreamText(title, XtreamTextDecodeMode.EPG)
         val decodedDescription = decodeXtreamText(description, XtreamTextDecodeMode.EPG)
@@ -881,14 +926,47 @@ class XtreamProvider(
             channelId = channelId,
             title = decodedTitle,
             description = decodedDescription,
-            startTime = startTimestamp * 1000L,
-            endTime = stopTimestamp * 1000L,
+            startTime = resolvedStart,
+            endTime = resolvedEnd,
             lang = lang,
             category = null,
             hasArchive = hasArchive == 1,
             isNowPlaying = nowPlaying == 1,
             providerId = providerId
         )
+    }
+
+    /**
+     * Parses an Xtream EPG time value which may be:
+     * - A numeric epoch-seconds string (e.g. `"1735726800"`)
+     * - An ISO-style date-time with timezone offset (e.g. `"2025-01-01T12:00:00+03:00"`)
+     * - An ISO-style local date-time, assumed UTC (e.g. `"2025-01-01 12:00:00"`)
+     *
+     * Offset-aware formats are tried first so that a valid `+HH:mm` suffix is never
+     * silently dropped. Local formats are only tried after all offset paths fail.
+     *
+     * Returns epoch-milliseconds, or 0 if the value cannot be parsed.
+     */
+    private fun parseXtreamEpgTimestamp(value: String): Long {
+        if (value.isBlank()) return 0L
+        val trimmed = value.trim()
+        // Numeric string: epoch seconds (must be > 0 to exclude placeholder zeroes)
+        trimmed.toLongOrNull()?.takeIf { it > 0L }?.let { return it * 1000L }
+        // Offset-aware text timestamps: use OffsetDateTime only — never LocalDateTime
+        // on these formatters, because LocalDateTime.from(OffsetDateTime) strips the
+        // offset and would return a time that is wrong by the provider's UTC offset.
+        xtreamEpgOffsetFormats.forEach { formatter ->
+            runCatching {
+                OffsetDateTime.parse(trimmed, formatter).toInstant().toEpochMilli()
+            }.getOrNull()?.let { return it }
+        }
+        // Local text timestamps: UTC is assumed (Xtream convention)
+        xtreamEpgLocalFormats.forEach { formatter ->
+            runCatching {
+                LocalDateTime.parse(trimmed, formatter).toInstant(ZoneOffset.UTC).toEpochMilli()
+            }.getOrNull()?.let { return it }
+        }
+        return 0L
     }
 
     private fun decodeXtreamNullableText(
@@ -953,6 +1031,23 @@ class XtreamProvider(
             ResolvedXtreamCategory(id = null, name = null)
         }
     }
+
+    private fun XtreamStream.primaryCategoryId(): String? {
+        val normalizedCategoryId = categoryId.normalizedCategoryToken()
+        val firstAlternateCategoryId = categoryIds.orEmpty()
+            .mapNotNull { it.normalizedCategoryToken() }
+            .firstOrNull { it != "0" }
+            ?: categoryIds.orEmpty().firstNotNullOfOrNull { it.normalizedCategoryToken() }
+        return when {
+            normalizedCategoryId == null -> firstAlternateCategoryId
+            normalizedCategoryId == "0" && firstAlternateCategoryId != null && firstAlternateCategoryId != "0" -> firstAlternateCategoryId
+            else -> normalizedCategoryId
+        }
+    }
+
+    private fun String?.normalizedCategoryToken(): String? = this
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
 
     private fun syntheticCategoryId(type: ContentType, seed: String): Long {
         val normalized = "$providerId/${type.name}/${seed.trim().lowercase(Locale.ROOT)}"

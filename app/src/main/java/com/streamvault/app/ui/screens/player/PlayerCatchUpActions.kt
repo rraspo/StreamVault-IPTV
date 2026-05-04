@@ -1,11 +1,21 @@
 package com.streamvault.app.ui.screens.player
 
 import androidx.lifecycle.viewModelScope
+import com.streamvault.app.ui.model.isArchivePlayable
 import com.streamvault.data.security.CredentialDecryptionException
+import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Program
 import com.streamvault.domain.model.StreamInfo
-import com.streamvault.domain.model.StreamType
 import kotlinx.coroutines.launch
+
+internal suspend fun resolveCatchUpStreamInfo(
+    candidateUrl: String,
+    title: String,
+    currentContentId: Long,
+    currentProviderId: Long,
+    resolveStreamInfo: suspend (String, Long, Long, ContentType) -> StreamInfo?
+): StreamInfo? = resolveStreamInfo(candidateUrl, currentContentId, currentProviderId, ContentType.LIVE)
+    ?.copy(title = title)
 
 internal suspend fun PlayerViewModel.startCatchUpPlayback(
     urls: List<String>,
@@ -30,11 +40,13 @@ internal suspend fun PlayerViewModel.startCatchUpPlayback(
     updateStreamClass("Catch-up")
     appendRecoveryAction(recoveryAction)
 
-    val catchupStream = StreamInfo(
-        url = primaryUrl,
+    val catchupStream = resolveCatchUpStreamInfo(
+        candidateUrl = primaryUrl,
         title = currentTitle,
-        streamType = StreamType.UNKNOWN
-    )
+        currentContentId = currentContentId,
+        currentProviderId = currentProviderId,
+        resolveStreamInfo = ::resolvePlaybackStreamInfo
+    ) ?: return
     if (!preparePlayer(catchupStream, requestVersion)) return
     playerEngine.play()
 }
@@ -42,9 +54,13 @@ internal suspend fun PlayerViewModel.startCatchUpPlayback(
 fun PlayerViewModel.playCatchUp(program: Program) {
     viewModelScope.launch {
         val requestVersion = prepareRequestVersion
+        val channel = currentChannelFlow.value
+        if (channel == null || !channel.isArchivePlayable(program)) {
+            return@launch
+        }
         val start = program.startTime / 1000L
         val end = program.endTime / 1000L
-        val streamId = currentChannelFlow.value?.id ?: 0L
+        val streamId = channel.id
         val providerId = currentProviderId
 
         if (providerId == -1L || streamId == 0L) {
@@ -73,12 +89,12 @@ fun PlayerViewModel.playCatchUp(program: Program) {
         if (catchUpUrls.isNotEmpty()) {
             startCatchUpPlayback(
                 urls = catchUpUrls,
-                title = "${currentChannelFlow.value?.name ?: ""}: ${program.title}",
+                title = "${channel.name}: ${program.title}",
                 recoveryAction = "Started program replay"
             )
         } else {
             val reason = resolveCatchUpFailureMessage(
-                currentChannelFlow.value,
+                channel,
                 archiveRequested = true,
                 programHasArchive = program.hasArchive
             )

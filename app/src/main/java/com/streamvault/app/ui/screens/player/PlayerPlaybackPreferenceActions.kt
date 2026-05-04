@@ -13,6 +13,54 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.collections.LinkedHashSet
+
+private const val THUMBNAIL_PRELOAD_BUCKET_MS = 10_000L
+private const val THUMBNAIL_PRELOAD_FRAME_BUDGET = 6
+
+internal fun buildThumbnailPreloadPositions(
+    durationMs: Long,
+    currentPositionMs: Long,
+    bucketMs: Long = THUMBNAIL_PRELOAD_BUCKET_MS,
+    frameBudget: Int = THUMBNAIL_PRELOAD_FRAME_BUDGET
+): List<Long> {
+    if (durationMs <= 0L || bucketMs <= 0L || frameBudget <= 0) return emptyList()
+
+    val maxPositionMs = durationMs.coerceAtLeast(0L)
+    val anchorPositionMs = (currentPositionMs.coerceIn(0L, maxPositionMs) / bucketMs) * bucketMs
+    val plannedPositions = LinkedHashSet<Long>()
+    var offsetMs = 0L
+
+    while (plannedPositions.size < frameBudget) {
+        val forwardPositionMs = anchorPositionMs + offsetMs
+        if (forwardPositionMs <= maxPositionMs) {
+            plannedPositions += forwardPositionMs
+        }
+        if (plannedPositions.size >= frameBudget) break
+
+        if (offsetMs > 0L) {
+            val backwardPositionMs = anchorPositionMs - offsetMs
+            if (backwardPositionMs >= 0L) {
+                plannedPositions += backwardPositionMs
+            }
+        }
+
+        if (forwardPositionMs > maxPositionMs && anchorPositionMs - offsetMs < 0L) {
+            break
+        }
+        offsetMs += bucketMs
+    }
+
+    return plannedPositions.toList()
+}
+
+internal fun shouldStartThumbnailPreload(
+    preloadKey: String,
+    lastCompletedPreloadKey: String?,
+    inFlightPreloadKey: String?
+): Boolean = preloadKey.isNotBlank() &&
+    preloadKey != lastCompletedPreloadKey &&
+    preloadKey != inFlightPreloadKey
 
 fun PlayerViewModel.selectAudioTrack(trackId: String) {
     playerEngine.selectAudioTrack(trackId)
@@ -68,7 +116,6 @@ fun PlayerViewModel.selectLiveVariant(rawChannelId: Long) {
         ) ?: return@launch
         if (!isActivePlaybackSession(requestVersion, updatedChannel.streamUrl)) return@launch
         if (currentContentType == ContentType.LIVE) {
-            recordLivePlayback(updatedChannel)
             requestEpg(
                 providerId = updatedChannel.providerId,
                 epgChannelId = updatedChannel.epgChannelId,
@@ -233,18 +280,30 @@ fun PlayerViewModel.updateSeekPreview(positionMs: Long?) {
 }
 
 internal fun PlayerViewModel.startThumbnailPreload() {
-    thumbnailPreloadJob?.cancel()
     val url = currentResolvedPlaybackUrl.ifBlank { currentStreamUrl }
     if (url.isBlank() || !seekThumbnailProvider.supportsFrameExtraction(url)) return
+    if (!shouldStartThumbnailPreload(url, lastCompletedThumbnailPreloadKey, inFlightThumbnailPreloadKey)) return
     val durationMs = playerEngine.duration.value
     if (durationMs <= 0L) return
+    val preloadPositions = buildThumbnailPreloadPositions(
+        durationMs = durationMs,
+        currentPositionMs = playerEngine.currentPosition.value
+    )
+    if (preloadPositions.isEmpty()) return
+
+    thumbnailPreloadJob?.cancel()
+    inFlightThumbnailPreloadKey = url
     thumbnailPreloadJob = viewModelScope.launch(Dispatchers.Default) {
-        val bucketMs = 10_000L
-        var pos = 0L
-        while (pos <= durationMs) {
-            ensureActive()
-            seekThumbnailProvider.loadFrame(url, pos)
-            pos += bucketMs
+        try {
+            preloadPositions.forEach { positionMs ->
+                ensureActive()
+                seekThumbnailProvider.loadFrame(url, positionMs)
+            }
+            lastCompletedThumbnailPreloadKey = url
+        } finally {
+            if (inFlightThumbnailPreloadKey == url) {
+                inFlightThumbnailPreloadKey = null
+            }
         }
     }
 }

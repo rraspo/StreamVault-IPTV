@@ -7,6 +7,7 @@ import com.streamvault.data.local.entity.CategoryCount
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.data.mapper.toEntity
 import com.streamvault.domain.model.*
+import kotlinx.coroutines.flow.first
 import com.streamvault.domain.repository.FavoriteRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -70,6 +71,12 @@ class FavoriteRepositoryImpl @Inject constructor(
         favoriteDao.getGroupFavoriteCounts(providerId, contentType.name)
             .map { list -> list.associate { it.categoryId to it.item_count } }
 
+    override fun getGroupFavoriteCounts(providerIds: List<Long>, contentType: ContentType): Flow<Map<Long, Int>> {
+        if (providerIds.isEmpty()) return flowOf(emptyMap())
+        return favoriteDao.getGroupFavoriteCountsForProviders(providerIds, contentType.name)
+            .map { list -> list.associate { it.categoryId to it.item_count } }
+    }
+
     override suspend fun addFavorite(
         providerId: Long,
         contentId: Long,
@@ -77,6 +84,10 @@ class FavoriteRepositoryImpl @Inject constructor(
         groupId: Long?
     ): Result<Unit> = try {
         transactionRunner.inTransaction {
+            validateGroupAssignment(providerId, contentType, groupId)
+            if (favoriteDao.get(providerId, contentId, contentType.name, groupId) != null) {
+                return@inTransaction
+            }
             val maxPos = favoriteDao.getMaxPosition(providerId, groupId) ?: -1
             val favorite = Favorite(
                 providerId = providerId,
@@ -99,7 +110,74 @@ class FavoriteRepositoryImpl @Inject constructor(
         Result.error("Failed to remove favorite: ${e.message}", e)
     }
 
+    override suspend fun moveFavoriteToGroup(
+        providerId: Long,
+        contentId: Long,
+        contentType: ContentType,
+        fromGroupId: Long?,
+        targetGroupId: Long?
+    ): Result<Unit> {
+        return try {
+        if (fromGroupId == targetGroupId) {
+            return Result.success(Unit)
+        }
+
+        transactionRunner.inTransaction {
+            validateGroupAssignment(providerId, contentType, targetGroupId)
+            val sourceFavorite = favoriteDao.get(providerId, contentId, contentType.name, fromGroupId)
+                ?: throw IllegalArgumentException("Favorite $contentId is not saved in the requested source group")
+            val targetFavorite = favoriteDao.get(providerId, contentId, contentType.name, targetGroupId)
+            if (targetFavorite != null) {
+                favoriteDao.delete(providerId, contentId, contentType.name, fromGroupId)
+            } else {
+                favoriteDao.updateGroup(sourceFavorite.id, targetGroupId)
+            }
+        }
+        Result.success(Unit)
+    } catch (e: Exception) {
+        Result.error("Failed to move favorite: ${e.message}", e)
+        }
+    }
+
+    override suspend fun mergeGroupInto(sourceGroupId: Long, targetGroupId: Long): Result<Unit> = try {
+        require(sourceGroupId != targetGroupId) { "Source and target groups must differ" }
+
+        transactionRunner.inTransaction {
+            val sourceGroup = virtualGroupDao.getById(sourceGroupId)
+                ?: throw IllegalArgumentException("Favorite group $sourceGroupId does not exist")
+            val targetGroup = virtualGroupDao.getById(targetGroupId)
+                ?: throw IllegalArgumentException("Favorite group $targetGroupId does not exist")
+
+            require(sourceGroup.providerId == targetGroup.providerId) {
+                "Favorite groups must belong to the same provider"
+            }
+            require(sourceGroup.contentType == targetGroup.contentType) {
+                "Favorite groups must have the same content type"
+            }
+
+            favoriteDao.getByGroup(sourceGroupId).first().forEach { favorite ->
+                val targetFavorite = favoriteDao.get(
+                    providerId = favorite.providerId,
+                    contentId = favorite.contentId,
+                    contentType = favorite.contentType.name,
+                    groupId = targetGroupId
+                )
+                if (targetFavorite != null) {
+                    favoriteDao.delete(favorite.providerId, favorite.contentId, favorite.contentType.name, sourceGroupId)
+                } else {
+                    favoriteDao.updateGroup(favorite.id, targetGroupId)
+                }
+            }
+
+            virtualGroupDao.delete(sourceGroupId)
+        }
+        Result.success(Unit)
+    } catch (e: Exception) {
+        Result.error("Failed to merge groups: ${e.message}", e)
+    }
+
     override suspend fun reorderFavorites(favorites: List<Favorite>): Result<Unit> = try {
+        validateReorderPartition(favorites)
         val updates = buildReorderUpdates(favorites)
         if (updates.isNotEmpty()) {
             favoriteDao.updateAll(updates.map(Favorite::toEntity))
@@ -117,11 +195,13 @@ class FavoriteRepositoryImpl @Inject constructor(
         favoriteDao.getGroupMemberships(providerId, contentId, contentType.name)
 
     override suspend fun createGroup(providerId: Long, name: String, iconEmoji: String?, contentType: ContentType): Result<VirtualGroup> = try {
+        val position = (virtualGroupDao.getMaxPosition(providerId, contentType.name) ?: -POSITION_STEP) + POSITION_STEP
         val id = virtualGroupDao.insert(
             com.streamvault.data.local.entity.VirtualGroupEntity(
                 providerId = providerId,
                 name = name,
                 iconEmoji = iconEmoji,
+                position = position,
                 contentType = contentType
             )
         )
@@ -131,6 +211,7 @@ class FavoriteRepositoryImpl @Inject constructor(
                 providerId = providerId,
                 name = name,
                 iconEmoji = iconEmoji,
+                position = position,
                 contentType = contentType
             )
         )
@@ -139,7 +220,22 @@ class FavoriteRepositoryImpl @Inject constructor(
     }
 
     override suspend fun deleteGroup(groupId: Long): Result<Unit> = try {
-        virtualGroupDao.delete(groupId)
+        transactionRunner.inTransaction {
+            favoriteDao.getByGroup(groupId).first().forEach { favorite ->
+                val globalFavorite = favoriteDao.get(
+                    providerId = favorite.providerId,
+                    contentId = favorite.contentId,
+                    contentType = favorite.contentType.name,
+                    groupId = null
+                )
+                if (globalFavorite != null) {
+                    favoriteDao.delete(favorite.providerId, favorite.contentId, favorite.contentType.name, groupId)
+                } else {
+                    favoriteDao.updateGroup(favorite.id, null)
+                }
+            }
+            virtualGroupDao.delete(groupId)
+        }
         Result.success(Unit)
     } catch (e: Exception) {
         Result.error("Failed to delete group: ${e.message}", e)
@@ -175,6 +271,38 @@ class FavoriteRepositoryImpl @Inject constructor(
 
         return reassigned.filter { updated ->
             updated.position != currentById.getValue(updated.id).position
+        }
+    }
+
+    private fun validateReorderPartition(favorites: List<Favorite>) {
+        if (favorites.isEmpty()) return
+
+        require(favorites.map(Favorite::id).distinct().size == favorites.size) {
+            "Favorite reorder request contains duplicate items"
+        }
+
+        val partitions = favorites
+            .map { favorite -> favorite.providerId to favorite.groupId }
+            .distinct()
+        require(partitions.size == 1) {
+            "Favorite reorder request must stay within one provider and group partition"
+        }
+    }
+
+    private suspend fun validateGroupAssignment(
+        providerId: Long,
+        contentType: ContentType,
+        groupId: Long?
+    ) {
+        val targetGroupId = groupId ?: return
+        val group = virtualGroupDao.getById(targetGroupId)
+            ?: throw IllegalArgumentException("Favorite group $targetGroupId does not exist")
+
+        require(group.providerId == providerId) {
+            "Favorite group $targetGroupId belongs to provider ${group.providerId}, not $providerId"
+        }
+        require(group.contentType == contentType) {
+            "Favorite group $targetGroupId accepts ${group.contentType}, not $contentType"
         }
     }
 

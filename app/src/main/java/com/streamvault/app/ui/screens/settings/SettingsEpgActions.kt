@@ -39,17 +39,21 @@ internal class SettingsEpgActions(
         }
     }
 
-    fun addEpgSource(scope: CoroutineScope, name: String, url: String) {
+    fun addEpgSource(scope: CoroutineScope, name: String, url: String, onSuccess: () -> Unit = {}, onError: () -> Unit = {}) {
         scope.launch {
             try {
                 val result = epgSourceRepository.addSource(name, url)
                 if (result is Result.Error) {
                     uiState.update { it.copy(userMessage = result.message) }
+                    onError()
+                } else {
+                    onSuccess()
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 showUnexpectedError(error, "Failed to add EPG source")
+                onError()
             }
         }
     }
@@ -91,7 +95,9 @@ internal class SettingsEpgActions(
         scope.launch {
             uiState.update { it.copy(refreshingEpgSourceIds = it.refreshingEpgSourceIds + sourceId) }
             try {
-                val affectedProviders = loadedProvidersForSource(sourceId)
+                // Query from the repository BEFORE refresh so all assigned providers are
+                // updated, not just those already loaded into the UI state.
+                val affectedProviders = epgSourceRepository.getProviderIdsForSource(sourceId)
                 val result = epgSourceRepository.refreshSource(sourceId)
                 if (result !is Result.Error) {
                     refreshLoadedResolutionSummaries(affectedProviders)
@@ -192,6 +198,23 @@ internal class SettingsEpgActions(
         val summary = epgSourceRepository.getResolutionSummary(providerId)
         uiState.update {
             it.copy(epgResolutionSummaries = it.epgResolutionSummaries + (providerId to summary))
+        }
+    }
+
+    /**
+     * Cancels the assignment collector job for each provider in [removedIds] and purges their
+     * entries from [SettingsUiState]. Called when the provider list shrinks so that the
+     * [assignmentJobs] map doesn't grow unboundedly for providers that no longer exist.
+     */
+    fun cleanupEpgAssignmentsFor(removedIds: Set<Long>) {
+        for (id in removedIds) {
+            assignmentJobs.remove(id)?.cancel()
+        }
+        uiState.update { state ->
+            state.copy(
+                epgSourceAssignments = state.epgSourceAssignments - removedIds,
+                epgResolutionSummaries = state.epgResolutionSummaries - removedIds
+            )
         }
     }
 

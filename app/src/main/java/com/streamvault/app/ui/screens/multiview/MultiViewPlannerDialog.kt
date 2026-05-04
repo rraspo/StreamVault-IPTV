@@ -57,7 +57,9 @@ fun MultiViewPlannerDialog(
     onLaunch: () -> Unit,
     viewModel: MultiViewViewModel = hiltViewModel()
 ) {
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val slots by viewModel.slotsFlow.collectAsStateWithLifecycle()
+    val centeredTwoSlotLayout = uiState.centerTwoSlotLayout
     val isPickerMode = pendingChannel != null
     val hasAny = slots.any { it != null }
     val channelPlaced = pendingChannel != null && slots.any { it?.id == pendingChannel.id }
@@ -66,6 +68,12 @@ fun MultiViewPlannerDialog(
     LaunchedEffect(Unit) {
         delay(150)
         runCatching { firstSlotFocusRequester.requestFocus() }
+    }
+
+    LaunchedEffect(centeredTwoSlotLayout) {
+        if (centeredTwoSlotLayout) {
+            viewModel.normalizeCenteredTwoSlotLayoutIfNeeded()
+        }
     }
 
     val subtitle = when {
@@ -97,13 +105,17 @@ fun MultiViewPlannerDialog(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                for (row in 0 until 2) {
+                val plannerRows = if (centeredTwoSlotLayout) {
+                    listOf(listOf(0, 1))
+                } else {
+                    listOf(listOf(0, 1), listOf(2, 3))
+                }
+                plannerRows.forEachIndexed { rowIndex, rowSlots ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        for (col in 0 until 2) {
-                            val slotIndex = row * 2 + col
+                        rowSlots.forEachIndexed { colIndex, slotIndex ->
                             val occupant = slots.getOrNull(slotIndex)
                             MultiViewSlotCard(
                                 slotIndex = slotIndex,
@@ -112,7 +124,7 @@ fun MultiViewPlannerDialog(
                                 modifier = Modifier
                                     .weight(1f)
                                     .then(
-                                        if (slotIndex == 0) Modifier.focusRequester(firstSlotFocusRequester)
+                                        if (rowIndex == 0 && colIndex == 0) Modifier.focusRequester(firstSlotFocusRequester)
                                         else Modifier
                                     ),
                                 onSlotClick = {

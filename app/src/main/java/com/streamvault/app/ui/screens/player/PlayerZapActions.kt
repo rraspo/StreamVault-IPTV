@@ -1,13 +1,14 @@
 package com.streamvault.app.ui.screens.player
 
 import androidx.lifecycle.viewModelScope
+import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.ChannelNumberingMode
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.PlaybackHistory
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 internal const val MAX_NUMERIC_CHANNEL_INPUT_DIGITS = 6
@@ -18,6 +19,63 @@ internal fun appendNumericChannelDigit(currentBuffer: String, digit: Int): Strin
         nextDigit
     } else {
         currentBuffer + nextDigit
+    }
+}
+
+internal data class LivePlaybackRecordCandidate(
+    val playbackKey: Pair<Long, Long>,
+    val history: PlaybackHistory
+)
+
+internal fun buildLivePlaybackRecordCandidate(
+    currentProviderId: Long,
+    currentContentType: ContentType,
+    currentContentId: Long,
+    currentTitle: String,
+    currentResolvedPlaybackUrl: String,
+    currentStreamUrl: String,
+    channel: Channel?
+): LivePlaybackRecordCandidate? {
+    if (currentProviderId <= 0L || currentContentType != ContentType.LIVE) return null
+
+    channel?.let {
+        return LivePlaybackRecordCandidate(
+            playbackKey = currentProviderId to it.id,
+            history = PlaybackHistory(
+                contentId = it.id,
+                contentType = ContentType.LIVE,
+                providerId = currentProviderId,
+                title = it.name,
+                streamUrl = it.streamUrl,
+                lastWatchedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
+    val contentId = currentContentId.takeIf { it > 0L } ?: return null
+    val streamUrl = currentResolvedPlaybackUrl.ifBlank { currentStreamUrl }.takeIf { it.isNotBlank() } ?: return null
+    return LivePlaybackRecordCandidate(
+        playbackKey = currentProviderId to contentId,
+        history = PlaybackHistory(
+            contentId = contentId,
+            contentType = ContentType.LIVE,
+            providerId = currentProviderId,
+            title = currentTitle,
+            streamUrl = streamUrl,
+            lastWatchedAt = System.currentTimeMillis()
+        )
+    )
+}
+
+internal suspend fun <T> withScopedScrubbingMode(
+    setScrubbingMode: (Boolean) -> Unit,
+    block: suspend () -> T
+): T {
+    setScrubbingMode(true)
+    return try {
+        block()
+    } finally {
+        setScrubbingMode(false)
     }
 }
 
@@ -144,23 +202,21 @@ internal fun PlayerViewModel.changeChannel(index: Int, isAutoFallback: Boolean =
     displayChannelNumberFlow.value = resolveChannelNumber(channel, index)
     recentChannelsFlow.update { channels -> channels.filterNot { it.id == channel.id } }
 
-    playerEngine.setScrubbingMode(true)
-
     viewModelScope.launch {
-        val streamInfo = resolvePlaybackStreamInfo(channel.streamUrl, channel.id, channel.providerId, ContentType.LIVE)
-            ?: return@launch
-        if (!isActivePlaybackSession(requestVersion, channel.streamUrl)) return@launch
-        if (!preparePlayer(streamInfo, requestVersion)) return@launch
-        playerEngine.play()
+        withScopedScrubbingMode(playerEngine::setScrubbingMode) {
+            val streamInfo = resolvePlaybackStreamInfo(channel.streamUrl, channel.id, channel.providerId, ContentType.LIVE)
+                ?: return@withScopedScrubbingMode
+            if (!isActivePlaybackSession(requestVersion, channel.streamUrl)) return@withScopedScrubbingMode
+            if (!preparePlayer(streamInfo, requestVersion)) return@withScopedScrubbingMode
+            playerEngine.play()
 
-        playerEngine.playbackState
-            .filter { it == com.streamvault.player.PlaybackState.READY }
-            .take(1)
-            .collect {
-                if (isActivePlaybackSession(requestVersion, channel.streamUrl)) {
-                    playerEngine.setScrubbingMode(false)
+            playerEngine.playbackState
+                .filter {
+                    it == com.streamvault.player.PlaybackState.READY ||
+                        !isActivePlaybackSession(requestVersion, channel.streamUrl)
                 }
-            }
+                .first()
+        }
     }
 
     preloadAdjacentChannel(index)
@@ -178,10 +234,7 @@ internal fun PlayerViewModel.changeChannel(index: Int, isAutoFallback: Boolean =
 
     triedAlternativeStreams.clear()
     triedAlternativeStreams.add(channel.streamUrl)
-    if (currentContentType == ContentType.LIVE) {
-        recordLivePlayback(channel)
-        if (!isAutoFallback) scheduleZapBufferWatchdog(index)
-    }
+    if (currentContentType == ContentType.LIVE && !isAutoFallback) scheduleZapBufferWatchdog(index)
 }
 
 internal fun PlayerViewModel.preloadAdjacentChannel(currentIndex: Int) {
@@ -200,25 +253,27 @@ internal fun PlayerViewModel.preloadAdjacentChannel(currentIndex: Int) {
 }
 
 internal fun PlayerViewModel.recordLivePlayback(channel: com.streamvault.domain.model.Channel) {
-    if (currentProviderId <= 0 || currentContentType != ContentType.LIVE) return
+    recordActiveLivePlayback(channel)
+}
 
-    val playbackKey = currentProviderId to channel.id
-    if (lastRecordedLivePlaybackKey == playbackKey) return
-    lastRecordedLivePlaybackKey = playbackKey
+internal fun PlayerViewModel.recordActiveLivePlayback(channel: Channel? = currentChannelFlow.value?.sanitizedForPlayer()) {
+    val candidate = buildLivePlaybackRecordCandidate(
+        currentProviderId = currentProviderId,
+        currentContentType = currentContentType,
+        currentContentId = currentContentId,
+        currentTitle = currentTitle,
+        currentResolvedPlaybackUrl = currentResolvedPlaybackUrl,
+        currentStreamUrl = currentStreamUrl,
+        channel = channel
+    ) ?: return
+
+    if (lastRecordedLivePlaybackKey == candidate.playbackKey) return
+    lastRecordedLivePlaybackKey = candidate.playbackKey
 
     viewModelScope.launch {
         logRepositoryFailure(
             operation = "Record live playback",
-            result = playbackHistoryRepository.recordPlayback(
-                PlaybackHistory(
-                    contentId = channel.id,
-                    contentType = ContentType.LIVE,
-                    providerId = currentProviderId,
-                    title = channel.name,
-                    streamUrl = channel.streamUrl,
-                    lastWatchedAt = System.currentTimeMillis()
-                )
-            )
+            result = playbackHistoryRepository.recordPlayback(candidate.history)
         )
     }
 }
