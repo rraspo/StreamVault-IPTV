@@ -49,8 +49,13 @@ internal fun ProviderSyncOptionsDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     color = OnSurface
                 )
-                SyncOptionButton(stringResource(R.string.settings_sync_option_fast)) {
-                    onSelect(ProviderSyncSelection.FAST)
+                SyncOptionButton(stringResource(R.string.settings_sync_option_sync_now)) {
+                    onSelect(ProviderSyncSelection.SYNC_NOW)
+                }
+                if (provider.type == ProviderType.XTREAM_CODES) {
+                    SyncOptionButton(stringResource(R.string.settings_sync_option_rebuild_index)) {
+                        onSelect(ProviderSyncSelection.REBUILD_INDEX)
+                    }
                 }
                 availableSyncSelections(provider).forEach { option ->
                     SyncOptionButton(text = syncSelectionLabel(option)) {
@@ -142,8 +147,8 @@ private fun SyncOptionButton(
 
 @Composable
 private fun syncSelectionLabel(selection: ProviderSyncSelection): String = when (selection) {
-    ProviderSyncSelection.ALL -> stringResource(R.string.settings_sync_option_all)
-    ProviderSyncSelection.FAST -> stringResource(R.string.settings_sync_option_fast)
+    ProviderSyncSelection.SYNC_NOW -> stringResource(R.string.settings_sync_option_sync_now)
+    ProviderSyncSelection.REBUILD_INDEX -> stringResource(R.string.settings_sync_option_rebuild_index)
     ProviderSyncSelection.TV -> stringResource(R.string.settings_sync_option_tv)
     ProviderSyncSelection.MOVIES -> stringResource(R.string.settings_sync_option_movies)
     ProviderSyncSelection.SERIES -> stringResource(R.string.settings_sync_option_series)

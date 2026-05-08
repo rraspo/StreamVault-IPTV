@@ -78,7 +78,7 @@ internal fun SettingsPlayerPreferenceDialogs(
         }
     }
 
-    if (showAudioVideoOffsetDialog) {
+    if (showAudioVideoOffsetDialog && uiState.playerAudioVideoSyncEnabled) {
         AudioVideoOffsetValueDialog(
             title = stringResource(R.string.settings_audio_video_sync_default),
             subtitle = stringResource(R.string.settings_audio_video_sync_default_subtitle),

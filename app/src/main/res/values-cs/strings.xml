@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Určete, jak se při nastavení a obnovení poskytovatele načítají data průvodce.</string>
     <string name="setup_advanced_options_show">Zobrazit</string>
     <string name="setup_advanced_options_hide">Skrýt</string>
-    <string name="setup_xtream_fast_sync_label">Rychlá synchronizace</string>
-    <string name="setup_xtream_fast_sync_helper">Pouze Xtream. Nejprve načte kategorie VOD a řádky filmů načítá podle potřeby. Doporučeno pro velmi velké poskytovatele.</string>
     <string name="setup_m3u_vod_classification_label">Klasifikace VOD v M3U</string>
     <string name="setup_m3u_vod_classification_helper">Pouze M3U. Použijte URL playlistu a heuristiku group-title k zařazení odpovídajících položek do Filmů místo Živého TV.</string>
     <string name="setup_epg_sync_mode_label">Synchronizace EPG</string>

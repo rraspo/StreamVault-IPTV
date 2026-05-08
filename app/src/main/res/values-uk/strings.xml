@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Керуйте тим, як завантажуються дані телегіда під час налаштування та оновлення провайдера.</string>
     <string name="setup_advanced_options_show">Показати</string>
     <string name="setup_advanced_options_hide">Сховати</string>
-    <string name="setup_xtream_fast_sync_label">Швидка синхронізація</string>
-    <string name="setup_xtream_fast_sync_helper">Лише Xtream. Спочатку завантажує категорії VOD, а рядки фільмів отримує за потреби. Рекомендовано для дуже великих провайдерів.</string>
     <string name="setup_m3u_vod_classification_label">Класифікація VOD у M3U</string>
     <string name="setup_m3u_vod_classification_helper">Лише M3U. Використовуйте URL плейлиста та евристику group-title, щоб сортувати відповідні записи в Фільми замість Live TV.</string>
     <string name="setup_epg_sync_mode_label">Синхронізація EPG</string>

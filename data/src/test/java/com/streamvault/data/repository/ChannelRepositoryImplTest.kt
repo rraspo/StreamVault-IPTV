@@ -211,6 +211,33 @@ class ChannelRepositoryImplTest {
         assertThat(result.map { it.name }).containsExactly("News One")
     }
 
+    @Test
+    fun `searchChannels does not run like fallback when fts returns rows`() = runTest {
+        whenever(channelDao.search(eq(7L), any(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    ChannelBrowseEntity(
+                        id = 100L,
+                        streamId = 200L,
+                        name = "News Fast",
+                        streamUrl = "https://stream/news-fast",
+                        number = 10,
+                        providerId = 7L
+                    )
+                )
+            )
+        )
+        whenever(parentalControlManager.unlockedCategoriesForProvider(7L)).thenReturn(flowOf(emptySet()))
+        whenever(favoriteDao.getAllByType(7L, ContentType.LIVE.name)).thenReturn(flowOf(emptyList()))
+
+        val repository = createRepository()
+
+        val result = repository.searchChannels(7L, "news").first()
+
+        assertThat(result.map { it.name }).containsExactly("News Fast")
+        verify(channelDao, never()).searchFallback(eq(7L), any(), any())
+    }
+
     private fun createRepository() = ChannelRepositoryImpl(
         channelDao = channelDao,
         categoryDao = categoryDao,

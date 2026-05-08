@@ -22,8 +22,8 @@ enum class ProviderWarningAction {
 }
 
 enum class ProviderSyncSelection {
-    ALL,
-    FAST,
+    SYNC_NOW,
+    REBUILD_INDEX,
     TV,
     MOVIES,
     SERIES,
@@ -42,6 +42,7 @@ internal data class SettingsPreferenceSnapshot(
     val playerDecoderMode: DecoderMode,
     val playerSurfaceMode: PlayerSurfaceMode,
     val playerPlaybackSpeed: Float,
+    val playerAudioVideoSyncEnabled: Boolean,
     val playerAudioVideoOffsetMs: Int,
     val centerTwoSlotMultiviewLayout: Boolean,
     val playerControlsTimeoutSeconds: Int,
@@ -94,8 +95,8 @@ internal data class SettingsPreferenceSnapshot(
 )
 
 internal fun ProviderSyncSelection.label(application: Application): String = when (this) {
-    ProviderSyncSelection.ALL -> application.getString(R.string.settings_sync_option_all)
-    ProviderSyncSelection.FAST -> application.getString(R.string.settings_sync_option_fast)
+    ProviderSyncSelection.SYNC_NOW -> application.getString(R.string.settings_sync_option_sync_now)
+    ProviderSyncSelection.REBUILD_INDEX -> application.getString(R.string.settings_sync_option_rebuild_index)
     ProviderSyncSelection.TV -> application.getString(R.string.settings_sync_option_tv)
     ProviderSyncSelection.MOVIES -> application.getString(R.string.settings_sync_option_movies)
     ProviderSyncSelection.SERIES -> application.getString(R.string.settings_sync_option_series)

@@ -6,8 +6,6 @@ import com.streamvault.data.parser.M3uParser
 import com.streamvault.data.remote.dto.XtreamCategory
 import com.streamvault.data.util.AdultContentClassifier
 import com.streamvault.domain.model.ContentType
-import com.streamvault.domain.model.Movie
-import com.streamvault.domain.model.VodSyncMode
 import java.io.InputStream
 import java.security.MessageDigest
 
@@ -50,16 +48,6 @@ internal data class XtreamStrategyFeedback(
     val segmentedStressDetected: Boolean = false
 )
 
-internal data class MovieCatalogSyncResult(
-    val catalogResult: CatalogStrategyResult<Movie>,
-    val categories: List<CategoryEntity>?,
-    val syncMode: VodSyncMode,
-    val warnings: List<String> = emptyList(),
-    val strategyFeedback: XtreamStrategyFeedback = XtreamStrategyFeedback(),
-    val stagedSessionId: Long? = null,
-    val stagedAcceptedCount: Int = 0
-)
-
 internal data class CatalogSyncPayload<T>(
     val catalogResult: CatalogStrategyResult<T>,
     val categories: List<CategoryEntity>?,
@@ -85,7 +73,11 @@ internal sealed interface Attempt<out T> {
 }
 
 internal sealed interface CategoryFetchOutcome<out T> {
-    data class Success<T>(val categoryName: String, val items: List<T>) : CategoryFetchOutcome<T>
+    data class Success<T>(
+        val categoryName: String,
+        val items: List<T>,
+        val rawCount: Int = items.size
+    ) : CategoryFetchOutcome<T>
     data class Empty(val categoryName: String) : CategoryFetchOutcome<Nothing>
     data class Failure(val categoryName: String, val error: Throwable) : CategoryFetchOutcome<Nothing>
 }
@@ -96,27 +88,9 @@ internal data class TimedCategoryOutcome<T>(
     val elapsedMs: Long
 )
 
-internal sealed interface PageFetchOutcome<out T> {
-    data class Success<T>(val items: List<T>, val rawCount: Int) : PageFetchOutcome<T>
-    data class Empty(val page: Int) : PageFetchOutcome<Nothing>
-    data class Failure(val page: Int, val error: Throwable) : PageFetchOutcome<Nothing>
-}
-
-internal data class TimedPageOutcome<T>(
-    val page: Int,
-    val outcome: PageFetchOutcome<T>,
-    val elapsedMs: Long
-)
-
 internal data class CategoryExecutionPlan<T>(
     val outcomes: List<TimedCategoryOutcome<T>>,
     val warnings: List<String> = emptyList()
-)
-
-internal data class PageExecutionPlan<T>(
-    val outcomes: List<TimedPageOutcome<T>>,
-    val warnings: List<String> = emptyList(),
-    val stoppedEarly: Boolean = false
 )
 
 internal data class M3uImportStats(

@@ -3,9 +3,13 @@ package com.streamvault.app.di
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.util.Log
+import com.streamvault.app.BuildConfig
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import com.streamvault.data.remote.NetworkTimeoutConfig
+import com.streamvault.data.remote.http.DefaultUserAgentInterceptor
+import com.streamvault.data.remote.http.buildAppRequestProfile
+import com.streamvault.data.remote.http.buildAppUserAgent
 import com.streamvault.data.remote.stalker.OkHttpStalkerApiService
 import com.streamvault.data.remote.stalker.StalkerApiService
 import com.streamvault.data.remote.xtream.XtreamApiService
@@ -36,6 +40,7 @@ object NetworkModule {
     fun provideOkHttpClient(
         @ApplicationContext context: Context
     ): OkHttpClient {
+        val appUserAgent = buildAppUserAgent(BuildConfig.VERSION_NAME)
         val isDebuggable = (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
         val loggingLevel = if (isDebuggable) {
             HttpLoggingInterceptor.Level.BASIC
@@ -59,6 +64,7 @@ object NetworkModule {
             .connectTimeout(NetworkTimeoutConfig.CONNECT_TIMEOUT_SECONDS, SECONDS)
             .readTimeout(NetworkTimeoutConfig.READ_TIMEOUT_SECONDS, SECONDS)
             .writeTimeout(NetworkTimeoutConfig.WRITE_TIMEOUT_SECONDS, SECONDS)
+            .addInterceptor(DefaultUserAgentInterceptor(appUserAgent))
             .addInterceptor(httpLogger)
             .followRedirects(true)
             .followSslRedirects(true)
@@ -73,7 +79,11 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideXtreamApiService(okHttpClient: OkHttpClient, xtreamJson: Json): XtreamApiService =
-        OkHttpXtreamApiService(okHttpClient, xtreamJson)
+        OkHttpXtreamApiService(
+            client = okHttpClient,
+            json = xtreamJson,
+            defaultRequestProfile = buildAppRequestProfile(BuildConfig.VERSION_NAME, ownerTag = "app/xtream")
+        )
 
     @Provides
     @Singleton

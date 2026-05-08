@@ -1,8 +1,12 @@
 package com.streamvault.data.sync
 
+import android.util.Log
 import com.streamvault.data.local.entity.ChannelEntity
 import com.streamvault.data.local.entity.MovieEntity
 import com.streamvault.data.parser.M3uParser
+import com.streamvault.data.remote.http.HttpRequestProfile
+import com.streamvault.data.remote.http.safeRequestIdentitySummary
+import com.streamvault.data.remote.http.withRequestProfile
 import com.streamvault.data.util.AdultContentClassifier
 import com.streamvault.data.util.UrlSecurityPolicy
 import com.streamvault.domain.model.ContentType
@@ -17,6 +21,7 @@ import java.net.URI
 import java.util.zip.GZIPInputStream
 
 private const val M3U_PROGRESS_INTERVAL = 5_000
+private const val M3U_IMPORTER_TAG = "SyncManagerM3u"
 
 internal class SyncManagerM3uImporter(
     private val m3uParser: M3uParser,
@@ -202,9 +207,14 @@ internal class SyncManagerM3uImporter(
             return
         }
 
+        val requestProfile = HttpRequestProfile(ownerTag = "provider:${provider.id}/m3u")
         retryTransient {
-            okHttpClient.newCall(Request.Builder().url(urlStr).build()).execute().use { response ->
-                ensureSuccessfulPlaylistResponse(response)
+            val request = Request.Builder()
+                .url(urlStr)
+                .build()
+                .withRequestProfile(requestProfile)
+            okHttpClient.newCall(request).execute().use { response ->
+                ensureSuccessfulPlaylistResponse(response, requestProfile)
                 val body = response.body ?: throw IllegalStateException("Empty M3U response")
                 body.byteStream().use { input ->
                     block(
@@ -219,8 +229,12 @@ internal class SyncManagerM3uImporter(
         }
     }
 
-    private fun ensureSuccessfulPlaylistResponse(response: Response) {
+    private fun ensureSuccessfulPlaylistResponse(response: Response, requestProfile: HttpRequestProfile) {
         if (response.isSuccessful) return
+        Log.w(
+            M3U_IMPORTER_TAG,
+            "Playlist request failed (${response.request.safeRequestIdentitySummary(requestProfile)}): HTTP ${response.code}"
+        )
         if (response.code in 500..599 || response.code == 429) {
             // Transient — the retry wrapper will attempt again automatically.
             throw IOException("Transient HTTP ${response.code}")

@@ -274,9 +274,9 @@ abstract class ChannelDao {
         FROM channels c
         WHERE c.provider_id = :providerId
           AND (
-              c.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(c.group_title, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(c.category_name, '') LIKE :queryLike ESCAPE '\\'
+              c.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(c.group_title, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(c.category_name, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY c.name ASC
         LIMIT :limit
@@ -309,9 +309,9 @@ abstract class ChannelDao {
         WHERE c.provider_id = :providerId
           AND c.category_id = :categoryId
           AND (
-              c.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(c.group_title, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(c.category_name, '') LIKE :queryLike ESCAPE '\\'
+              c.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(c.group_title, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(c.category_name, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY c.name ASC
         LIMIT :limit
@@ -1187,6 +1187,62 @@ interface MovieDao {
         JOIN movies_fts ON m.id = movies_fts.rowid
         WHERE m.provider_id = :providerId
           AND movies_fts MATCH :query
+          AND (:includeProtected != 0 OR m.is_user_protected = 0)
+        ORDER BY
+          CASE
+            WHEN LOWER(m.name) = LOWER(:rawQuery) THEN 0
+            WHEN LOWER(m.name) LIKE LOWER(:prefixLike) ESCAPE '\' THEN 1
+            ELSE 2
+          END ASC,
+          m.name ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchPage(
+        providerId: Long,
+        query: String,
+        rawQuery: String,
+        prefixLike: String,
+        includeProtected: Int,
+        limit: Int,
+        offset: Int
+    ): List<MovieBrowseEntity>
+
+    @Query(
+        """
+        SELECT m.* FROM movies m
+        JOIN movies_fts ON m.id = movies_fts.rowid
+        WHERE m.provider_id = :providerId
+          AND m.category_id = :categoryId
+          AND movies_fts MATCH :query
+          AND (:includeProtected != 0 OR m.is_user_protected = 0)
+        ORDER BY
+          CASE
+            WHEN LOWER(m.name) = LOWER(:rawQuery) THEN 0
+            WHEN LOWER(m.name) LIKE LOWER(:prefixLike) ESCAPE '\' THEN 1
+            ELSE 2
+          END ASC,
+          m.name ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchByCategoryPage(
+        providerId: Long,
+        categoryId: Long,
+        query: String,
+        rawQuery: String,
+        prefixLike: String,
+        includeProtected: Int,
+        limit: Int,
+        offset: Int
+    ): List<MovieBrowseEntity>
+
+    @Query(
+        """
+        SELECT m.* FROM movies m
+        JOIN movies_fts ON m.id = movies_fts.rowid
+        WHERE m.provider_id = :providerId
+          AND movies_fts MATCH :query
         ORDER BY m.name ASC
         LIMIT :limit
         """
@@ -1198,10 +1254,10 @@ interface MovieDao {
         SELECT m.* FROM movies m
         WHERE m.provider_id = :providerId
           AND (
-              m.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.genre, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.category_name, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.year, '') LIKE :queryLike ESCAPE '\\'
+              m.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.genre, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.category_name, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.year, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY m.name ASC
         LIMIT :limit
@@ -1228,10 +1284,10 @@ interface MovieDao {
         WHERE m.provider_id = :providerId
           AND m.category_id = :categoryId
           AND (
-              m.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.genre, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.category_name, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(m.year, '') LIKE :queryLike ESCAPE '\\'
+              m.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.genre, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.category_name, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(m.year, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY m.name ASC
         LIMIT :limit
@@ -1253,6 +1309,9 @@ interface MovieDao {
 
     @Query("SELECT * FROM movies WHERE provider_id = :providerId AND stream_id = :streamId")
     suspend fun getByStreamId(providerId: Long, streamId: Long): MovieEntity?
+
+    @Query("SELECT * FROM movies WHERE provider_id = :providerId AND stream_id IN (:streamIds)")
+    suspend fun getByStreamIds(providerId: Long, streamIds: List<Long>): List<MovieEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(movies: List<MovieEntity>)
@@ -2095,6 +2154,62 @@ interface SeriesDao {
         JOIN series_fts ON s.id = series_fts.rowid
         WHERE s.provider_id = :providerId
           AND series_fts MATCH :query
+          AND (:includeProtected != 0 OR s.is_user_protected = 0)
+        ORDER BY
+          CASE
+            WHEN LOWER(s.name) = LOWER(:rawQuery) THEN 0
+            WHEN LOWER(s.name) LIKE LOWER(:prefixLike) ESCAPE '\' THEN 1
+            ELSE 2
+          END ASC,
+          s.name ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchPage(
+        providerId: Long,
+        query: String,
+        rawQuery: String,
+        prefixLike: String,
+        includeProtected: Int,
+        limit: Int,
+        offset: Int
+    ): List<SeriesBrowseEntity>
+
+    @Query(
+        """
+        SELECT s.* FROM series s
+        JOIN series_fts ON s.id = series_fts.rowid
+        WHERE s.provider_id = :providerId
+          AND s.category_id = :categoryId
+          AND series_fts MATCH :query
+          AND (:includeProtected != 0 OR s.is_user_protected = 0)
+        ORDER BY
+          CASE
+            WHEN LOWER(s.name) = LOWER(:rawQuery) THEN 0
+            WHEN LOWER(s.name) LIKE LOWER(:prefixLike) ESCAPE '\' THEN 1
+            ELSE 2
+          END ASC,
+          s.name ASC
+        LIMIT :limit OFFSET :offset
+        """
+    )
+    suspend fun searchByCategoryPage(
+        providerId: Long,
+        categoryId: Long,
+        query: String,
+        rawQuery: String,
+        prefixLike: String,
+        includeProtected: Int,
+        limit: Int,
+        offset: Int
+    ): List<SeriesBrowseEntity>
+
+    @Query(
+        """
+        SELECT s.* FROM series s
+        JOIN series_fts ON s.id = series_fts.rowid
+        WHERE s.provider_id = :providerId
+          AND series_fts MATCH :query
         ORDER BY s.name ASC
         LIMIT :limit
         """
@@ -2106,9 +2221,9 @@ interface SeriesDao {
         SELECT s.* FROM series s
         WHERE s.provider_id = :providerId
           AND (
-              s.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(s.genre, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(s.category_name, '') LIKE :queryLike ESCAPE '\\'
+              s.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(s.genre, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(s.category_name, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY s.name ASC
         LIMIT :limit
@@ -2135,9 +2250,9 @@ interface SeriesDao {
         WHERE s.provider_id = :providerId
           AND s.category_id = :categoryId
           AND (
-              s.name LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(s.genre, '') LIKE :queryLike ESCAPE '\\'
-              OR COALESCE(s.category_name, '') LIKE :queryLike ESCAPE '\\'
+              s.name LIKE :queryLike ESCAPE '\'
+              OR COALESCE(s.genre, '') LIKE :queryLike ESCAPE '\'
+              OR COALESCE(s.category_name, '') LIKE :queryLike ESCAPE '\'
           )
         ORDER BY s.name ASC
         LIMIT :limit
@@ -2159,6 +2274,9 @@ interface SeriesDao {
 
     @Query("SELECT * FROM series WHERE provider_id = :providerId AND series_id = :seriesId LIMIT 1")
     suspend fun getBySeriesId(providerId: Long, seriesId: Long): SeriesEntity?
+
+    @Query("SELECT * FROM series WHERE provider_id = :providerId AND series_id IN (:seriesIds)")
+    suspend fun getBySeriesIds(providerId: Long, seriesIds: List<Long>): List<SeriesEntity>
 
     @Query("SELECT * FROM series WHERE provider_id = :providerId AND provider_series_id = :providerSeriesId LIMIT 1")
     suspend fun getByProviderSeriesId(providerId: Long, providerSeriesId: String): SeriesEntity?

@@ -100,7 +100,6 @@ class ProviderSetupViewModel @Inject constructor(
                         stalkerDeviceLocale = provider.stalkerDeviceLocale,
                         epgSyncMode = provider.epgSyncMode,
                         hasCustomizedEpgSyncMode = true,
-                        xtreamFastSyncEnabled = provider.xtreamFastSyncEnabled,
                         m3uVodClassificationEnabled = provider.m3uVodClassificationEnabled,
                         selectedTab = when (provider.type) {
                             ProviderType.XTREAM_CODES -> 0
@@ -116,10 +115,6 @@ class ProviderSetupViewModel @Inject constructor(
 
     fun updateM3uTab(tab: Int) {
         _uiState.update { it.copy(m3uTab = tab) }
-    }
-
-    fun updateXtreamFastSyncEnabled(enabled: Boolean) {
-        _uiState.update { it.copy(xtreamFastSyncEnabled = enabled) }
     }
 
     fun updateM3uVodClassificationEnabled(enabled: Boolean) {
@@ -226,7 +221,7 @@ class ProviderSetupViewModel @Inject constructor(
                     username = username,
                     password = password,
                     name = name,
-                    xtreamFastSyncEnabled = _uiState.value.xtreamFastSyncEnabled,
+                    xtreamFastSyncEnabled = false,
                     epgSyncMode = _uiState.value.epgSyncMode,
                     existingProviderId = existingId
                 ),
@@ -658,7 +653,6 @@ data class ProviderSetupState(
     val backupImportPlan: BackupImportPlan = BackupImportPlan(),
     val epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND,
     val hasCustomizedEpgSyncMode: Boolean = false,
-    val xtreamFastSyncEnabled: Boolean = true,
     val m3uVodClassificationEnabled: Boolean = false
 )
 

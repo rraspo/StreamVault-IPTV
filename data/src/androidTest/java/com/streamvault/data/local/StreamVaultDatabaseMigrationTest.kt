@@ -568,6 +568,165 @@ class StreamVaultDatabaseMigrationTest {
     }
 
     @Test
+    fun migrate47To48_createsXtreamIndexBackfillsRowsAndMarksSummaryState() {
+        migrationTestHelper.createDatabase("streamvault-47-48-test", 47).apply {
+            execSQL(
+                """
+                INSERT INTO providers (
+                    id, name, type, server_url, username, password, m3u_url, epg_url,
+                    stalker_mac_address, stalker_device_profile, stalker_device_timezone, stalker_device_locale,
+                    is_active, max_connections, expiration_date, api_version, allowed_output_formats_json,
+                    epg_sync_mode, xtream_fast_sync_enabled, m3u_vod_classification_enabled, status,
+                    last_synced_at, created_at
+                ) VALUES (
+                    1, 'Xtream Provider', 'XTREAM_CODES', 'https://provider.example.com', 'demo', 'secret', '', '',
+                    '', '', '', '', 1, 1, NULL, NULL, '[]',
+                    'UPFRONT', 1, 0, 'ACTIVE', 1234, 1000
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO channels (
+                    id, stream_id, name, logo_url, group_title, category_id, category_name,
+                    stream_url, epg_channel_id, number, catch_up_supported, catch_up_days, catchUpSource,
+                    provider_id, is_adult, is_user_protected, logical_group_id, error_count,
+                    quality_options_json, sync_fingerprint
+                ) VALUES (
+                    10, 1001, 'News One', 'https://provider.example.com/news.png', 'News', 5, 'News',
+                    'https://provider.example.com/live/1001', NULL, 1, 0, 0, NULL,
+                    1, 0, 0, '', 0, NULL, 'live-fp'
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO categories (
+                    id, category_id, name, parent_id, type, provider_id, is_adult, is_user_protected, sync_fingerprint
+                ) VALUES
+                    (101, 5, 'News', NULL, 'LIVE', 1, 0, 0, 'cat-live'),
+                    (102, 6, 'Movies', NULL, 'MOVIE', 1, 0, 0, 'cat-movies'),
+                    (103, 7, 'Series', NULL, 'SERIES', 1, 0, 0, 'cat-series')
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO movies (
+                    id, stream_id, name, poster_url, backdrop_url, category_id, category_name,
+                    stream_url, container_extension, plot, cast, director, genre, release_date,
+                    duration, duration_seconds, rating, year, tmdb_id, youtube_trailer,
+                    provider_id, watch_progress, watch_count, last_watched_at, is_adult,
+                    is_user_protected, sync_fingerprint, added_at
+                ) VALUES (
+                    20, 2001, 'Thin Movie', 'https://provider.example.com/thin.jpg', NULL, 6, 'Movies',
+                    'https://provider.example.com/movie/2001.mp4', 'mp4', NULL, NULL, NULL, NULL, NULL,
+                    NULL, 0, 6.5, NULL, NULL, NULL,
+                    1, 0, 0, 0, 0, 0, 'movie-thin-fp', 111
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO movies (
+                    id, stream_id, name, poster_url, backdrop_url, category_id, category_name,
+                    stream_url, container_extension, plot, cast, director, genre, release_date,
+                    duration, duration_seconds, rating, year, tmdb_id, youtube_trailer,
+                    provider_id, watch_progress, watch_count, last_watched_at, is_adult,
+                    is_user_protected, sync_fingerprint, added_at
+                ) VALUES (
+                    21, 2002, 'Rich Movie', 'https://provider.example.com/rich.jpg', NULL, 6, 'Movies',
+                    'https://provider.example.com/movie/2002.mp4', 'mp4', 'Plot', NULL, NULL, 'Drama', NULL,
+                    '90 min', 5400, 7.5, '2025', 9876, NULL,
+                    1, 0, 0, 0, 0, 0, 'movie-rich-fp', 222
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO series (
+                    id, series_id, provider_series_id, name, poster_url, backdrop_url, category_id,
+                    category_name, plot, cast, director, genre, release_date, rating, tmdb_id,
+                    youtube_trailer, episode_run_time, last_modified, provider_id, is_adult,
+                    is_user_protected, sync_fingerprint
+                ) VALUES (
+                    30, 3001, NULL, 'Thin Series', 'https://provider.example.com/thin-series.jpg', NULL, 7,
+                    'Series', NULL, NULL, NULL, NULL, NULL, 6.0, NULL,
+                    NULL, NULL, 333, 1, 0, 0, 'series-thin-fp'
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO series (
+                    id, series_id, provider_series_id, name, poster_url, backdrop_url, category_id,
+                    category_name, plot, cast, director, genre, release_date, rating, tmdb_id,
+                    youtube_trailer, episode_run_time, last_modified, provider_id, is_adult,
+                    is_user_protected, sync_fingerprint
+                ) VALUES (
+                    31, 3002, 'provider-series-3002', 'Rich Series', 'https://provider.example.com/rich-series.jpg', NULL, 7,
+                    'Series', 'Plot', NULL, NULL, 'Drama', NULL, 8.0, 12345,
+                    NULL, '45', 444, 1, 0, 0, 'series-rich-fp'
+                )
+                """.trimIndent()
+            )
+            execSQL(
+                """
+                INSERT INTO sync_metadata (
+                    provider_id, last_live_sync, last_live_success, last_movie_sync, last_series_sync,
+                    last_series_success, last_epg_sync, last_epg_success, last_movie_attempt,
+                    last_movie_success, last_movie_partial, live_count, movie_count, series_count,
+                    epg_count, last_sync_status, movie_sync_mode, movie_warnings_count, movie_catalog_stale,
+                    live_avoid_full_until, movie_avoid_full_until, series_avoid_full_until,
+                    live_sequential_failures_remembered, live_healthy_sync_streak,
+                    movie_parallel_failures_remembered, movie_healthy_sync_streak,
+                    series_sequential_failures_remembered, series_healthy_sync_streak
+                ) VALUES (
+                    1, 1200, 1200, 1300, 1400,
+                    1400, 1500, 1500, 1300,
+                    1300, 0, 1, 2, 2,
+                    3, 'SUCCESS', 'FULL', 0, 0,
+                    0, 0, 0,
+                    0, 0,
+                    0, 0,
+                    0, 0
+                )
+                """.trimIndent()
+            )
+            close()
+        }
+
+        val migratedDb = migrationTestHelper.runMigrationsAndValidate(
+            "streamvault-47-48-test",
+            48,
+            true,
+            StreamVaultDatabase.MIGRATION_47_48
+        )
+
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'xtream_content_index'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'xtream_index_jobs'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'index_xtream_content_index_provider_id_content_type_local_content_id'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM pragma_table_info('movies') WHERE name = 'cache_state'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM pragma_table_info('series') WHERE name = 'detail_hydrated_at'"))
+        assertEquals(5, countRows(migratedDb, "SELECT COUNT(*) FROM xtream_content_index WHERE provider_id = 1"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM xtream_content_index WHERE content_type = 'LIVE' AND remote_id = '1001' AND image_url LIKE '%news.png'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM xtream_content_index WHERE content_type = 'SERIES' AND remote_id = 'provider-series-3002'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM movies WHERE id = 20 AND cache_state = 'SUMMARY_ONLY'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM movies WHERE id = 21 AND cache_state = 'DETAIL_HYDRATED'"))
+        assertEquals(1234, countRows(migratedDb, "SELECT detail_hydrated_at FROM movies WHERE id = 21"))
+        assertEquals(0, countRows(migratedDb, "SELECT detail_hydrated_at FROM movies WHERE id = 20"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM series WHERE id = 30 AND cache_state = 'SUMMARY_ONLY'"))
+        assertEquals(1, countRows(migratedDb, "SELECT COUNT(*) FROM series WHERE id = 31 AND cache_state = 'DETAIL_HYDRATED'"))
+        assertEquals(1234, countRows(migratedDb, "SELECT detail_hydrated_at FROM series WHERE id = 31"))
+        assertEquals(0, countRows(migratedDb, "SELECT detail_hydrated_at FROM series WHERE id = 30"))
+        assertEquals(4, countRows(migratedDb, "SELECT COUNT(*) FROM xtream_index_jobs WHERE provider_id = 1"))
+        assertEquals(2, countRows(migratedDb, "SELECT indexed_rows FROM xtream_index_jobs WHERE provider_id = 1 AND section = 'MOVIE'"))
+        assertEquals(1, countRows(migratedDb, "SELECT total_categories FROM xtream_index_jobs WHERE provider_id = 1 AND section = 'MOVIE'"))
+        assertEquals(1, countRows(migratedDb, "SELECT completed_categories FROM xtream_index_jobs WHERE provider_id = 1 AND section = 'MOVIE'"))
+
+        migratedDb.close()
+    }
+
+    @Test
     fun migrate34To35_createsSearchHistoryTable() {
         migrationTestHelper.createDatabase("streamvault-34-35-test", 34).close()
 

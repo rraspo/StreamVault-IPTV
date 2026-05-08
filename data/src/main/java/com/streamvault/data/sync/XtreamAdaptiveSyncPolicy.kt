@@ -17,7 +17,6 @@ internal class XtreamAdaptiveSyncPolicy {
     enum class Stage(val timeoutMs: Long?) {
         LIGHTWEIGHT(15_000L),
         CATEGORY(35_000L),
-        PAGED(40_000L),
         HEAVY(null)
     }
 
@@ -77,13 +76,6 @@ internal class XtreamAdaptiveSyncPolicy {
                 workloadSize <= 8 -> 2
                 workloadSize <= 18 -> 2
                 workloadSize <= 36 -> 3
-                else -> 4
-            }
-            Stage.PAGED -> when {
-                workloadSize <= 3 -> 1
-                workloadSize <= 10 -> 2
-                workloadSize <= 25 -> 2
-                workloadSize <= 60 -> 3
                 else -> 4
             }
             Stage.HEAVY -> 1
@@ -208,13 +200,12 @@ internal class XtreamAdaptiveSyncPolicy {
     }
 
     private fun segmentedRequestSpacingFor(providerId: Long, stage: Stage): Long {
-        if (stage != Stage.CATEGORY && stage != Stage.PAGED) {
+        if (stage != Stage.CATEGORY) {
             return 0L
         }
         val health = providerHealth[providerId] ?: ProviderHealth()
         val baseSpacingMs = when (stage) {
             Stage.CATEGORY -> 250L
-            Stage.PAGED -> 180L
             else -> 0L
         }
         val stressSpacingMs = when {

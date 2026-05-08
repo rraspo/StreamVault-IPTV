@@ -14,6 +14,11 @@ enum class ActiveDecoderPolicy {
     COMPATIBILITY
 }
 
+internal fun shouldUseManagedCodecSelector(
+    requestedMode: DecoderMode,
+    decoderPolicy: ActiveDecoderPolicy
+): Boolean = requestedMode != DecoderMode.AUTO && decoderPolicy != ActiveDecoderPolicy.AUTO
+
 @UnstableApi
 class PlaybackCodecSelector(
     private val delegate: MediaCodecSelector = MediaCodecSelector.DEFAULT,

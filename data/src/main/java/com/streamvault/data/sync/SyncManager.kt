@@ -11,14 +11,19 @@ import com.streamvault.data.local.dao.ProgramDao
 import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.SeriesDao
 import com.streamvault.data.local.dao.TmdbIdentityDao
+import com.streamvault.data.local.dao.XtreamContentIndexDao
+import com.streamvault.data.local.dao.XtreamIndexJobDao
 import com.streamvault.data.local.entity.CategoryEntity
 import com.streamvault.data.local.entity.ChannelEntity
 import com.streamvault.data.local.entity.ChannelGuideSyncEntity
 import com.streamvault.data.local.entity.MovieEntity
 import com.streamvault.data.local.entity.SeriesEntity
+import com.streamvault.data.local.entity.XtreamContentIndexEntity
+import com.streamvault.data.local.entity.XtreamIndexJobEntity
 import com.streamvault.data.mapper.toDomain
 import com.streamvault.data.mapper.toEntity
 import com.streamvault.data.parser.M3uParser
+import com.streamvault.data.remote.http.buildAppRequestProfile
 import com.streamvault.data.remote.stalker.StalkerApiService
 import com.streamvault.data.remote.stalker.StalkerProvider
 import com.streamvault.data.remote.stalker.StalkerProviderProfile
@@ -43,6 +48,7 @@ import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.ProviderEpgSyncMode
 import com.streamvault.domain.model.Provider
 import com.streamvault.domain.model.ProviderType
+import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.Series
 import com.streamvault.domain.model.SyncMetadata
 import com.streamvault.domain.model.SyncState
@@ -53,9 +59,6 @@ import com.streamvault.domain.repository.SyncMetadataRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -76,22 +79,11 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.GZIPInputStream
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.system.measureTimeMillis
 
 private const val TAG = "SyncManager"
-private const val XTREAM_CATALOG_PAGE_SIZE = 250
-private const val XTREAM_CATALOG_MAX_PAGES = 200
 private const val XTREAM_FALLBACK_STAGE_BATCH_SIZE = 500
-private const val MOVIE_CATEGORY_SEQUENTIAL_MODE_WARNING =
-    "Movies category-bulk sync downgraded to sequential mode after provider stress signals."
 private const val LIVE_CATEGORY_SEQUENTIAL_MODE_WARNING =
     "Live category sync downgraded to sequential mode after provider stress signals."
-private const val SERIES_CATEGORY_SEQUENTIAL_MODE_WARNING =
-    "Series category sync downgraded to sequential mode after provider stress signals."
-private const val MOVIE_PAGED_SEQUENTIAL_MODE_WARNING =
-    "Movies paged sync downgraded to sequential mode after provider stress signals."
-private const val SERIES_PAGED_SEQUENTIAL_MODE_WARNING =
-    "Series paged sync downgraded to sequential mode after provider stress signals."
 private const val XTREAM_RECOVERY_ABORT_WARNING_SUFFIX =
     "recovery stopped early after repeated provider stress signals; keeping recovered results."
 private const val XTREAM_AVOID_FULL_CATALOG_COOLDOWN_MILLIS = 6 * 60 * 60 * 1000L
@@ -132,6 +124,8 @@ class SyncManager @Inject constructor(
     private val categoryDao: CategoryDao,
     private val catalogSyncDao: CatalogSyncDao,
     private val tmdbIdentityDao: TmdbIdentityDao,
+    private val xtreamContentIndexDao: XtreamContentIndexDao,
+    private val xtreamIndexJobDao: XtreamIndexJobDao,
     private val stalkerApiService: StalkerApiService,
     private val xtreamJson: Json,
     private val m3uParser: M3uParser,
@@ -178,7 +172,11 @@ class SyncManager @Inject constructor(
     private val xtreamCatalogHttpService: OkHttpXtreamApiService by lazy {
         OkHttpXtreamApiService(
             client = okHttpClient,
-            json = xtreamJson
+            json = xtreamJson,
+            defaultRequestProfile = buildAppRequestProfile(
+                versionName = null,
+                ownerTag = "sync/xtream"
+            )
         )
     }
     private val xtreamCatalogApiService: XtreamApiService by lazy { xtreamCatalogHttpService }
@@ -186,8 +184,7 @@ class SyncManager @Inject constructor(
         SyncManagerXtreamFetcher(
             xtreamCatalogApiService = xtreamCatalogApiService,
             xtreamSupport = xtreamSupport,
-            sanitizeThrowableMessage = ::sanitizeThrowableMessage,
-            pageSize = XTREAM_CATALOG_PAGE_SIZE
+            sanitizeThrowableMessage = ::sanitizeThrowableMessage
         )
     }
     private val catalogStrategySupport = SyncManagerCatalogStrategySupport(
@@ -214,52 +211,6 @@ class SyncManager @Inject constructor(
             liveCategorySequentialModeWarning = LIVE_CATEGORY_SEQUENTIAL_MODE_WARNING,
             stageChannelItems = catalogStager::stageChannelItems,
             fallbackStageBatchSize = XTREAM_FALLBACK_STAGE_BATCH_SIZE
-        )
-    }
-    private val xtreamMovieStrategy: SyncManagerXtreamMovieStrategy by lazy {
-        SyncManagerXtreamMovieStrategy(
-            xtreamCatalogApiService = xtreamCatalogApiService,
-            xtreamCatalogHttpService = xtreamCatalogHttpService,
-            xtreamAdaptiveSyncPolicy = xtreamAdaptiveSyncPolicy,
-            xtreamSupport = xtreamSupport,
-            xtreamFetcher = xtreamFetcher,
-            catalogStrategySupport = catalogStrategySupport,
-            syncCatalogStore = syncCatalogStore,
-            progress = ::progress,
-            sanitizeThrowableMessage = ::sanitizeThrowableMessage,
-            fullCatalogFallbackWarning = ::fullCatalogFallbackWarning,
-            categoryFailureWarning = ::categoryFailureWarning,
-            pagingFailureWarning = ::pagingFailureWarning,
-            stageMovieItems = catalogStager::stageMovieItems,
-            stageMovieSequence = catalogStager::stageMovieSequence,
-            movieCategorySequentialModeWarning = MOVIE_CATEGORY_SEQUENTIAL_MODE_WARNING,
-            moviePagedSequentialModeWarning = MOVIE_PAGED_SEQUENTIAL_MODE_WARNING,
-            fallbackStageBatchSize = XTREAM_FALLBACK_STAGE_BATCH_SIZE,
-            maxCatalogPages = XTREAM_CATALOG_MAX_PAGES,
-            pageSize = XTREAM_CATALOG_PAGE_SIZE
-        )
-    }
-    private val xtreamSeriesStrategy: SyncManagerXtreamSeriesStrategy by lazy {
-        SyncManagerXtreamSeriesStrategy(
-            xtreamCatalogApiService = xtreamCatalogApiService,
-            xtreamCatalogHttpService = xtreamCatalogHttpService,
-            xtreamAdaptiveSyncPolicy = xtreamAdaptiveSyncPolicy,
-            xtreamSupport = xtreamSupport,
-            xtreamFetcher = xtreamFetcher,
-            catalogStrategySupport = catalogStrategySupport,
-            syncCatalogStore = syncCatalogStore,
-            progress = ::progress,
-            sanitizeThrowableMessage = ::sanitizeThrowableMessage,
-            fullCatalogFallbackWarning = ::fullCatalogFallbackWarning,
-            categoryFailureWarning = ::categoryFailureWarning,
-            pagingFailureWarning = ::pagingFailureWarning,
-            stageSeriesItems = catalogStager::stageSeriesItems,
-            stageSeriesSequence = catalogStager::stageSeriesSequence,
-            categorySequentialModeWarning = SERIES_CATEGORY_SEQUENTIAL_MODE_WARNING,
-            pagedSequentialModeWarning = SERIES_PAGED_SEQUENTIAL_MODE_WARNING,
-            fallbackStageBatchSize = XTREAM_FALLBACK_STAGE_BATCH_SIZE,
-            maxCatalogPages = XTREAM_CATALOG_MAX_PAGES,
-            pageSize = XTREAM_CATALOG_PAGE_SIZE
         )
     }
 
@@ -308,6 +259,45 @@ class SyncManager @Inject constructor(
         BackgroundEpgSyncWorker.enqueue(applicationContext, providerId)
     }
 
+    fun scheduleXtreamIndexSync(providerId: Long, section: ContentType? = null, force: Boolean = false) {
+        runCatching {
+            XtreamIndexWorker.enqueue(
+                context = applicationContext,
+                providerId = providerId,
+                section = section?.name,
+                force = force
+            )
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to schedule Xtream index work for provider $providerId (${section?.name ?: "all"}): ${sanitizeThrowableMessage(error)}")
+        }
+    }
+
+    suspend fun prioritizeXtreamIndexCategory(
+        providerId: Long,
+        section: ContentType,
+        categoryId: Long
+    ) {
+        if (section != ContentType.MOVIE && section != ContentType.SERIES) return
+        val now = System.currentTimeMillis()
+        val updated = xtreamIndexJobDao.requestCategoryPriority(
+            providerId = providerId,
+            section = section.name,
+            categoryId = categoryId,
+            requestedAt = now
+        )
+        if (updated == 0) {
+            upsertXtreamIndexJob(
+                providerId = providerId,
+                section = section.name,
+                state = "QUEUED",
+                now = now,
+                priorityCategoryId = categoryId,
+                priorityRequestedAt = now
+            )
+        }
+        scheduleXtreamIndexSync(providerId, section, force = false)
+    }
+
     suspend fun syncEpg(
         providerId: Long,
         force: Boolean = true,
@@ -320,15 +310,37 @@ class SyncManager @Inject constructor(
             .copy(password = credentialCrypto.decryptIfNeeded(providerEntity.password))
             .toDomain()
 
+        val startedAt = System.currentTimeMillis()
+        updateXtreamEpgJobState(
+            provider = provider,
+            state = "RUNNING",
+            now = startedAt,
+            lastAttemptAt = startedAt,
+            lastError = null
+        )
         publishSyncState(providerId, SyncState.Syncing("Downloading EPG..."))
 
         try {
             val epgResult = syncProviderEpg(
                 provider = provider,
                 metadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id),
-                now = System.currentTimeMillis(),
+                now = startedAt,
                 force = force,
                 onProgress = onProgress
+            )
+            val finishedAt = System.currentTimeMillis()
+            val epgCount = programDao.countByProvider(providerId)
+            updateXtreamEpgJobState(
+                provider = provider,
+                state = when {
+                    epgResult.warnings.isEmpty() -> "SUCCESS"
+                    epgResult.hasRetryableFailure -> "FAILED_RETRYABLE"
+                    else -> "PARTIAL"
+                },
+                now = finishedAt,
+                indexedRows = epgCount,
+                lastSuccessAt = finishedAt.takeIf { epgResult.warnings.isEmpty() },
+                lastError = epgResult.warnings.takeIf { it.isNotEmpty() }?.joinToString("; ")
             )
             updateSyncStatusMetadata(
                 providerId = providerId,
@@ -353,6 +365,14 @@ class SyncManager @Inject constructor(
         } catch (e: Exception) {
             val safeMessage = syncErrorSanitizer.userMessage(e, "EPG sync failed")
             Log.e(TAG, "EPG sync failed for provider $providerId: ${syncErrorSanitizer.throwableMessage(e)}")
+            val failedAt = System.currentTimeMillis()
+            updateXtreamEpgJobState(
+                provider = provider,
+                state = if (isRetryableEpgException(e)) "FAILED_RETRYABLE" else "FAILED_PERMANENT",
+                now = failedAt,
+                indexedRows = programDao.countByProvider(providerId),
+                lastError = safeMessage
+            )
             updateSyncStatusMetadata(providerId = providerId, status = "ERROR")
             publishSyncState(providerId, SyncState.Error(safeMessage, e))
             com.streamvault.domain.model.Result.error(safeMessage, e)
@@ -361,6 +381,32 @@ class SyncManager @Inject constructor(
 
     private fun shouldSyncEpgUpfront(provider: Provider): Boolean =
         provider.epgSyncMode == ProviderEpgSyncMode.UPFRONT
+
+    private suspend fun updateXtreamEpgJobState(
+        provider: Provider,
+        state: String,
+        now: Long,
+        indexedRows: Int? = null,
+        lastAttemptAt: Long? = null,
+        lastSuccessAt: Long? = null,
+        lastError: String? = null
+    ) {
+        if (provider.type != ProviderType.XTREAM_CODES || provider.epgSyncMode == ProviderEpgSyncMode.SKIP) return
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = "EPG",
+            state = state,
+            now = now,
+            totalCategories = 1,
+            completedCategories = if (state == "SUCCESS") 1 else 0,
+            nextCategoryIndex = if (state == "SUCCESS") 1 else 0,
+            failedCategories = if (state == "FAILED_RETRYABLE" || state == "FAILED_PERMANENT") 1 else 0,
+            indexedRows = indexedRows,
+            lastAttemptAt = lastAttemptAt,
+            lastSuccessAt = lastSuccessAt,
+            lastError = lastError
+        )
+    }
 
     suspend fun sync(
         providerId: Long,
@@ -386,7 +432,7 @@ class SyncManager @Inject constructor(
         try {
             val outcome = withContext(Dispatchers.IO) {
                 when (provider.type) {
-                    ProviderType.XTREAM_CODES -> syncXtream(provider, force, onProgress)
+                    ProviderType.XTREAM_CODES -> syncXtreamIndexFirst(provider, force, onProgress)
                     ProviderType.M3U -> syncM3u(provider, force, onProgress)
                     ProviderType.STALKER_PORTAL -> syncStalker(provider, force, onProgress)
                 }
@@ -416,6 +462,110 @@ class SyncManager @Inject constructor(
 
     fun resetState(providerId: Long? = null) {
         syncStateTracker.reset(providerId)
+    }
+
+    suspend fun rebuildXtreamIndex(
+        providerId: Long,
+        onProgress: ((String) -> Unit)? = null
+    ): com.streamvault.domain.model.Result<Unit> = withProviderLock(providerId) lock@{
+        val providerEntity = providerDao.getById(providerId)
+            ?: return@lock com.streamvault.domain.model.Result.error("Provider $providerId not found")
+        if (providerEntity.type != ProviderType.XTREAM_CODES) {
+            return@lock com.streamvault.domain.model.Result.error("Index rebuild is only available for Xtream providers")
+        }
+
+        val provider = providerEntity
+            .copy(password = credentialCrypto.decryptIfNeeded(providerEntity.password))
+            .toDomain()
+
+        publishSyncState(providerId, SyncState.Syncing("Preparing index rebuild..."))
+        val now = System.currentTimeMillis()
+        val warnings = mutableListOf<String>()
+
+        try {
+            withContext(Dispatchers.IO) {
+                progress(providerId, onProgress, "Marking existing index rows stale...")
+                val staleRows = xtreamContentIndexDao.markVodAndSeriesRowsStaleForRebuild(providerId)
+                Log.i(TAG, "Marked $staleRows Xtream VOD/series index rows STALE_REMOTE for provider $providerId rebuild.")
+
+                val useTextClassification = preferencesRepository.useXtreamTextClassification.first()
+                val enableBase64TextCompatibility = preferencesRepository.xtreamBase64TextCompatibility.first()
+                val api = createXtreamSyncProvider(provider, useTextClassification, enableBase64TextCompatibility)
+
+                syncXtreamCategoryShell(
+                    provider = provider,
+                    api = api,
+                    contentType = ContentType.MOVIE,
+                    label = "Movies",
+                    now = now,
+                    onProgress = onProgress
+                ).getOrElse { error ->
+                    warnings += "Movies index rebuild could not be queued."
+                    upsertXtreamIndexJob(
+                        providerId = providerId,
+                        section = ContentType.MOVIE.name,
+                        state = xtreamIndexFailureState(error),
+                        now = now,
+                        lastAttemptAt = now,
+                        lastError = sanitizeThrowableMessage(error)
+                    )
+                    0
+                }
+                scheduleXtreamIndexSync(providerId, ContentType.MOVIE, force = true)
+
+                syncXtreamCategoryShell(
+                    provider = provider,
+                    api = api,
+                    contentType = ContentType.SERIES,
+                    label = "Series",
+                    now = now,
+                    onProgress = onProgress
+                ).getOrElse { error ->
+                    warnings += "Series index rebuild could not be queued."
+                    upsertXtreamIndexJob(
+                        providerId = providerId,
+                        section = ContentType.SERIES.name,
+                        state = xtreamIndexFailureState(error),
+                        now = now,
+                        lastAttemptAt = now,
+                        lastError = sanitizeThrowableMessage(error)
+                    )
+                    0
+                }
+                scheduleXtreamIndexSync(providerId, ContentType.SERIES, force = true)
+
+                val metadata = syncMetadataRepository.getMetadata(providerId) ?: SyncMetadata(providerId)
+                syncMetadataRepository.updateMetadata(
+                    metadata.copy(
+                        lastMovieAttempt = now,
+                        movieCatalogStale = true,
+                        movieSyncMode = VodSyncMode.UNKNOWN
+                    )
+                )
+            }
+            updateSyncStatusMetadata(
+                providerId = providerId,
+                status = if (warnings.isEmpty()) "SUCCESS" else "PARTIAL"
+            )
+            publishSyncState(
+                providerId,
+                if (warnings.isEmpty()) {
+                    SyncState.Success()
+                } else {
+                    SyncState.Partial("Index rebuild queued with warnings", warnings)
+                }
+            )
+            com.streamvault.domain.model.Result.success(Unit)
+        } catch (e: CancellationException) {
+            resetState(providerId)
+            throw e
+        } catch (e: Exception) {
+            val safeMessage = syncErrorSanitizer.userMessage(e, "Index rebuild failed")
+            Log.e(TAG, "Xtream index rebuild failed for provider $providerId: ${syncErrorSanitizer.throwableMessage(e)}")
+            updateSyncStatusMetadata(providerId = providerId, status = "ERROR")
+            publishSyncState(providerId, SyncState.Error(safeMessage, e))
+            com.streamvault.domain.model.Result.error(safeMessage, e)
+        }
     }
 
     suspend fun retrySection(
@@ -473,7 +623,7 @@ class SyncManager @Inject constructor(
         }
     }
 
-    private suspend fun syncXtream(
+    private suspend fun syncXtreamIndexFirst(
         provider: Provider,
         force: Boolean,
         onProgress: ((String) -> Unit)?
@@ -482,16 +632,23 @@ class SyncManager @Inject constructor(
         UrlSecurityPolicy.validateXtreamServerUrl(provider.serverUrl)?.let { message ->
             throw IllegalStateException(message)
         }
+
         progress(provider.id, onProgress, "Connecting to server...")
         val useTextClassification = preferencesRepository.useXtreamTextClassification.first()
         val enableBase64TextCompatibility = preferencesRepository.xtreamBase64TextCompatibility.first()
         val hiddenLiveCategoryIds = preferencesRepository.getHiddenCategoryIds(provider.id, ContentType.LIVE).first()
         val api = createXtreamSyncProvider(provider, useTextClassification, enableBase64TextCompatibility)
-
-        var metadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id)
         val now = System.currentTimeMillis()
+        var metadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id)
 
-        if (force || ContentCachePolicy.shouldRefresh(metadata.lastLiveSuccess, ContentCachePolicy.CATALOG_TTL_MILLIS, now)) {
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = ContentType.LIVE.name,
+            state = "RUNNING",
+            now = now,
+            lastAttemptAt = now
+        )
+        val liveOutcome = runCatching {
             progress(provider.id, onProgress, "Downloading Live TV...")
             val liveSyncResult = syncXtreamLiveCatalog(
                 provider = provider,
@@ -512,9 +669,9 @@ class SyncManager @Inject constructor(
                 feedback = liveSyncResult.strategyFeedback
             )
 
-            when (val liveResult = liveSyncResult.catalogResult) {
+            val acceptedCount = when (val liveResult = liveSyncResult.catalogResult) {
                 is CatalogStrategyResult.Success -> {
-                    val acceptedCount = liveSyncResult.stagedSessionId?.let { sessionId ->
+                    val accepted = liveSyncResult.stagedSessionId?.let { sessionId ->
                         if (hiddenLiveCategoryIds.isNotEmpty()) {
                             mergeHiddenChannelsIntoStaging(provider.id, sessionId, hiddenLiveCategoryIds)
                         }
@@ -537,320 +694,923 @@ class SyncManager @Inject constructor(
                             channels = liveCatalog.channels
                         )
                     }
-                    metadata = metadata.copy(
-                        lastLiveSync = now,
-                        lastLiveSuccess = now,
-                        liveCount = acceptedCount,
-                        liveAvoidFullUntil = liveAvoidFullUntil,
-                        liveSequentialFailuresRemembered = liveProviderAdaptation.rememberSequential,
-                        liveHealthySyncStreak = liveProviderAdaptation.healthyStreak
-                    )
                     warnings += liveSyncResult.warnings + liveResult.warnings
+                    accepted
                 }
                 is CatalogStrategyResult.Partial -> {
-                    // Partial snapshot: upsert only so that channels absent from the subset
-                    // are not deleted from the existing live catalog.
                     val liveCatalog = mergeVisibleLiveSyncWithHiddenStoredContent(
                         providerId = provider.id,
                         visibleCategories = liveSyncResult.categories,
                         visibleChannels = liveResult.items.map { it.toEntity() },
                         hiddenLiveCategoryIds = hiddenLiveCategoryIds
                     )
-                    val acceptedCount = syncCatalogStore.upsertLiveCatalog(
+                    syncCatalogStore.upsertLiveCatalog(
                         providerId = provider.id,
                         categories = liveCatalog.categories,
                         channels = liveCatalog.channels
-                    )
-                    metadata = metadata.copy(
-                        lastLiveSync = now,
-                        liveCount = acceptedCount,
-                        liveAvoidFullUntil = liveAvoidFullUntil,
-                        liveSequentialFailuresRemembered = metadata.liveSequentialFailuresRemembered || liveSequentialStress,
-                        liveHealthySyncStreak = 0
-                    )
-                    warnings += liveSyncResult.warnings + liveResult.warnings + listOf("Live TV sync completed partially.")
+                    ).also {
+                        warnings += liveSyncResult.warnings + liveResult.warnings + "Live TV sync completed partially."
+                    }
                 }
                 is CatalogStrategyResult.EmptyValid -> {
                     val existingChannelCount = channelDao.getCount(provider.id).first()
-                    Log.w(TAG, "Live TV sync kept existing catalog for provider ${provider.id}: empty valid result, existingCount=$existingChannelCount")
-                    metadata = metadata.copy(
-                        liveAvoidFullUntil = liveAvoidFullUntil,
-                        liveSequentialFailuresRemembered = metadata.liveSequentialFailuresRemembered || liveSequentialStress,
-                        liveHealthySyncStreak = 0
-                    )
-                    if (existingChannelCount > 0) {
-                        warnings += liveSyncResult.warnings + liveResult.warnings +
-                            listOf("Live TV refresh returned an empty valid catalog; keeping previous channel library.")
+                    if (existingChannelCount == 0) {
+                        throw IllegalStateException("Live TV catalog was empty.")
                     }
+                    warnings += liveSyncResult.warnings + liveResult.warnings +
+                        "Live TV refresh returned an empty valid catalog; keeping previous channel library."
+                    existingChannelCount
                 }
                 is CatalogStrategyResult.Failure -> {
                     val existingChannelCount = channelDao.getCount(provider.id).first()
-                    Log.w(TAG, "Live TV sync preserved previous catalog for provider ${provider.id}: strategy=${liveResult.strategyName}, existingCount=$existingChannelCount, reason=${sanitizeThrowableMessage(liveResult.error)}")
-                    metadata = metadata.copy(
-                        liveAvoidFullUntil = liveAvoidFullUntil,
-                        liveSequentialFailuresRemembered = metadata.liveSequentialFailuresRemembered || liveSequentialStress || shouldRememberSequentialPreference(liveResult.error),
-                        liveHealthySyncStreak = 0
-                    )
-                    warnings += liveSyncResult.warnings + liveResult.warnings +
-                        if (existingChannelCount > 0) {
-                            listOf("Live TV sync degraded; keeping previous channel library.")
-                        } else {
-                            listOf("Live TV sync failed before any usable channel catalog was available.")
-                        }
                     if (existingChannelCount == 0) {
                         throw IllegalStateException(
                             "Failed to fetch live streams: ${syncErrorSanitizer.throwableMessage(liveResult.error)}"
                         )
                     }
+                    warnings += liveSyncResult.warnings + liveResult.warnings +
+                        "Live TV sync degraded; keeping previous channel library."
+                    existingChannelCount
                 }
             }
+
+            metadata = metadata.copy(
+                lastLiveSync = now,
+                lastLiveSuccess = now,
+                liveCount = acceptedCount,
+                liveAvoidFullUntil = liveAvoidFullUntil,
+                liveSequentialFailuresRemembered = liveProviderAdaptation.rememberSequential,
+                liveHealthySyncStreak = liveProviderAdaptation.healthyStreak
+            )
             syncMetadataRepository.updateMetadata(metadata)
+            acceptedCount
+        }
+        val liveCount = liveOutcome.getOrElse { error ->
+            upsertXtreamIndexJob(
+                providerId = provider.id,
+                section = ContentType.LIVE.name,
+                state = xtreamIndexFailureState(error),
+                now = now,
+                lastAttemptAt = now,
+                lastError = sanitizeThrowableMessage(error)
+            )
+            throw error
+        }
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = ContentType.LIVE.name,
+            state = "QUEUED",
+            now = now,
+            totalCategories = 1,
+            completedCategories = 0,
+            indexedRows = liveCount,
+            lastAttemptAt = now,
+            lastError = null
+        )
+        scheduleXtreamIndexSync(provider.id, ContentType.LIVE)
+
+        val movieCategoryCount = syncXtreamCategoryShell(
+            provider = provider,
+            api = api,
+            contentType = ContentType.MOVIE,
+            label = "Movies",
+            now = now,
+            onProgress = onProgress
+        ).getOrElse { error ->
+            warnings += "Movies categories could not be loaded; movie indexing will retry later."
+            upsertXtreamIndexJob(
+                providerId = provider.id,
+                section = ContentType.MOVIE.name,
+                state = xtreamIndexFailureState(error),
+                now = now,
+                lastAttemptAt = now,
+                lastError = sanitizeThrowableMessage(error)
+            )
+            0
+        }
+        if (movieCategoryCount > 0) {
+            scheduleXtreamIndexSync(provider.id, ContentType.MOVIE)
+        }
+        val seriesCategoryCount = syncXtreamCategoryShell(
+            provider = provider,
+            api = api,
+            contentType = ContentType.SERIES,
+            label = "Series",
+            now = now,
+            onProgress = onProgress
+        ).getOrElse { error ->
+            warnings += "Series categories could not be loaded; series indexing will retry later."
+            upsertXtreamIndexJob(
+                providerId = provider.id,
+                section = ContentType.SERIES.name,
+                state = xtreamIndexFailureState(error),
+                now = now,
+                lastAttemptAt = now,
+                lastError = sanitizeThrowableMessage(error)
+            )
+            0
+        }
+        if (seriesCategoryCount > 0) {
+            scheduleXtreamIndexSync(provider.id, ContentType.SERIES)
         }
 
-        if (force || ContentCachePolicy.shouldRefresh(metadata.lastMovieSuccess, ContentCachePolicy.CATALOG_TTL_MILLIS, now)) {
-            progress(
-                provider.id,
-                onProgress,
-                "Downloading Movies..."
-            )
-            val movieSyncResult = syncXtreamMoviesCatalog(
+        metadata = metadata.copy(
+            lastMovieAttempt = if (movieCategoryCount > 0) now else metadata.lastMovieAttempt,
+            movieCatalogStale = true,
+            movieSyncMode = VodSyncMode.UNKNOWN
+        )
+        syncMetadataRepository.updateMetadata(metadata)
+
+        val epgState = if (provider.epgSyncMode == ProviderEpgSyncMode.SKIP) "IDLE" else "QUEUED"
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = "EPG",
+            state = epgState,
+            now = now,
+            lastAttemptAt = if (epgState == "QUEUED") now else 0L
+        )
+        if (provider.epgSyncMode != ProviderEpgSyncMode.SKIP) {
+            runCatching { scheduleBackgroundEpgSync(provider.id) }
+                .onFailure { error ->
+                    Log.w(TAG, "Failed to schedule Xtream background EPG sync for provider ${provider.id}: ${sanitizeThrowableMessage(error)}")
+                    warnings += "EPG background sync could not be scheduled; it will retry on the next launch or manual sync."
+                }
+        }
+
+        if (force) {
+            Log.i(TAG, "Xtream index-first sync completed for provider ${provider.id}; VOD and series index jobs are queued.")
+        }
+        return if (warnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = warnings.distinct())
+    }
+
+    private suspend fun syncXtreamCategoryShell(
+        provider: Provider,
+        api: XtreamProvider,
+        contentType: ContentType,
+        label: String,
+        now: Long,
+        onProgress: ((String) -> Unit)?
+    ): kotlin.Result<Int> = runCatching {
+        progress(provider.id, onProgress, "Loading $label categories...")
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = contentType.name,
+            state = "RUNNING",
+            now = now,
+            lastAttemptAt = now
+        )
+        val categories = when (contentType) {
+            ContentType.MOVIE -> requireResult(api.getVodCategories(), "Failed to load VOD categories")
+            ContentType.SERIES -> requireResult(api.getSeriesCategories(), "Failed to load series categories")
+            else -> throw IllegalArgumentException("Unsupported Xtream category shell: $contentType")
+        }
+        syncCatalogStore.upsertCategories(
+            providerId = provider.id,
+            type = contentType.name,
+            categories = categories.map { category -> category.toEntity(provider.id) }
+        )
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = contentType.name,
+            state = "QUEUED",
+            now = now,
+            totalCategories = categories.size,
+            completedCategories = 0,
+            nextCategoryIndex = 0,
+            failedCategories = 0,
+            indexedRows = 0,
+            skippedMalformedRows = 0,
+            lastAttemptAt = now,
+            lastError = null
+        )
+        categories.size
+    }
+
+    suspend fun processQueuedXtreamIndexJobs(
+        providerId: Long,
+        section: ContentType? = null,
+        force: Boolean = false,
+        maxCategoriesPerSection: Int? = null,
+        onProgress: ((String) -> Unit)? = null
+    ): com.streamvault.domain.model.Result<Unit> = withProviderLock(providerId) lock@{
+        val providerEntity = providerDao.getById(providerId)
+            ?: return@lock com.streamvault.domain.model.Result.error("Provider $providerId not found")
+        if (providerEntity.type != ProviderType.XTREAM_CODES) {
+            return@lock com.streamvault.domain.model.Result.success(Unit)
+        }
+
+        val provider = providerEntity
+            .copy(password = credentialCrypto.decryptIfNeeded(providerEntity.password))
+            .toDomain()
+        val useTextClassification = preferencesRepository.useXtreamTextClassification.first()
+        val enableBase64TextCompatibility = preferencesRepository.xtreamBase64TextCompatibility.first()
+        val api = createXtreamSyncProvider(provider, useTextClassification, enableBase64TextCompatibility)
+        val sections = when (section) {
+            ContentType.MOVIE -> listOf(ContentType.MOVIE)
+            ContentType.SERIES -> listOf(ContentType.SERIES)
+            ContentType.LIVE -> listOf(ContentType.LIVE)
+            ContentType.SERIES_EPISODE -> emptyList()
+            null -> listOf(ContentType.LIVE, ContentType.MOVIE, ContentType.SERIES)
+        }
+
+        var sawRetryableFailure = false
+        val warnings = mutableListOf<String>()
+        sections.forEach { contentType ->
+            val job = xtreamIndexJobDao.get(providerId, contentType.name)
+            if (!force && !shouldRunXtreamSummaryIndex(job)) {
+                return@forEach
+            }
+            val failure = runCatching {
+                when (contentType) {
+                    ContentType.LIVE -> processXtreamLiveIndexBackfillSection(providerId, onProgress)
+                    ContentType.MOVIE,
+                    ContentType.SERIES -> processXtreamSummaryIndexSection(provider, api, contentType, maxCategoriesPerSection, onProgress)
+                    ContentType.SERIES_EPISODE -> Unit
+                }
+            }.exceptionOrNull()
+            if (failure != null) {
+                val state = xtreamIndexFailureState(failure)
+                val currentJob = xtreamIndexJobDao.get(providerId, contentType.name)
+                if (currentJob?.state != "PARTIAL") {
+                    val failureAt = System.currentTimeMillis()
+                    upsertXtreamIndexJob(
+                        providerId = providerId,
+                        section = contentType.name,
+                        state = state,
+                        now = failureAt,
+                        lastAttemptAt = failureAt,
+                        lastError = sanitizeThrowableMessage(failure)
+                    )
+                }
+                sawRetryableFailure = sawRetryableFailure || state != "FAILED_PERMANENT"
+                warnings += "${contentType.name.lowercase().replaceFirstChar { it.titlecase() }} indexing failed: ${sanitizeThrowableMessage(failure)}"
+            }
+        }
+
+        if (warnings.isNotEmpty()) {
+            val message = warnings.joinToString("; ")
+            val exception = if (sawRetryableFailure) IOException(message) else IllegalStateException(message)
+            com.streamvault.domain.model.Result.error(warnings.first(), exception)
+        } else {
+            com.streamvault.domain.model.Result.success(Unit)
+        }
+    }
+
+    private fun shouldRunXtreamSummaryIndex(job: XtreamIndexJobEntity?): Boolean {
+        if (job == null) return true
+        if (job.state in setOf("QUEUED", "RUNNING", "PARTIAL", "STALE", "FAILED_RETRYABLE")) return true
+        return ContentCachePolicy.shouldRefresh(job.lastSuccessAt, ContentCachePolicy.CATALOG_TTL_MILLIS)
+    }
+
+    private suspend fun processXtreamSummaryIndexSection(
+        provider: Provider,
+        api: XtreamProvider,
+        contentType: ContentType,
+        maxCategories: Int?,
+        onProgress: ((String) -> Unit)?
+    ) {
+        require(contentType == ContentType.MOVIE || contentType == ContentType.SERIES) {
+            "Unsupported Xtream summary index section: $contentType"
+        }
+        val now = System.currentTimeMillis()
+        val categories = categoryDao.getByProviderAndTypeSync(provider.id, contentType.name)
+        if (categories.isEmpty()) {
+            syncXtreamCategoryShell(
                 provider = provider,
                 api = api,
-                existingMetadata = metadata,
-                onProgress = onProgress
-            )
-            val sawSequentialStress = movieSyncResult.strategyFeedback.segmentedStressDetected
-            val healthyMovieProviderAdaptation = updateSequentialProviderAdaptation(
-                previousRemembered = metadata.movieParallelFailuresRemembered,
-                previousHealthyStreak = metadata.movieHealthySyncStreak,
-                sawSequentialStress = sawSequentialStress
-            )
-            val movieAvoidFullUntil = updateAvoidFullUntil(
-                previousAvoidFullUntil = metadata.movieAvoidFullUntil,
+                contentType = contentType,
+                label = xtreamIndexSectionLabel(contentType),
                 now = now,
-                feedback = movieSyncResult.strategyFeedback
-            )
-
-            when (val catalogResult = movieSyncResult.catalogResult) {
-                is CatalogStrategyResult.Success -> {
-                    val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
-                        movieSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.replaceMovieCatalog(
-                        providerId = provider.id,
-                        categories = movieSyncResult.categories,
-                        movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
-                    )
-                    metadata = metadata.copy(
-                        lastMovieSync = now,
-                        lastMovieAttempt = now,
-                        lastMovieSuccess = now,
-                        movieCount = acceptedCount,
-                        movieSyncMode = movieSyncResult.syncMode,
-                        movieWarningsCount = (movieSyncResult.warnings + catalogResult.warnings).size,
-                        movieCatalogStale = false,
-                        movieAvoidFullUntil = movieAvoidFullUntil,
-                        movieParallelFailuresRemembered = healthyMovieProviderAdaptation.rememberSequential,
-                        movieHealthySyncStreak = healthyMovieProviderAdaptation.healthyStreak
-                    )
-                }
-                is CatalogStrategyResult.Partial -> {
-                    // Partial means the server returned a truncated or mid-interrupted
-                    // catalog subset. Running full stale deletion would remove titles that
-                    // simply weren't included in the partial snapshot, so we upsert only.
-                    val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedMovieCatalogUpsertOnly(provider.id, sessionId, movieSyncResult.categories)
-                        movieSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.upsertMovieCatalog(
-                        providerId = provider.id,
-                        categories = movieSyncResult.categories,
-                        movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
-                    )
-                    metadata = metadata.copy(
-                        lastMovieSync = now,
-                        lastMovieAttempt = now,
-                        lastMoviePartial = now,
-                        movieCount = acceptedCount,
-                        movieSyncMode = movieSyncResult.syncMode,
-                        movieWarningsCount = (movieSyncResult.warnings + catalogResult.warnings).size,
-                        movieCatalogStale = true,
-                        movieAvoidFullUntil = movieAvoidFullUntil,
-                        movieParallelFailuresRemembered = metadata.movieParallelFailuresRemembered || sawSequentialStress,
-                        movieHealthySyncStreak = 0
-                    )
-                    warnings += movieSyncResult.warnings + catalogResult.warnings
-                }
-                is CatalogStrategyResult.EmptyValid -> {
-                    val existingMovieCount = movieDao.getCount(provider.id).first()
-                    Log.w(TAG, "Movies sync kept existing catalog for provider ${provider.id}: empty valid result, existingCount=$existingMovieCount")
-                    metadata = metadata.copy(
-                        lastMovieAttempt = now,
-                        movieSyncMode = movieSyncResult.syncMode,
-                        movieWarningsCount = (movieSyncResult.warnings + catalogResult.warnings).size,
-                        movieCatalogStale = existingMovieCount > 0 || movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY,
-                        movieAvoidFullUntil = movieAvoidFullUntil,
-                        movieParallelFailuresRemembered = metadata.movieParallelFailuresRemembered || sawSequentialStress,
-                        movieHealthySyncStreak = 0
-                    )
-                    warnings += movieSyncResult.warnings + catalogResult.warnings +
-                        if (existingMovieCount > 0) {
-                            listOf("Movies refresh returned an empty valid catalog; keeping previous movie library.")
-                        } else {
-                            listOf("Movies refresh returned an empty valid catalog with no previous movie library.")
-                        }
-                }
-                is CatalogStrategyResult.Failure -> {
-                    val existingMovieCount = movieDao.getCount(provider.id).first()
-                    val enteringLazyMode = movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY && !movieSyncResult.categories.isNullOrEmpty()
-                    val finalMode = if (enteringLazyMode) {
-                        VodSyncMode.LAZY_BY_CATEGORY
-                    } else {
-                        metadata.movieSyncMode
-                    }
-                    if (enteringLazyMode) {
-                        movieSyncResult.categories?.let { syncCatalogStore.replaceCategories(provider.id, "MOVIE", it) }
-                    }
-                    Log.w(TAG, "Movies sync preserved previous catalog for provider ${provider.id}: strategy=${catalogResult.strategyName}, existingCount=$existingMovieCount, mode=${movieSyncResult.syncMode}, reason=${sanitizeThrowableMessage(catalogResult.error)}")
-                    metadata = metadata.copy(
-                        lastMovieSync = if (enteringLazyMode) now else metadata.lastMovieSync,
-                        lastMovieAttempt = now,
-                        movieSyncMode = finalMode,
-                        movieWarningsCount = (movieSyncResult.warnings + catalogResult.warnings).size,
-                        movieCatalogStale = existingMovieCount > 0 || movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY,
-                        movieAvoidFullUntil = movieAvoidFullUntil,
-                        movieParallelFailuresRemembered = metadata.movieParallelFailuresRemembered || sawSequentialStress || shouldRememberSequentialPreference(catalogResult.error),
-                        movieHealthySyncStreak = 0
-                    )
-                    val isFastSyncIntentional = enteringLazyMode || catalogResult.strategyName == "fast_sync_no_categories"
-                    if (!isFastSyncIntentional) {
-                        warnings += movieSyncResult.warnings + catalogResult.warnings +
-                            if (existingMovieCount > 0) {
-                                listOf("Movies sync degraded; keeping previous movie library.")
-                            } else {
-                                listOf("Movies sync failed; continuing with the rest of the provider sync.")
-                            }
-                    }
-                }
-            }
-            syncMetadataRepository.updateMetadata(metadata)
+                onProgress = onProgress
+            ).getOrThrow()
         }
-
-        if (force || ContentCachePolicy.shouldRefresh(metadata.lastSeriesSuccess, ContentCachePolicy.CATALOG_TTL_MILLIS, now)) {
-            progress(provider.id, onProgress, "Downloading Series...")
-            val seriesSyncResult = syncXtreamSeriesCatalog(
+        val initialJob = xtreamIndexJobDao.get(provider.id, contentType.name)
+        val priorityCategoryId = initialJob?.priorityCategoryId
+        val indexedCategories = categoryDao.getByProviderAndTypeSync(provider.id, contentType.name)
+        val resumeJob = initialJob?.takeIf { it.state in setOf("QUEUED", "RUNNING", "PARTIAL") }
+        val categoryLimit = maxCategories?.coerceAtLeast(1) ?: Int.MAX_VALUE
+        var nextCategoryIndex = resumeJob?.nextCategoryIndex?.coerceIn(0, indexedCategories.size) ?: 0
+        if (shouldAttemptFullXtreamSummaryStream(resumeJob, priorityCategoryId)) {
+            when (val streamed = streamFullXtreamSummaryIndex(
                 provider = provider,
                 api = api,
-                existingMetadata = metadata,
-                onProgress = onProgress
-            )
-            val seriesSequentialStress = seriesSyncResult.strategyFeedback.segmentedStressDetected
-            val seriesProviderAdaptation = updateSequentialProviderAdaptation(
-                previousRemembered = metadata.seriesSequentialFailuresRemembered,
-                previousHealthyStreak = metadata.seriesHealthySyncStreak,
-                sawSequentialStress = seriesSequentialStress
-            )
-            val seriesAvoidFullUntil = updateAvoidFullUntil(
-                previousAvoidFullUntil = metadata.seriesAvoidFullUntil,
+                contentType = contentType,
+                categories = indexedCategories,
+                totalCategories = indexedCategories.size,
                 now = now,
-                feedback = seriesSyncResult.strategyFeedback
-            )
+                onProgress = onProgress
+            )) {
+                is Result.Success -> return
+                is Result.Error -> {
+                    Log.w(
+                        TAG,
+                        "Full ${contentType.name} stream index failed for provider ${provider.id}; falling back to category slices: ${streamed.message}"
+                    )
+                    upsertXtreamIndexJob(
+                        providerId = provider.id,
+                        section = contentType.name,
+                        state = "QUEUED",
+                        now = System.currentTimeMillis(),
+                        totalCategories = indexedCategories.size,
+                        completedCategories = 0,
+                        nextCategoryIndex = 0,
+                        failedCategories = 0,
+                        lastAttemptAt = now,
+                        lastError = streamed.message
+                    )
+                    nextCategoryIndex = 0
+                }
+                Result.Loading -> Unit
+            }
+        }
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = contentType.name,
+            state = "RUNNING",
+            now = now,
+            totalCategories = indexedCategories.size,
+            completedCategories = resumeJob?.completedCategories ?: 0,
+            nextCategoryIndex = nextCategoryIndex,
+            failedCategories = resumeJob?.failedCategories ?: 0,
+            indexedRows = resumeJob?.indexedRows ?: 0,
+            skippedMalformedRows = resumeJob?.skippedMalformedRows ?: 0,
+            lastAttemptAt = now,
+            lastError = null
+        )
 
-            when (val seriesResult = seriesSyncResult.catalogResult) {
-                is CatalogStrategyResult.Success -> {
-                    val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
-                        seriesSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.replaceSeriesCatalog(
-                        providerId = provider.id,
-                        categories = seriesSyncResult.categories,
-                        series = seriesResult.items.asSequence().map { it.toEntity() }
-                    )
-                    metadata = metadata.copy(
-                        lastSeriesSync = now,
-                        lastSeriesSuccess = now,
-                        seriesCount = acceptedCount,
-                        seriesAvoidFullUntil = seriesAvoidFullUntil,
-                        seriesSequentialFailuresRemembered = seriesProviderAdaptation.rememberSequential,
-                        seriesHealthySyncStreak = seriesProviderAdaptation.healthyStreak
-                    )
-                    warnings += seriesSyncResult.warnings + seriesResult.warnings
+        var completedCategories = resumeJob?.completedCategories ?: 0
+        var failedCategories = resumeJob?.failedCategories ?: 0
+        var indexedRows = resumeJob?.indexedRows ?: 0
+        var skippedMalformedRows = resumeJob?.skippedMalformedRows ?: 0
+        var lastError: Throwable? = null
+        var priorityHandled = false
+
+        data class CategoryIndexWork(
+            val category: CategoryEntity,
+            val advancesCursor: Boolean
+        )
+
+        val workItems = buildList {
+            val priorityIndex = priorityCategoryId?.let { id ->
+                indexedCategories.indexOfFirst { it.categoryId == id }.takeIf { index -> index >= 0 }
+            }
+            if (priorityIndex != null && priorityIndex != nextCategoryIndex && size < categoryLimit) {
+                add(CategoryIndexWork(indexedCategories[priorityIndex], advancesCursor = false))
+            }
+            while (nextCategoryIndex < indexedCategories.size && size < categoryLimit) {
+                val category = indexedCategories[nextCategoryIndex]
+                nextCategoryIndex++
+                if (
+                    priorityCategoryId != null &&
+                    category.categoryId == priorityCategoryId &&
+                    any { it.category.categoryId == priorityCategoryId }
+                ) {
+                    continue
                 }
-                is CatalogStrategyResult.Partial -> {
-                    // Partial result: upsert only to avoid deleting titles that weren't
-                    // included in the truncated snapshot.
-                    val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                        syncCatalogStore.applyStagedSeriesCatalogUpsertOnly(provider.id, sessionId, seriesSyncResult.categories)
-                        seriesSyncResult.stagedAcceptedCount
-                    } ?: syncCatalogStore.upsertSeriesCatalog(
-                        providerId = provider.id,
-                        categories = seriesSyncResult.categories,
-                        series = seriesResult.items.asSequence().map { it.toEntity() }
-                    )
-                    metadata = metadata.copy(
-                        lastSeriesSync = now,
-                        seriesCount = acceptedCount,
-                        seriesAvoidFullUntil = seriesAvoidFullUntil,
-                        seriesSequentialFailuresRemembered = metadata.seriesSequentialFailuresRemembered || seriesSequentialStress,
-                        seriesHealthySyncStreak = 0
-                    )
-                    warnings += seriesSyncResult.warnings + seriesResult.warnings + listOf("Series sync completed partially.")
-                }
-                is CatalogStrategyResult.EmptyValid -> {
-                    val existingSeriesCount = seriesDao.getCount(provider.id).first()
-                    Log.w(TAG, "Series sync kept existing catalog for provider ${provider.id}: empty valid result, existingCount=$existingSeriesCount")
-                    metadata = metadata.copy(
-                        seriesAvoidFullUntil = seriesAvoidFullUntil,
-                        seriesSequentialFailuresRemembered = metadata.seriesSequentialFailuresRemembered || seriesSequentialStress,
-                        seriesHealthySyncStreak = 0
-                    )
-                    warnings += seriesSyncResult.warnings + seriesResult.warnings +
-                        if (existingSeriesCount > 0) {
-                            listOf("Series refresh returned an empty valid catalog; keeping previous series library.")
-                        } else {
-                            listOf("Series refresh returned an empty valid catalog with no previous series library.")
-                        }
-                    if (existingSeriesCount == 0) {
-                        throw IllegalStateException("Series catalog was empty.")
+                add(CategoryIndexWork(category, advancesCursor = true))
+            }
+        }
+
+        for (workItem in workItems) {
+            val category = workItem.category
+            progress(provider.id, onProgress, "Indexing ${xtreamIndexSectionLabel(contentType)}: ${category.name}")
+            val outcome = when (contentType) {
+                ContentType.MOVIE -> fetchMovieCategoryOutcome(provider, api, category.toXtreamCategory())
+                ContentType.SERIES -> fetchSeriesCategoryOutcome(provider, api, category.toXtreamCategory())
+                else -> error("Unsupported section")
+            }
+            when (val categoryOutcome = outcome.outcome) {
+                is CategoryFetchOutcome.Success -> {
+                    val accepted = when (contentType) {
+                        ContentType.MOVIE -> upsertXtreamMovieSummaryBatch(
+                            providerId = provider.id,
+                            movies = categoryOutcome.items.filterIsInstance<Movie>(),
+                            indexedAt = System.currentTimeMillis()
+                        )
+                        ContentType.SERIES -> upsertXtreamSeriesSummaryBatch(
+                            providerId = provider.id,
+                            series = categoryOutcome.items.filterIsInstance<Series>(),
+                            indexedAt = System.currentTimeMillis()
+                        )
+                        else -> 0
+                    }
+                    if (workItem.advancesCursor) {
+                        indexedRows += accepted
+                        skippedMalformedRows += (categoryOutcome.rawCount - categoryOutcome.items.size).coerceAtLeast(0)
+                        completedCategories++
+                    }
+                    if (category.categoryId == priorityCategoryId) {
+                        priorityHandled = true
+                        upsertXtreamIndexJob(
+                            providerId = provider.id,
+                            section = contentType.name,
+                            state = "RUNNING",
+                            now = System.currentTimeMillis(),
+                            clearPriority = true
+                        )
                     }
                 }
-                is CatalogStrategyResult.Failure -> {
-                    val existingSeriesCount = seriesDao.getCount(provider.id).first()
-                    val enteringLazyMode = seriesResult.strategyName == "lazy_by_category" && !seriesSyncResult.categories.isNullOrEmpty()
-                    if (enteringLazyMode) {
-                        seriesSyncResult.categories?.let { syncCatalogStore.replaceCategories(provider.id, "SERIES", it) }
+                is CategoryFetchOutcome.Empty -> {
+                    if (workItem.advancesCursor) {
+                        completedCategories++
                     }
-                    Log.w(TAG, "Series sync preserved previous catalog for provider ${provider.id}: strategy=${seriesResult.strategyName}, existingCount=$existingSeriesCount, reason=${sanitizeThrowableMessage(seriesResult.error)}")
-                    metadata = metadata.copy(
-                        lastSeriesSync = if (enteringLazyMode) now else metadata.lastSeriesSync,
-                        seriesAvoidFullUntil = seriesAvoidFullUntil,
-                        seriesSequentialFailuresRemembered = metadata.seriesSequentialFailuresRemembered || seriesSequentialStress || shouldRememberSequentialPreference(seriesResult.error),
-                        seriesHealthySyncStreak = 0
-                    )
-                    val isSeriesFastSyncIntentional = enteringLazyMode || seriesResult.strategyName == "fast_sync_no_categories"
-                    if (!isSeriesFastSyncIntentional) {
-                        warnings += seriesSyncResult.warnings + seriesResult.warnings +
-                            if (existingSeriesCount > 0) {
-                                listOf("Series sync degraded; keeping previous series library.")
-                            } else {
-                                listOf("Series sync failed; continuing with the rest of the provider sync.")
-                            }
+                    if (category.categoryId == priorityCategoryId) {
+                        priorityHandled = true
+                        upsertXtreamIndexJob(
+                            providerId = provider.id,
+                            section = contentType.name,
+                            state = "RUNNING",
+                            now = System.currentTimeMillis(),
+                            clearPriority = true
+                        )
                     }
+                }
+                is CategoryFetchOutcome.Failure -> {
+                    if (workItem.advancesCursor) {
+                        failedCategories++
+                    }
+                    lastError = categoryOutcome.error
                 }
             }
-            syncMetadataRepository.updateMetadata(metadata)
+            upsertXtreamIndexJob(
+                providerId = provider.id,
+                section = contentType.name,
+                state = if (failedCategories > 0) "PARTIAL" else "RUNNING",
+                now = System.currentTimeMillis(),
+                totalCategories = indexedCategories.size,
+                completedCategories = completedCategories,
+                nextCategoryIndex = nextCategoryIndex,
+                failedCategories = failedCategories,
+                indexedRows = indexedRows,
+                skippedMalformedRows = skippedMalformedRows,
+                lastAttemptAt = now,
+                lastError = lastError?.let(::sanitizeThrowableMessage)
+            )
         }
 
-        if (shouldSyncEpgUpfront(provider)) {
-            warnings += syncProviderEpg(
-                provider = provider,
-                metadata = metadata,
-                now = now,
-                force = force,
-                onProgress = onProgress
-            ).warnings
+        val finishedAt = System.currentTimeMillis()
+        val hasMoreCategories = nextCategoryIndex < indexedCategories.size
+        val finalState = when {
+            hasMoreCategories -> "QUEUED"
+            failedCategories > 0 -> "PARTIAL"
+            else -> "SUCCESS"
+        }
+        val priorityWasNotPresent = priorityCategoryId != null &&
+            indexedCategories.none { it.categoryId == priorityCategoryId }
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = contentType.name,
+            state = finalState,
+            now = finishedAt,
+            totalCategories = indexedCategories.size,
+            completedCategories = completedCategories,
+            nextCategoryIndex = nextCategoryIndex,
+            failedCategories = failedCategories,
+            indexedRows = indexedRows,
+            skippedMalformedRows = skippedMalformedRows,
+            clearPriority = finalState == "SUCCESS" || priorityWasNotPresent || priorityHandled,
+            lastAttemptAt = now,
+            lastSuccessAt = if (finalState == "SUCCESS") finishedAt else null,
+            lastError = lastError?.let(::sanitizeThrowableMessage)
+        )
+        updateXtreamSummaryMetadata(provider.id, contentType, indexedRows, finalState, finishedAt)
+        if (hasMoreCategories) {
+            scheduleXtreamIndexSync(provider.id, contentType, force = false)
+        }
+        if (!hasMoreCategories && failedCategories > 0) {
+            throw IllegalStateException(
+                "${xtreamIndexSectionLabel(contentType)} indexing completed partially.",
+                lastError
+            )
+        }
+    }
+
+    private fun shouldAttemptFullXtreamSummaryStream(
+        resumeJob: XtreamIndexJobEntity?,
+        priorityCategoryId: Long?
+    ): Boolean {
+        if (priorityCategoryId != null && resumeJob?.nextCategoryIndex != 0) return false
+        if (resumeJob == null) return true
+        return resumeJob.nextCategoryIndex == 0 &&
+            resumeJob.completedCategories == 0 &&
+            resumeJob.failedCategories == 0 &&
+            resumeJob.indexedRows == 0
+    }
+
+    private suspend fun streamFullXtreamSummaryIndex(
+        provider: Provider,
+        api: XtreamProvider,
+        contentType: ContentType,
+        categories: List<CategoryEntity>,
+        totalCategories: Int,
+        now: Long,
+        onProgress: ((String) -> Unit)?
+    ): Result<Int> {
+        progress(provider.id, onProgress, "Indexing ${xtreamIndexSectionLabel(contentType)}...")
+        upsertXtreamIndexJob(
+            providerId = provider.id,
+            section = contentType.name,
+            state = "RUNNING",
+            now = now,
+            totalCategories = totalCategories,
+            completedCategories = 0,
+            nextCategoryIndex = 0,
+            failedCategories = 0,
+            indexedRows = 0,
+            skippedMalformedRows = 0,
+            lastAttemptAt = now,
+            lastError = null
+        )
+
+        var indexedRows = 0
+        val categoryNamesById = categories.associate { it.categoryId to it.name }
+        val adultCategoryIds = categories.filter { it.isAdult }.mapTo(mutableSetOf()) { it.categoryId }
+        val streamResult = when (contentType) {
+            ContentType.MOVIE -> api.streamVodSummaries(adultCategoryIds = adultCategoryIds) { batch ->
+                val accepted = upsertXtreamMovieSummaryBatch(
+                    providerId = provider.id,
+                    movies = batch.withMovieCategoryNames(categoryNamesById),
+                    indexedAt = System.currentTimeMillis()
+                )
+                indexedRows += accepted
+                upsertXtreamIndexJob(
+                    providerId = provider.id,
+                    section = contentType.name,
+                    state = "RUNNING",
+                    now = System.currentTimeMillis(),
+                    totalCategories = totalCategories,
+                    completedCategories = 0,
+                    nextCategoryIndex = 0,
+                    indexedRows = indexedRows,
+                    lastAttemptAt = now,
+                    lastError = null
+                )
+            }
+            ContentType.SERIES -> api.streamSeriesSummaries(adultCategoryIds = adultCategoryIds) { batch ->
+                val accepted = upsertXtreamSeriesSummaryBatch(
+                    providerId = provider.id,
+                    series = batch.withSeriesCategoryNames(categoryNamesById),
+                    indexedAt = System.currentTimeMillis()
+                )
+                indexedRows += accepted
+                upsertXtreamIndexJob(
+                    providerId = provider.id,
+                    section = contentType.name,
+                    state = "RUNNING",
+                    now = System.currentTimeMillis(),
+                    totalCategories = totalCategories,
+                    completedCategories = 0,
+                    nextCategoryIndex = 0,
+                    indexedRows = indexedRows,
+                    lastAttemptAt = now,
+                    lastError = null
+                )
+            }
+            else -> Result.error("Unsupported Xtream summary stream section: $contentType")
         }
 
-        return if (warnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = warnings)
+        return when (streamResult) {
+            is Result.Success -> {
+                val finishedAt = System.currentTimeMillis()
+                val acceptedCount = indexedRows.coerceAtLeast(streamResult.data)
+                upsertXtreamIndexJob(
+                    providerId = provider.id,
+                    section = contentType.name,
+                    state = "SUCCESS",
+                    now = finishedAt,
+                    totalCategories = totalCategories,
+                    completedCategories = totalCategories,
+                    nextCategoryIndex = totalCategories,
+                    failedCategories = 0,
+                    indexedRows = acceptedCount,
+                    skippedMalformedRows = 0,
+                    clearPriority = true,
+                    lastAttemptAt = now,
+                    lastSuccessAt = finishedAt,
+                    lastError = null
+                )
+                updateXtreamSummaryMetadata(provider.id, contentType, acceptedCount, "SUCCESS", finishedAt)
+                Result.success(acceptedCount)
+            }
+            is Result.Error -> streamResult
+            Result.Loading -> Result.error("Xtream summary stream did not complete")
+        }
+    }
+
+    private fun List<Movie>.withMovieCategoryNames(categoryNamesById: Map<Long, String>): List<Movie> =
+        map { movie ->
+            val categoryName = movie.categoryId?.let(categoryNamesById::get)
+            if (categoryName == null || categoryName == movie.categoryName) movie else movie.copy(categoryName = categoryName)
+        }
+
+    private fun List<Series>.withSeriesCategoryNames(categoryNamesById: Map<Long, String>): List<Series> =
+        map { series ->
+            val categoryName = series.categoryId?.let(categoryNamesById::get)
+            if (categoryName == null || categoryName == series.categoryName) series else series.copy(categoryName = categoryName)
+        }
+
+    private suspend fun upsertXtreamMovieSummaryBatch(
+        providerId: Long,
+        movies: List<Movie>,
+        indexedAt: Long
+    ): Int {
+        if (movies.isEmpty()) return 0
+        val incoming = movies.map { movie -> movie.toEntity().copy(cacheState = "SUMMARY_ONLY", detailHydratedAt = 0L, remoteStaleAt = 0L) }
+        val existingByStreamId = movieDao.getByStreamIds(providerId, incoming.map { it.streamId }).associateBy { it.streamId }
+        val merged = incoming.map { summary ->
+            val existing = existingByStreamId[summary.streamId]
+            mergeMovieSummary(existing, summary)
+        }
+        transactionRunner.inTransaction {
+            movieDao.insertAll(merged)
+            val persistedByStreamId = movieDao.getByStreamIds(providerId, merged.map { it.streamId }).associateBy { it.streamId }
+            xtreamContentIndexDao.upsertAll(
+                merged.map { movie ->
+                    val persisted = persistedByStreamId[movie.streamId] ?: movie
+                    movie.toXtreamIndexRow(providerId, persisted.id, indexedAt)
+                }
+            )
+        }
+        movieDao.restoreWatchProgress(providerId)
+        return merged.size
+    }
+
+    private suspend fun upsertXtreamSeriesSummaryBatch(
+        providerId: Long,
+        series: List<Series>,
+        indexedAt: Long
+    ): Int {
+        if (series.isEmpty()) return 0
+        val incoming = series.map { item -> item.toEntity().copy(cacheState = "SUMMARY_ONLY", detailHydratedAt = 0L, remoteStaleAt = 0L) }
+        val existingBySeriesId = seriesDao.getBySeriesIds(providerId, incoming.map { it.seriesId }).associateBy { it.seriesId }
+        val merged = incoming.map { summary ->
+            val existing = existingBySeriesId[summary.seriesId]
+            mergeSeriesSummary(existing, summary)
+        }
+        transactionRunner.inTransaction {
+            seriesDao.insertAll(merged)
+            val persistedBySeriesId = seriesDao.getBySeriesIds(providerId, merged.map { it.seriesId }).associateBy { it.seriesId }
+            xtreamContentIndexDao.upsertAll(
+                merged.map { item ->
+                    val persisted = persistedBySeriesId[item.seriesId] ?: item
+                    item.toXtreamIndexRow(providerId, persisted.id, indexedAt)
+                }
+            )
+        }
+        return merged.size
+    }
+
+    private fun mergeMovieSummary(existing: MovieEntity?, summary: MovieEntity): MovieEntity {
+        if (existing == null) return summary
+        val preserveDetails = existing.cacheState == "DETAIL_HYDRATED" && existing.detailHydratedAt > 0L
+        return summary.copy(
+            id = existing.id,
+            posterUrl = summary.posterUrl ?: existing.posterUrl,
+            backdropUrl = if (preserveDetails) existing.backdropUrl else summary.backdropUrl,
+            plot = if (preserveDetails) existing.plot else summary.plot,
+            cast = if (preserveDetails) existing.cast else summary.cast,
+            director = if (preserveDetails) existing.director else summary.director,
+            genre = summary.genre ?: existing.genre,
+            releaseDate = if (preserveDetails) existing.releaseDate else summary.releaseDate,
+            duration = if (preserveDetails) existing.duration else summary.duration,
+            durationSeconds = if (preserveDetails) existing.durationSeconds else summary.durationSeconds,
+            year = if (preserveDetails) existing.year else summary.year,
+            tmdbId = summary.tmdbId ?: existing.tmdbId,
+            youtubeTrailer = summary.youtubeTrailer ?: existing.youtubeTrailer,
+            watchProgress = existing.watchProgress,
+            watchCount = existing.watchCount,
+            lastWatchedAt = existing.lastWatchedAt,
+            isUserProtected = existing.isUserProtected,
+            cacheState = if (preserveDetails) existing.cacheState else "SUMMARY_ONLY",
+            detailHydratedAt = if (preserveDetails) existing.detailHydratedAt else 0L,
+            remoteStaleAt = 0L
+        )
+    }
+
+    private fun mergeSeriesSummary(existing: SeriesEntity?, summary: SeriesEntity): SeriesEntity {
+        if (existing == null) return summary
+        val preserveDetails = existing.cacheState == "DETAIL_HYDRATED" && existing.detailHydratedAt > 0L
+        return summary.copy(
+            id = existing.id,
+            providerSeriesId = summary.providerSeriesId ?: existing.providerSeriesId,
+            posterUrl = summary.posterUrl ?: existing.posterUrl,
+            backdropUrl = if (preserveDetails) existing.backdropUrl else summary.backdropUrl,
+            plot = if (preserveDetails) existing.plot else summary.plot,
+            cast = if (preserveDetails) existing.cast else summary.cast,
+            director = if (preserveDetails) existing.director else summary.director,
+            genre = summary.genre ?: existing.genre,
+            releaseDate = if (preserveDetails) existing.releaseDate else summary.releaseDate,
+            tmdbId = summary.tmdbId ?: existing.tmdbId,
+            youtubeTrailer = summary.youtubeTrailer ?: existing.youtubeTrailer,
+            episodeRunTime = if (preserveDetails) existing.episodeRunTime else summary.episodeRunTime,
+            isUserProtected = existing.isUserProtected,
+            cacheState = if (preserveDetails) existing.cacheState else "SUMMARY_ONLY",
+            detailHydratedAt = if (preserveDetails) existing.detailHydratedAt else 0L,
+            remoteStaleAt = 0L
+        )
+    }
+
+    private fun MovieEntity.toXtreamIndexRow(
+        providerId: Long,
+        localContentId: Long,
+        indexedAt: Long
+    ): XtreamContentIndexEntity = XtreamContentIndexEntity(
+        providerId = providerId,
+        contentType = ContentType.MOVIE,
+        remoteId = streamId.toString(),
+        localContentId = localContentId.takeIf { it > 0L },
+        name = name,
+        categoryId = categoryId,
+        categoryName = categoryName,
+        imageUrl = posterUrl,
+        containerExtension = containerExtension,
+        rating = rating,
+        addedAt = addedAt,
+        isAdult = isAdult,
+        indexedAt = indexedAt,
+        detailHydratedAt = detailHydratedAt,
+        staleState = "ACTIVE",
+        errorState = null,
+        syncFingerprint = syncFingerprint
+    )
+
+    private fun SeriesEntity.toXtreamIndexRow(
+        providerId: Long,
+        localContentId: Long,
+        indexedAt: Long
+    ): XtreamContentIndexEntity = XtreamContentIndexEntity(
+        providerId = providerId,
+        contentType = ContentType.SERIES,
+        remoteId = providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesId.toString(),
+        localContentId = localContentId.takeIf { it > 0L },
+        name = name,
+        categoryId = categoryId,
+        categoryName = categoryName,
+        imageUrl = posterUrl,
+        rating = rating,
+        remoteUpdatedAt = lastModified,
+        isAdult = isAdult,
+        indexedAt = indexedAt,
+        detailHydratedAt = detailHydratedAt,
+        staleState = "ACTIVE",
+        errorState = null,
+        syncFingerprint = syncFingerprint
+    )
+
+    private suspend fun updateXtreamSummaryMetadata(
+        providerId: Long,
+        contentType: ContentType,
+        indexedRows: Int,
+        finalState: String,
+        now: Long
+    ) {
+        val metadata = syncMetadataRepository.getMetadata(providerId) ?: SyncMetadata(providerId)
+        when (contentType) {
+            ContentType.MOVIE -> syncMetadataRepository.updateMetadata(
+                metadata.copy(
+                    lastMovieSync = now,
+                    lastMovieAttempt = now,
+                    lastMovieSuccess = if (finalState == "SUCCESS") now else metadata.lastMovieSuccess,
+                    lastMoviePartial = if (finalState != "SUCCESS") now else metadata.lastMoviePartial,
+                    movieCount = if (finalState == "SUCCESS") indexedRows else metadata.movieCount.coerceAtLeast(indexedRows),
+                    movieCatalogStale = finalState != "SUCCESS",
+                    movieSyncMode = VodSyncMode.UNKNOWN
+                )
+            )
+            ContentType.SERIES -> syncMetadataRepository.updateMetadata(
+                metadata.copy(
+                    lastSeriesSync = now,
+                    lastSeriesSuccess = if (finalState == "SUCCESS") now else metadata.lastSeriesSuccess,
+                    seriesCount = if (finalState == "SUCCESS") indexedRows else metadata.seriesCount.coerceAtLeast(indexedRows)
+                )
+            )
+            else -> Unit
+        }
+    }
+
+    private fun CategoryEntity.toXtreamCategory(): XtreamCategory = XtreamCategory(
+        categoryId = categoryId.toString(),
+        categoryName = name,
+        parentId = parentId?.toInt() ?: 0,
+        isAdult = isAdult
+    )
+
+    private fun xtreamIndexSectionLabel(contentType: ContentType): String = when (contentType) {
+        ContentType.MOVIE -> "Movies"
+        ContentType.SERIES -> "Series"
+        ContentType.LIVE -> "Live TV"
+        ContentType.SERIES_EPISODE -> "Episodes"
+    }
+
+    private suspend fun processXtreamLiveIndexBackfillSection(
+        providerId: Long,
+        onProgress: ((String) -> Unit)?
+    ) {
+        val now = System.currentTimeMillis()
+        progress(providerId, onProgress, "Preparing Live TV index...")
+        upsertXtreamIndexJob(
+            providerId = providerId,
+            section = ContentType.LIVE.name,
+            state = "RUNNING",
+            now = now,
+            lastAttemptAt = now,
+            lastError = null
+        )
+        val categoryCount = categoryDao.getByProviderAndTypeSync(providerId, ContentType.LIVE.name).size
+        val indexedRows = backfillXtreamLiveIndex(providerId, now)
+        upsertXtreamIndexJob(
+            providerId = providerId,
+            section = ContentType.LIVE.name,
+            state = "SUCCESS",
+            now = System.currentTimeMillis(),
+            totalCategories = categoryCount,
+            completedCategories = categoryCount,
+            nextCategoryIndex = categoryCount,
+            failedCategories = 0,
+            indexedRows = indexedRows,
+            skippedMalformedRows = 0,
+            lastAttemptAt = now,
+            lastSuccessAt = System.currentTimeMillis(),
+            lastError = null
+        )
+    }
+
+    private suspend fun backfillXtreamLiveIndex(providerId: Long, indexedAt: Long): Int {
+        val channels = channelDao.getByProviderSync(providerId)
+        if (channels.isEmpty()) return 0
+        val indexRows = channels.map { channel ->
+            XtreamContentIndexEntity(
+                providerId = providerId,
+                contentType = ContentType.LIVE,
+                remoteId = channel.streamId.toString(),
+                localContentId = channel.id.takeIf { it > 0 },
+                name = channel.name,
+                categoryId = channel.categoryId,
+                categoryName = channel.categoryName ?: channel.groupTitle,
+                imageUrl = channel.logoUrl,
+                isAdult = channel.isAdult,
+                indexedAt = indexedAt,
+                detailHydratedAt = indexedAt,
+                syncFingerprint = channel.syncFingerprint
+            )
+        }
+        transactionRunner.inTransaction {
+            xtreamContentIndexDao.deleteByProviderAndType(providerId, ContentType.LIVE.name)
+            xtreamContentIndexDao.upsertAll(indexRows)
+        }
+        return channels.size
+    }
+
+    private fun xtreamIndexFailureState(error: Throwable): String {
+        val chain = generateSequence(error as Throwable?) { it.cause }.toList()
+        if (chain.any { it is XtreamAuthenticationException }) {
+            return "FAILED_PERMANENT"
+        }
+        val requestFailure = chain.filterIsInstance<XtreamRequestException>().firstOrNull()
+        if (requestFailure?.statusCode == 401 || requestFailure?.statusCode == 403) {
+            return "FAILED_PERMANENT"
+        }
+        return "FAILED_RETRYABLE"
+    }
+
+    private suspend fun upsertXtreamIndexJob(
+        providerId: Long,
+        section: String,
+        state: String,
+        now: Long,
+        totalCategories: Int? = null,
+        completedCategories: Int? = null,
+        nextCategoryIndex: Int? = null,
+        failedCategories: Int? = null,
+        indexedRows: Int? = null,
+        skippedMalformedRows: Int? = null,
+        deletedPrunedRows: Int? = null,
+        priorityCategoryId: Long? = null,
+        priorityRequestedAt: Long? = null,
+        clearPriority: Boolean = false,
+        lastAttemptAt: Long? = null,
+        lastSuccessAt: Long? = null,
+        lastError: String? = null
+    ) {
+        val existing = xtreamIndexJobDao.get(providerId, section)
+        xtreamIndexJobDao.upsert(
+            (existing ?: XtreamIndexJobEntity(providerId = providerId, section = section)).copy(
+                state = state,
+                totalCategories = totalCategories ?: existing?.totalCategories ?: 0,
+                completedCategories = completedCategories ?: existing?.completedCategories ?: 0,
+                nextCategoryIndex = nextCategoryIndex ?: existing?.nextCategoryIndex ?: 0,
+                failedCategories = failedCategories ?: existing?.failedCategories ?: 0,
+                indexedRows = indexedRows ?: existing?.indexedRows ?: 0,
+                skippedMalformedRows = skippedMalformedRows ?: existing?.skippedMalformedRows ?: 0,
+                deletedPrunedRows = deletedPrunedRows ?: existing?.deletedPrunedRows ?: 0,
+                priorityCategoryId = if (clearPriority) null else priorityCategoryId ?: existing?.priorityCategoryId,
+                priorityRequestedAt = if (clearPriority) 0L else priorityRequestedAt ?: existing?.priorityRequestedAt ?: 0L,
+                lastError = lastError,
+                lastAttemptAt = lastAttemptAt ?: existing?.lastAttemptAt ?: 0L,
+                lastSuccessAt = lastSuccessAt ?: existing?.lastSuccessAt ?: 0L,
+                updatedAt = now
+            )
+        )
     }
 
     private suspend fun syncM3u(
@@ -1057,7 +1817,9 @@ class SyncManager @Inject constructor(
                         UrlSecurityPolicy.validateXtreamEpgUrl(xmltvUrl)?.let { message ->
                             throw IllegalStateException(message)
                         }
-                        retryTransient { epgRepository.refreshEpg(provider.id, xmltvUrl) }
+                        retryTransient {
+                            requireResult(epgRepository.refreshEpg(provider.id, xmltvUrl), "Failed to refresh EPG")
+                        }
                         val epgCount = programDao.countByProvider(provider.id)
                         updatedMetadata = updatedMetadata.copy(
                             lastEpgSync = now,
@@ -1087,7 +1849,9 @@ class SyncManager @Inject constructor(
                     } else {
                         try {
                             progress(provider.id, onProgress, "Downloading EPG...")
-                            retryTransient { epgRepository.refreshEpg(provider.id, currentEpgUrl) }
+                            retryTransient {
+                                requireResult(epgRepository.refreshEpg(provider.id, currentEpgUrl), "Failed to refresh EPG")
+                            }
                             updatedMetadata = updatedMetadata.copy(
                                 lastEpgSync = now,
                                 lastEpgSuccess = now,
@@ -1123,7 +1887,12 @@ class SyncManager @Inject constructor(
 
         try {
             progress(provider.id, onProgress, "Refreshing external EPG sources...")
-            epgSourceRepository.refreshAllForProvider(provider.id)
+            retryTransient {
+                requireResult(
+                    epgSourceRepository.refreshAllForProvider(provider.id),
+                    "External EPG source refresh failed"
+                )
+            }
             progress(provider.id, onProgress, "Resolving EPG mappings...")
             epgSourceRepository.resolveForProvider(provider.id, hiddenLiveCategoryIds)
         } catch (e: CancellationException) {
@@ -1150,7 +1919,12 @@ class SyncManager @Inject constructor(
                 onProgress = onProgress
             )
             progress(provider.id, onProgress, "Refreshing external EPG sources...")
-            epgSourceRepository.refreshAllForProvider(provider.id)
+            retryTransient {
+                requireResult(
+                    epgSourceRepository.refreshAllForProvider(provider.id),
+                    "External EPG source refresh failed"
+                )
+            }
             progress(provider.id, onProgress, "Resolving EPG mappings...")
             epgSourceRepository.resolveForProvider(provider.id, hiddenLiveCategoryIds)
             return
@@ -1168,7 +1942,12 @@ class SyncManager @Inject constructor(
         if (epgUrl.isBlank()) {
             if (provider.type == ProviderType.STALKER_PORTAL) {
                 progress(provider.id, onProgress, "Refreshing external EPG sources...")
-                epgSourceRepository.refreshAllForProvider(provider.id)
+                retryTransient {
+                    requireResult(
+                        epgSourceRepository.refreshAllForProvider(provider.id),
+                        "External EPG source refresh failed"
+                    )
+                }
                 progress(provider.id, onProgress, "Resolving EPG mappings...")
                 epgSourceRepository.resolveForProvider(provider.id, hiddenLiveCategoryIds)
                 return
@@ -1183,7 +1962,9 @@ class SyncManager @Inject constructor(
         validationError?.let { message ->
             throw IllegalStateException(message)
         }
-        retryTransient { epgRepository.refreshEpg(provider.id, epgUrl) }
+        retryTransient {
+            requireResult(epgRepository.refreshEpg(provider.id, epgUrl), "Failed to refresh EPG")
+        }
         val now = System.currentTimeMillis()
         val metadata = (syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id))
             .copy(
@@ -1195,7 +1976,12 @@ class SyncManager @Inject constructor(
 
         // Also refresh external sources and run resolution
         progress(provider.id, onProgress, "Refreshing external EPG sources...")
-        epgSourceRepository.refreshAllForProvider(provider.id)
+        retryTransient {
+            requireResult(
+                epgSourceRepository.refreshAllForProvider(provider.id),
+                "External EPG source refresh failed"
+            )
+        }
         progress(provider.id, onProgress, "Resolving EPG mappings...")
         epgSourceRepository.resolveForProvider(provider.id, hiddenLiveCategoryIds)
     }
@@ -1218,7 +2004,9 @@ class SyncManager @Inject constructor(
             } else {
                 try {
                     progress(provider.id, onProgress, "Downloading EPG...")
-                    retryTransient { epgRepository.refreshEpg(provider.id, currentEpgUrl) }
+                    retryTransient {
+                        requireResult(epgRepository.refreshEpg(provider.id, currentEpgUrl), "Failed to refresh EPG")
+                    }
                     val epgCount = programDao.countByProvider(provider.id)
                     if (epgCount > 0) {
                         syncMetadataRepository.updateMetadata(
@@ -1614,137 +2402,42 @@ class SyncManager @Inject constructor(
         val sectionWarnings = mutableListOf<String>()
         when (provider.type) {
             ProviderType.XTREAM_CODES -> {
-                progress(
-                    provider.id,
-                    onProgress,
-                    "Retrying Movies..."
-                )
+                progress(provider.id, onProgress, "Queueing Movies index...")
                 val useTextClassification = preferencesRepository.useXtreamTextClassification.first()
                 val enableBase64TextCompatibility = preferencesRepository.xtreamBase64TextCompatibility.first()
                 val api = createXtreamSyncProvider(provider, useTextClassification, enableBase64TextCompatibility)
                 val currentMetadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id)
-                val movieSyncResult = syncXtreamMoviesCatalog(
+                val categoryCount = syncXtreamCategoryShell(
                     provider = provider,
                     api = api,
-                    existingMetadata = currentMetadata,
-                    onProgress = onProgress
-                )
-                val sawSequentialStress = movieSyncResult.strategyFeedback.segmentedStressDetected
-                val healthyMovieProviderAdaptation = updateSequentialProviderAdaptation(
-                    previousRemembered = currentMetadata.movieParallelFailuresRemembered,
-                    previousHealthyStreak = currentMetadata.movieHealthySyncStreak,
-                    sawSequentialStress = sawSequentialStress
-                )
-                val movieWarnings = movieSyncResult.warnings + strategyWarnings(movieSyncResult.catalogResult)
-                val movieAvoidFullUntil = updateAvoidFullUntil(
-                    previousAvoidFullUntil = currentMetadata.movieAvoidFullUntil,
+                    contentType = ContentType.MOVIE,
+                    label = "Movies",
                     now = now,
-                    feedback = movieSyncResult.strategyFeedback
-                )
-
-                val metadata = currentMetadata.copy(
-                    lastMovieAttempt = now,
-                    movieSyncMode = movieSyncResult.syncMode,
-                    movieWarningsCount = movieWarnings.size,
-                    movieCatalogStale = movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY,
-                    movieAvoidFullUntil = movieAvoidFullUntil,
-                    movieParallelFailuresRemembered = currentMetadata.movieParallelFailuresRemembered || sawSequentialStress
-                )
-
-                when (val catalogResult = movieSyncResult.catalogResult) {
-                    is CatalogStrategyResult.Success -> {
-                        val acceptedCount = if (movieSyncResult.syncMode == VodSyncMode.FAST_SYNC) {
-                            movieSyncResult.categories?.let {
-                                syncCatalogStore.replaceCategories(provider.id, "MOVIE", it)
-                            }
-                            movieDao.getCount(provider.id).first()
-                        } else {
-                            movieSyncResult.stagedSessionId?.let { sessionId ->
-                                syncCatalogStore.applyStagedMovieCatalog(provider.id, sessionId, movieSyncResult.categories)
-                                movieSyncResult.stagedAcceptedCount
-                            } ?: syncCatalogStore.replaceMovieCatalog(
-                                providerId = provider.id,
-                                categories = movieSyncResult.categories,
-                                movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
-                            )
-                        }
-                        syncMetadataRepository.updateMetadata(
-                            metadata.copy(
-                                lastMovieSync = now,
-                                lastMovieSuccess = now,
-                                movieCount = acceptedCount,
-                                movieCatalogStale = false,
-                                movieAvoidFullUntil = movieAvoidFullUntil,
-                                movieParallelFailuresRemembered = healthyMovieProviderAdaptation.rememberSequential,
-                                movieHealthySyncStreak = healthyMovieProviderAdaptation.healthyStreak
-                            )
-                        )
-                    }
-                    is CatalogStrategyResult.Partial -> {
-                        // Partial snapshot: upsert only to avoid deleting titles absent from the subset.
-                        val acceptedCount = movieSyncResult.stagedSessionId?.let { sessionId ->
-                            syncCatalogStore.applyStagedMovieCatalogUpsertOnly(provider.id, sessionId, movieSyncResult.categories)
-                            movieSyncResult.stagedAcceptedCount
-                        } ?: syncCatalogStore.upsertMovieCatalog(
-                            providerId = provider.id,
-                            categories = movieSyncResult.categories,
-                            movies = catalogResult.items.asSequence().map { movie -> movie.toEntity() }
-                        )
-                        syncMetadataRepository.updateMetadata(
-                            metadata.copy(
-                                lastMovieSync = now,
-                                lastMoviePartial = now,
-                                movieCount = acceptedCount,
-                                movieCatalogStale = true,
-                                movieAvoidFullUntil = movieAvoidFullUntil,
-                                movieParallelFailuresRemembered = currentMetadata.movieParallelFailuresRemembered || sawSequentialStress,
-                                movieHealthySyncStreak = 0
-                            )
-                        )
-                        sectionWarnings += movieWarnings + listOf("Movies retry completed partially.")
-                    }
-                    is CatalogStrategyResult.EmptyValid -> {
-                        val existingMovieCount = movieDao.getCount(provider.id).first()
-                        syncMetadataRepository.updateMetadata(
-                            metadata.copy(
-                                movieCatalogStale = existingMovieCount > 0 || movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY,
-                                movieAvoidFullUntil = movieAvoidFullUntil,
-                                movieParallelFailuresRemembered = currentMetadata.movieParallelFailuresRemembered || sawSequentialStress,
-                                movieHealthySyncStreak = 0
-                            )
-                        )
-                        throw IllegalStateException(
-                            if (existingMovieCount > 0) {
-                                "Movies refresh returned an empty catalog; existing library was preserved."
-                            } else {
-                                "Movies refresh returned an empty catalog."
-                            }
-                        )
-                    }
-            is CatalogStrategyResult.Failure -> {
-                val existingMovieCount = movieDao.getCount(provider.id).first()
-                val enteringLazyMode = movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY && !movieSyncResult.categories.isNullOrEmpty()
-                if (enteringLazyMode) {
-                    movieSyncResult.categories?.let { syncCatalogStore.replaceCategories(provider.id, "MOVIE", it) }
+                    onProgress = onProgress
+                ).getOrElse { error ->
+                    upsertXtreamIndexJob(
+                        providerId = provider.id,
+                        section = ContentType.MOVIE.name,
+                        state = xtreamIndexFailureState(error),
+                        now = now,
+                        lastAttemptAt = now,
+                        lastError = sanitizeThrowableMessage(error)
+                    )
+                    throw IllegalStateException(
+                        syncErrorSanitizer.userMessage(error, "Failed to queue movie index"),
+                        error
+                    )
                 }
                 syncMetadataRepository.updateMetadata(
-                    metadata.copy(
-                        lastMovieSync = if (enteringLazyMode) now else metadata.lastMovieSync,
-                        movieCatalogStale = existingMovieCount > 0 || movieSyncResult.syncMode == VodSyncMode.LAZY_BY_CATEGORY,
-                        movieAvoidFullUntil = movieAvoidFullUntil,
-                        movieParallelFailuresRemembered = currentMetadata.movieParallelFailuresRemembered || sawSequentialStress || shouldRememberSequentialPreference(catalogResult.error),
-                        movieHealthySyncStreak = 0
+                    currentMetadata.copy(
+                        lastMovieAttempt = now,
+                        movieCatalogStale = true,
+                        movieSyncMode = VodSyncMode.UNKNOWN
                     )
                 )
-                if (!enteringLazyMode) {
-                    throw IllegalStateException(
-                        syncErrorSanitizer.userMessage(catalogResult.error, "Failed to fetch VOD streams"),
-                        catalogResult.error
-                    )
-                }
+                scheduleXtreamIndexSync(provider.id, ContentType.MOVIE)
+                Log.i(TAG, "Queued Xtream movie index for provider ${provider.id}: $categoryCount categories.")
             }
-        }
-    }
             ProviderType.M3U -> {
                 progress(provider.id, onProgress, "Retrying Movies...")
                 val stats = withContext(Dispatchers.IO) {
@@ -1807,111 +2500,40 @@ class SyncManager @Inject constructor(
         val sectionWarnings = mutableListOf<String>()
         when (provider.type) {
             ProviderType.XTREAM_CODES -> {
-                progress(provider.id, onProgress, "Retrying Series...")
+                val now = System.currentTimeMillis()
+                progress(provider.id, onProgress, "Queueing Series index...")
                 val useTextClassification = preferencesRepository.useXtreamTextClassification.first()
                 val enableBase64TextCompatibility = preferencesRepository.xtreamBase64TextCompatibility.first()
                 val api = createXtreamSyncProvider(provider, useTextClassification, enableBase64TextCompatibility)
                 val currentMetadata = syncMetadataRepository.getMetadata(provider.id) ?: SyncMetadata(provider.id)
-                val seriesSyncResult = syncXtreamSeriesCatalog(
+                val categoryCount = syncXtreamCategoryShell(
                     provider = provider,
                     api = api,
-                    existingMetadata = currentMetadata,
-                    onProgress = onProgress
-                )
-
-                val now = System.currentTimeMillis()
-                val seriesSequentialStress = seriesSyncResult.strategyFeedback.segmentedStressDetected
-                val seriesProviderAdaptation = updateSequentialProviderAdaptation(
-                    previousRemembered = currentMetadata.seriesSequentialFailuresRemembered,
-                    previousHealthyStreak = currentMetadata.seriesHealthySyncStreak,
-                    sawSequentialStress = seriesSequentialStress
-                )
-                val seriesAvoidFullUntil = updateAvoidFullUntil(
-                    previousAvoidFullUntil = currentMetadata.seriesAvoidFullUntil,
+                    contentType = ContentType.SERIES,
+                    label = "Series",
                     now = now,
-                    feedback = seriesSyncResult.strategyFeedback
-                )
-                when (val seriesResult = seriesSyncResult.catalogResult) {
-                    is CatalogStrategyResult.Success -> {
-                        val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                            syncCatalogStore.applyStagedSeriesCatalog(provider.id, sessionId, seriesSyncResult.categories)
-                            seriesSyncResult.stagedAcceptedCount
-                        } ?: syncCatalogStore.replaceSeriesCatalog(
-                            providerId = provider.id,
-                            categories = seriesSyncResult.categories,
-                            series = seriesResult.items.asSequence().map { it.toEntity() }
-                        )
-                        syncMetadataRepository.updateMetadata(
-                            currentMetadata.copy(
-                                lastSeriesSync = now,
-                                lastSeriesSuccess = now,
-                                seriesCount = acceptedCount,
-                                seriesAvoidFullUntil = seriesAvoidFullUntil,
-                                seriesSequentialFailuresRemembered = seriesProviderAdaptation.rememberSequential,
-                                seriesHealthySyncStreak = seriesProviderAdaptation.healthyStreak
-                            )
-                        )
-                    }
-                    is CatalogStrategyResult.Partial -> {
-                        // Partial snapshot: upsert only to preserve series absent from the subset.
-                        val acceptedCount = seriesSyncResult.stagedSessionId?.let { sessionId ->
-                            syncCatalogStore.applyStagedSeriesCatalogUpsertOnly(provider.id, sessionId, seriesSyncResult.categories)
-                            seriesSyncResult.stagedAcceptedCount
-                        } ?: syncCatalogStore.upsertSeriesCatalog(
-                            providerId = provider.id,
-                            categories = seriesSyncResult.categories,
-                            series = seriesResult.items.asSequence().map { it.toEntity() }
-                        )
-                        syncMetadataRepository.updateMetadata(
-                            currentMetadata.copy(
-                                lastSeriesSync = now,
-                                seriesCount = acceptedCount,
-                                seriesAvoidFullUntil = seriesAvoidFullUntil,
-                                seriesSequentialFailuresRemembered = currentMetadata.seriesSequentialFailuresRemembered || seriesSequentialStress,
-                                seriesHealthySyncStreak = 0
-                            )
-                        )
-                        sectionWarnings += seriesSyncResult.warnings + seriesResult.warnings +
-                            listOf("Series retry completed partially.")
-                    }
-                    is CatalogStrategyResult.EmptyValid -> {
-                        val existingSeriesCount = seriesDao.getCount(provider.id).first()
-                        syncMetadataRepository.updateMetadata(
-                            currentMetadata.copy(
-                                seriesAvoidFullUntil = seriesAvoidFullUntil,
-                                seriesSequentialFailuresRemembered = currentMetadata.seriesSequentialFailuresRemembered || seriesSequentialStress,
-                                seriesHealthySyncStreak = 0
-                            )
-                        )
-                        throw IllegalStateException(
-                            if (existingSeriesCount > 0) {
-                                "Series refresh returned an empty catalog; existing library was preserved."
-                            } else {
-                                "Series catalog was empty."
-                            }
-                        )
-                    }
-                    is CatalogStrategyResult.Failure -> {
-                        val enteringLazyMode = seriesResult.strategyName == "lazy_by_category" && !seriesSyncResult.categories.isNullOrEmpty()
-                        if (enteringLazyMode) {
-                            seriesSyncResult.categories?.let { syncCatalogStore.replaceCategories(provider.id, "SERIES", it) }
-                        }
-                        syncMetadataRepository.updateMetadata(
-                            currentMetadata.copy(
-                                lastSeriesSync = if (enteringLazyMode) now else currentMetadata.lastSeriesSync,
-                                seriesAvoidFullUntil = seriesAvoidFullUntil,
-                                seriesSequentialFailuresRemembered = currentMetadata.seriesSequentialFailuresRemembered || seriesSequentialStress || shouldRememberSequentialPreference(seriesResult.error),
-                                seriesHealthySyncStreak = 0
-                            )
-                        )
-                        if (!enteringLazyMode) {
-                            throw IllegalStateException(
-                                syncErrorSanitizer.userMessage(seriesResult.error, "Failed to fetch series list"),
-                                seriesResult.error
-                            )
-                        }
-                    }
+                    onProgress = onProgress
+                ).getOrElse { error ->
+                    upsertXtreamIndexJob(
+                        providerId = provider.id,
+                        section = ContentType.SERIES.name,
+                        state = xtreamIndexFailureState(error),
+                        now = now,
+                        lastAttemptAt = now,
+                        lastError = sanitizeThrowableMessage(error)
+                    )
+                    throw IllegalStateException(
+                        syncErrorSanitizer.userMessage(error, "Failed to queue series index"),
+                        error
+                    )
                 }
+                syncMetadataRepository.updateMetadata(
+                    currentMetadata.copy(
+                        lastSeriesSync = now
+                    )
+                )
+                scheduleXtreamIndexSync(provider.id, ContentType.SERIES)
+                Log.i(TAG, "Queued Xtream series index for provider ${provider.id}: $categoryCount categories.")
             }
             ProviderType.STALKER_PORTAL -> {
                 progress(provider.id, onProgress, "Retrying Series...")
@@ -1948,19 +2570,6 @@ class SyncManager @Inject constructor(
         return if (sectionWarnings.isEmpty()) SyncOutcome() else SyncOutcome(partial = true, warnings = sectionWarnings)
     }
 
-    private suspend fun syncXtreamMoviesCatalog(
-        provider: Provider,
-        api: XtreamProvider,
-        existingMetadata: SyncMetadata,
-        onProgress: ((String) -> Unit)?
-    ): MovieCatalogSyncResult =
-        xtreamMovieStrategy.syncXtreamMoviesCatalog(provider, api, existingMetadata, onProgress)
-
-    private suspend fun loadXtreamMoviesFull(
-        provider: Provider,
-        api: XtreamProvider
-    ): CatalogSyncPayload<Movie> = xtreamMovieStrategy.loadXtreamMoviesFull(provider, api)
-
     private suspend fun syncXtreamLiveCatalog(
         provider: Provider,
         api: XtreamProvider,
@@ -1984,80 +2593,11 @@ class SyncManager @Inject constructor(
     ): CatalogStrategyResult<Channel> =
         xtreamLiveStrategy.loadXtreamLiveByCategory(provider, api, rawCategories, onProgress, preferSequential)
 
-    private suspend fun loadXtreamMoviesByCategory(
-        provider: Provider,
-        api: XtreamProvider,
-        rawCategories: List<XtreamCategory>,
-        onProgress: ((String) -> Unit)?,
-        preferSequential: Boolean
-    ): CatalogSyncPayload<Movie> =
-        xtreamMovieStrategy.loadXtreamMoviesByCategory(provider, api, rawCategories, onProgress, preferSequential)
-
-    private suspend fun loadXtreamMoviesByPage(
-        provider: Provider,
-        api: XtreamProvider,
-        onProgress: ((String) -> Unit)?
-    ): CatalogSyncPayload<Movie> = xtreamMovieStrategy.loadXtreamMoviesByPage(provider, api, onProgress)
-
-    private suspend fun syncXtreamSeriesCatalog(
-        provider: Provider,
-        api: XtreamProvider,
-        existingMetadata: SyncMetadata,
-        onProgress: ((String) -> Unit)?
-    ): CatalogSyncPayload<Series> =
-        xtreamSeriesStrategy.syncXtreamSeriesCatalog(provider, api, existingMetadata, onProgress)
-
-    private suspend fun loadXtreamSeriesFull(
-        provider: Provider,
-        api: XtreamProvider
-    ): CatalogSyncPayload<Series> = xtreamSeriesStrategy.loadXtreamSeriesFull(provider, api)
-
-    private suspend fun loadXtreamSeriesByCategory(
-        provider: Provider,
-        api: XtreamProvider,
-        rawCategories: List<XtreamCategory>,
-        onProgress: ((String) -> Unit)?,
-        preferSequential: Boolean
-    ): CatalogSyncPayload<Series> =
-        xtreamSeriesStrategy.loadXtreamSeriesByCategory(provider, api, rawCategories, onProgress, preferSequential)
-
-    private suspend fun loadXtreamSeriesByPage(
-        provider: Provider,
-        api: XtreamProvider,
-        onProgress: ((String) -> Unit)?
-    ): CatalogSyncPayload<Series> = xtreamSeriesStrategy.loadXtreamSeriesByPage(provider, api, onProgress)
-
     private suspend fun updateSyncStatusMetadata(providerId: Long, status: String) {
         val metadata = (syncMetadataRepository.getMetadata(providerId) ?: SyncMetadata(providerId))
             .copy(lastSyncStatus = status)
         syncMetadataRepository.updateMetadata(metadata)
     }
-
-    private suspend fun fetchXtreamVodCategories(provider: Provider): List<XtreamCategory>? =
-        xtreamMovieStrategy.fetchXtreamVodCategories(provider)
-
-    private fun strategyWarnings(result: CatalogStrategyResult<*>): List<String> =
-        catalogStrategySupport.strategyWarnings(result)
-
-    private fun <T> shouldDowngradeCategorySync(
-        totalCategories: Int,
-        failures: Int,
-        fastFailures: Int,
-        outcomes: List<CategoryFetchOutcome<T>>
-    ): Boolean = catalogStrategySupport.shouldDowngradeCategorySync(totalCategories, failures, fastFailures, outcomes)
-
-    private fun <T> shouldRetryFailedCategories(
-        totalCategories: Int,
-        failures: Int,
-        downgradeRecommended: Boolean,
-        outcomes: List<CategoryFetchOutcome<T>>
-    ): Boolean = catalogStrategySupport.shouldRetryFailedCategories(totalCategories, failures, downgradeRecommended, outcomes)
-
-    private fun <T> shouldRetryFailedPages(
-        totalPages: Int,
-        failures: Int,
-        outcomes: List<PageFetchOutcome<T>>
-    ): Boolean = catalogStrategySupport.shouldRetryFailedPages(totalPages, failures, outcomes)
 
     private fun shouldRememberSequentialPreference(error: Throwable): Boolean {
         return xtreamAdaptiveSyncPolicy.isProviderStress(error) ||
@@ -2219,16 +2759,6 @@ class SyncManager @Inject constructor(
         }
     }
 
-    private fun pagingFailureWarning(sectionLabel: String, page: Int, error: Throwable): String {
-        return when (error) {
-            is XtreamResponseTooLargeException ->
-                "$sectionLabel paging response on page $page was too large to load safely."
-            else ->
-                "$sectionLabel paging failed on page $page: " +
-                    syncErrorSanitizer.userMessage(error, "Provider request failed.")
-        }
-    }
-
     private suspend fun <T> executeCategoryRecoveryPlan(
         provider: Provider,
         categories: List<XtreamCategory>,
@@ -2245,20 +2775,6 @@ class SyncManager @Inject constructor(
         sequentialModeWarning = sequentialModeWarning,
         onProgress = onProgress,
         fetch = fetch
-    )
-
-    private fun <T> evaluatePageRecoveryPlan(
-        provider: Provider,
-        sectionLabel: String,
-        pageWindow: List<Int>,
-        outcomes: List<TimedPageOutcome<T>>,
-        sequentialModeWarning: String
-    ): PageExecutionPlan<T> = xtreamSupport.evaluatePageRecoveryPlan(
-        provider = provider,
-        sectionLabel = sectionLabel,
-        pageWindow = pageWindow,
-        outcomes = outcomes,
-        sequentialModeWarning = sequentialModeWarning
     )
 
     private suspend fun <T> retryTransient(
@@ -2641,24 +3157,6 @@ class SyncManager @Inject constructor(
         api: XtreamProvider,
         category: XtreamCategory
     ): TimedCategoryOutcome<Series> = xtreamFetcher.fetchSeriesCategoryOutcome(provider, api, category)
-
-    private suspend fun fetchMoviePageOutcome(
-        provider: Provider,
-        api: XtreamProvider,
-        page: Int
-    ): TimedPageOutcome<Movie> = xtreamFetcher.fetchMoviePageOutcome(provider, api, page)
-
-    private suspend fun fetchSeriesPageOutcome(
-        provider: Provider,
-        api: XtreamProvider,
-        page: Int
-    ): TimedPageOutcome<Series> = xtreamFetcher.fetchSeriesPageOutcome(provider, api, page)
-
-    private suspend fun <T> continueFailedPageOutcomes(
-        provider: Provider,
-        timedOutcomes: List<TimedPageOutcome<T>>,
-        fetchSequentially: suspend (Int) -> TimedPageOutcome<T>
-    ): List<TimedPageOutcome<T>> = xtreamSupport.continueFailedPageOutcomes(provider, timedOutcomes, fetchSequentially)
 
     private suspend fun <T> continueFailedCategoryOutcomes(
         provider: Provider,

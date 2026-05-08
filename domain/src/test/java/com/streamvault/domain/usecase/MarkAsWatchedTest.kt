@@ -52,7 +52,14 @@ class MarkAsWatchedTest {
         override fun getRecentlyWatchedByProvider(providerId: Long, limit: Int): Flow<List<PlaybackHistory>> = flowOf(emptyList())
         override fun getRecentlyWatchedByProviders(providerIds: Set<Long>, limit: Int): Flow<List<PlaybackHistory>> = flowOf(emptyList())
         override fun getUnwatchedCount(providerId: Long, seriesId: Long): Flow<Int> = flowOf(0)
-        override suspend fun getPlaybackHistory(contentId: Long, contentType: ContentType, providerId: Long): PlaybackHistory? = null
+        override suspend fun getPlaybackHistory(
+            contentId: Long,
+            contentType: ContentType,
+            providerId: Long,
+            seriesId: Long?,
+            seasonNumber: Int?,
+            episodeNumber: Int?
+        ): PlaybackHistory? = null
         override suspend fun markAsWatched(history: PlaybackHistory): com.streamvault.domain.model.Result<Unit> {
             lastMarkedHistory = history
             return com.streamvault.domain.model.Result.success(Unit)

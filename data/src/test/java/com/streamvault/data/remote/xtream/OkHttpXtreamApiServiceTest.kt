@@ -1,6 +1,7 @@
 package com.streamvault.data.remote.xtream
 
 import com.google.common.truth.Truth.assertThat
+import com.streamvault.data.remote.http.HttpRequestProfile
 import com.streamvault.data.remote.dto.XtreamSeriesInfoResponse
 import java.net.SocketTimeoutException
 import kotlinx.coroutines.test.runTest
@@ -91,6 +92,33 @@ class OkHttpXtreamApiServiceTest {
 
         assertThat(count).isEqualTo(2)
         assertThat(seenIds).containsExactly(101L, 102L).inOrder()
+    }
+
+    @Test
+    fun `get applies request profile user agent`() = runTest {
+        var seenUserAgent: String? = null
+        val service = OkHttpXtreamApiService(
+            client = OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    seenUserAgent = chain.request().header("User-Agent")
+                    Response.Builder()
+                        .request(Request.Builder().url(chain.request().url).build())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("test")
+                        .body("[]".toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+                .build(),
+            json = json
+        )
+
+        service.getLiveCategories(
+            endpoint = "https://example.test/player_api.php",
+            requestProfile = HttpRequestProfile(userAgent = "StreamVaultTest/1.0", ownerTag = "provider:7/xtream")
+        )
+
+        assertThat(seenUserAgent).isEqualTo("StreamVaultTest/1.0")
     }
 
     @Test

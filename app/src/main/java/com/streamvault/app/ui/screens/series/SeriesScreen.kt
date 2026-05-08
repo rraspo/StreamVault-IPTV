@@ -197,14 +197,14 @@ fun SeriesScreen(
                     subtitle = stringResource(R.string.home_add_first_provider_subtitle)
                 )
             }
-        } else if (!uiState.hasActiveProvider || (uiState.seriesByCategory.isEmpty() && uiState.libraryCount == 0 && uiState.searchQuery.isBlank() && !uiState.isLoadingPreviewRows)) {
+        } else if (!uiState.hasActiveProvider || (uiState.selectedCategory == null && uiState.seriesByCategory.isEmpty() && uiState.libraryCount == 0 && uiState.searchQuery.isBlank() && !uiState.isLoadingPreviewRows)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AppMessageState(
                     title = stringResource(R.string.vod_sync_needed_title),
                     subtitle = stringResource(R.string.vod_sync_needed_subtitle)
                 )
             }
-        } else if (uiState.seriesByCategory.isEmpty() && !uiState.isLoadingPreviewRows) {
+        } else if (uiState.selectedCategory == null && uiState.searchQuery.isBlank() && uiState.seriesByCategory.isEmpty() && !uiState.isLoadingPreviewRows) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AppMessageState(
                     title = stringResource(R.string.series_no_found),
@@ -843,6 +843,20 @@ private fun SeriesVodContent(
                             color = Color.White.copy(alpha = 0.7f)
                         )
                     }
+                }
+            }
+        } else if (filteredGridSeries.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(loadingSectionHeight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AppMessageState(
+                        title = stringResource(R.string.series_no_found),
+                        subtitle = stringResource(R.string.series_no_found_subtitle)
+                    )
                 }
             }
         } else {

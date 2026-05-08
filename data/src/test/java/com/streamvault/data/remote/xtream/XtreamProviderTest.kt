@@ -1,6 +1,7 @@
 package com.streamvault.data.remote.xtream
 
 import com.google.common.truth.Truth.assertThat
+import com.streamvault.data.remote.http.HttpRequestProfile
 import com.streamvault.data.remote.dto.XtreamAuthResponse
 import com.streamvault.data.remote.dto.XtreamCategory
 import com.streamvault.data.remote.dto.XtreamEpgListing
@@ -282,18 +283,18 @@ class XtreamProviderTest {
         val provider = XtreamProvider(
             providerId = 42,
             api = object : XtreamApiService {
-                override suspend fun authenticate(endpoint: String): XtreamAuthResponse =
+                override suspend fun authenticate(endpoint: String, requestProfile: HttpRequestProfile): XtreamAuthResponse =
                     XtreamAuthResponse(XtreamUserInfo(auth = 1), XtreamServerInfo())
 
-                override suspend fun getLiveCategories(endpoint: String): List<XtreamCategory> = emptyList()
+                override suspend fun getLiveCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = emptyList()
 
-                override suspend fun getLiveStreams(endpoint: String): List<XtreamStream> = emptyList()
+                override suspend fun getLiveStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = emptyList()
 
-                override suspend fun getVodCategories(endpoint: String): List<XtreamCategory> {
+                override suspend fun getVodCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> {
                     throw XtreamNetworkException("category prefetch failed")
                 }
 
-                override suspend fun getVodStreams(endpoint: String): List<XtreamStream> = listOf(
+                override suspend fun getVodStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = listOf(
                     XtreamStream(
                         name = "Action Movie",
                         streamId = 321,
@@ -303,17 +304,17 @@ class XtreamProviderTest {
                     )
                 )
 
-                override suspend fun getVodInfo(endpoint: String): XtreamVodInfoResponse = XtreamVodInfoResponse()
+                override suspend fun getVodInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamVodInfoResponse = XtreamVodInfoResponse()
 
-                override suspend fun getSeriesCategories(endpoint: String): List<XtreamCategory> = emptyList()
+                override suspend fun getSeriesCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = emptyList()
 
-                override suspend fun getSeriesList(endpoint: String): List<XtreamSeriesItem> = emptyList()
+                override suspend fun getSeriesList(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamSeriesItem> = emptyList()
 
-                override suspend fun getSeriesInfo(endpoint: String): XtreamSeriesInfoResponse = XtreamSeriesInfoResponse()
+                override suspend fun getSeriesInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamSeriesInfoResponse = XtreamSeriesInfoResponse()
 
-                override suspend fun getShortEpg(endpoint: String): XtreamEpgResponse = XtreamEpgResponse()
+                override suspend fun getShortEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = XtreamEpgResponse()
 
-                override suspend fun getFullEpg(endpoint: String): XtreamEpgResponse = XtreamEpgResponse()
+                override suspend fun getFullEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = XtreamEpgResponse()
             },
             serverUrl = "https://example.com",
             username = "user",
@@ -499,24 +500,24 @@ class XtreamProviderTest {
         val provider = XtreamProvider(
             providerId = 42,
             api = object : XtreamApiService {
-                override suspend fun authenticate(endpoint: String): XtreamAuthResponse =
+                override suspend fun authenticate(endpoint: String, requestProfile: HttpRequestProfile): XtreamAuthResponse =
                     XtreamAuthResponse(XtreamUserInfo(auth = 1), XtreamServerInfo())
 
-                override suspend fun getLiveCategories(endpoint: String): List<XtreamCategory> = emptyList()
+                override suspend fun getLiveCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = emptyList()
 
-                override suspend fun getLiveStreams(endpoint: String): List<XtreamStream> = emptyList()
+                override suspend fun getLiveStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = emptyList()
 
-                override suspend fun getVodCategories(endpoint: String): List<XtreamCategory> = emptyList()
+                override suspend fun getVodCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = emptyList()
 
-                override suspend fun getVodStreams(endpoint: String): List<XtreamStream> = emptyList()
+                override suspend fun getVodStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = emptyList()
 
-                override suspend fun getVodInfo(endpoint: String): XtreamVodInfoResponse = XtreamVodInfoResponse()
+                override suspend fun getVodInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamVodInfoResponse = XtreamVodInfoResponse()
 
-                override suspend fun getSeriesCategories(endpoint: String): List<XtreamCategory> = emptyList()
+                override suspend fun getSeriesCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = emptyList()
 
-                override suspend fun getSeriesList(endpoint: String): List<XtreamSeriesItem> = emptyList()
+                override suspend fun getSeriesList(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamSeriesItem> = emptyList()
 
-                override suspend fun getSeriesInfo(endpoint: String): XtreamSeriesInfoResponse {
+                override suspend fun getSeriesInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamSeriesInfoResponse {
                     requestedEndpoints += endpoint
                     return if (endpoint.contains("series_id=77")) {
                         XtreamSeriesInfoResponse()
@@ -538,9 +539,9 @@ class XtreamProviderTest {
                     }
                 }
 
-                override suspend fun getShortEpg(endpoint: String): XtreamEpgResponse = XtreamEpgResponse()
+                override suspend fun getShortEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = XtreamEpgResponse()
 
-                override suspend fun getFullEpg(endpoint: String): XtreamEpgResponse = XtreamEpgResponse()
+                override suspend fun getFullEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = XtreamEpgResponse()
             },
             serverUrl = "https://example.com",
             username = "user",
@@ -602,28 +603,28 @@ class XtreamProviderTest {
         private val shortEpg: XtreamEpgResponse = XtreamEpgResponse(),
         private val fullEpg: XtreamEpgResponse = XtreamEpgResponse()
     ) : XtreamApiService {
-        override suspend fun authenticate(endpoint: String): XtreamAuthResponse {
+        override suspend fun authenticate(endpoint: String, requestProfile: HttpRequestProfile): XtreamAuthResponse {
             return authResponse
         }
 
-        override suspend fun getLiveCategories(endpoint: String): List<XtreamCategory> = liveCategories
+        override suspend fun getLiveCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = liveCategories
 
-        override suspend fun getLiveStreams(endpoint: String): List<XtreamStream> = liveStreams
+        override suspend fun getLiveStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = liveStreams
 
-        override suspend fun getVodCategories(endpoint: String): List<XtreamCategory> = vodCategories
+        override suspend fun getVodCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = vodCategories
 
-        override suspend fun getVodStreams(endpoint: String): List<XtreamStream> = vodStreams
+        override suspend fun getVodStreams(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamStream> = vodStreams
 
-        override suspend fun getVodInfo(endpoint: String): XtreamVodInfoResponse = vodInfo
+        override suspend fun getVodInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamVodInfoResponse = vodInfo
 
-        override suspend fun getSeriesCategories(endpoint: String): List<XtreamCategory> = seriesCategories
+        override suspend fun getSeriesCategories(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamCategory> = seriesCategories
 
-        override suspend fun getSeriesList(endpoint: String): List<XtreamSeriesItem> = seriesList
+        override suspend fun getSeriesList(endpoint: String, requestProfile: HttpRequestProfile): List<XtreamSeriesItem> = seriesList
 
-        override suspend fun getSeriesInfo(endpoint: String): XtreamSeriesInfoResponse = seriesInfo
+        override suspend fun getSeriesInfo(endpoint: String, requestProfile: HttpRequestProfile): XtreamSeriesInfoResponse = seriesInfo
 
-        override suspend fun getShortEpg(endpoint: String): XtreamEpgResponse = shortEpg
+        override suspend fun getShortEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = shortEpg
 
-        override suspend fun getFullEpg(endpoint: String): XtreamEpgResponse = fullEpg
+        override suspend fun getFullEpg(endpoint: String, requestProfile: HttpRequestProfile): XtreamEpgResponse = fullEpg
     }
 }

@@ -9,6 +9,7 @@ import com.streamvault.data.local.dao.PlaybackHistoryDao
 import com.streamvault.data.local.dao.ProviderDao
 import com.streamvault.data.local.dao.SeriesDao
 import com.streamvault.data.local.dao.SeriesCategoryHydrationDao
+import com.streamvault.data.local.dao.XtreamContentIndexDao
 import com.streamvault.data.local.entity.EpisodeEntity
 import com.streamvault.data.local.entity.SeriesEntity
 import com.streamvault.data.local.entity.SeriesBrowseEntity
@@ -29,6 +30,7 @@ import com.streamvault.data.remote.xtream.XtreamParsingException
 import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
+import com.streamvault.data.sync.SyncManager
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.LibraryBrowseQuery
 import com.streamvault.domain.model.LibraryFilterBy
@@ -50,6 +52,7 @@ import org.mockito.kotlin.argumentCaptor
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.never
+import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.verifyNoInteractions
 import org.mockito.kotlin.whenever
@@ -68,13 +71,15 @@ class SeriesRepositoryImplTest {
     private val preferencesRepository: PreferencesRepository = mock()
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver = mock()
     private val seriesCategoryHydrationDao: SeriesCategoryHydrationDao = mock()
+    private val xtreamContentIndexDao: XtreamContentIndexDao = mock()
+    private val syncManager: SyncManager = mock()
     private val credentialCrypto = object : CredentialCrypto {
         override fun encryptIfNeeded(value: String): String = value
         override fun decryptIfNeeded(value: String): String = value
     }
 
     @Test
-    fun `getSeriesByCategory lazily hydrates xtream category when local cache is empty`() = runTest {
+    fun `getSeriesByCategory does not hydrate xtream category when local cache is empty`() = runTest {
         whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
         whenever(preferencesRepository.xtreamBase64TextCompatibility).thenReturn(flowOf(false))
         whenever(seriesDao.getCountByCategory(7L, 77L)).thenReturn(flowOf(0))
@@ -90,29 +95,49 @@ class SeriesRepositoryImplTest {
                 status = ProviderStatus.ACTIVE
             )
         )
-        whenever(xtreamApiService.getSeriesCategories(any())).thenReturn(
-            listOf(XtreamCategory(categoryId = "77", categoryName = "Drama"))
-        )
-        whenever(xtreamApiService.getSeriesList(any())).thenReturn(
-            listOf(
-                XtreamSeriesItem(
-                    seriesId = 301L,
-                    name = "Series",
-                    categoryId = "77",
-                    cover = null
-                )
-            )
-        )
         whenever(seriesCategoryHydrationDao.get(7L, 77L)).thenReturn(null)
-        whenever(episodeDao.deleteOrphans()).thenReturn(0)
 
         val repository = createRepository()
 
         val result = repository.getSeriesByCategory(7L, 77L).first()
 
         assertThat(result).isEmpty()
-        verify(seriesDao).replaceCategory(eq(7L), eq(77L), any())
-        verify(episodeDao).deleteOrphans()
+        verify(syncManager).prioritizeXtreamIndexCategory(7L, ContentType.SERIES, 77L)
+        verify(seriesDao, never()).replaceCategory(eq(7L), eq(77L), any())
+        verify(xtreamApiService, never()).getSeriesList(any())
+        verify(episodeDao, never()).deleteOrphans()
+    }
+
+    @Test
+    fun `getSeriesDetails uses fresh xtream hydrated cache without refetching`() = runTest {
+        val hydratedAt = System.currentTimeMillis()
+        val seriesEntity = SeriesEntity(
+            id = 99L,
+            seriesId = 301L,
+            name = "Cached Series",
+            providerId = 7L,
+            cacheState = "DETAIL_HYDRATED",
+            detailHydratedAt = hydratedAt
+        )
+        whenever(seriesDao.getById(99L)).thenReturn(seriesEntity)
+        whenever(providerDao.getById(7L)).thenReturn(
+            ProviderEntity(
+                id = 7L,
+                name = "Xtream",
+                type = ProviderType.XTREAM_CODES,
+                serverUrl = "http://example.com",
+                username = "user",
+                password = "pass",
+                status = ProviderStatus.ACTIVE
+            )
+        )
+        whenever(episodeDao.getBySeriesSync(99L)).thenReturn(emptyList())
+
+        val result = createRepository().getSeriesDetails(7L, 99L)
+
+        assertThat(result.getOrNull()?.name).isEqualTo("Cached Series")
+        verify(xtreamApiService, never()).getSeriesInfo(any())
+        verify(xtreamContentIndexDao, never()).markDetailHydrated(any(), any(), any(), any(), anyOrNull(), any())
     }
 
     @Test
@@ -257,7 +282,7 @@ class SeriesRepositoryImplTest {
     }
 
     @Test
-    fun `getSeriesByCategory marks empty xtream fast sync hydration for retry`() = runTest {
+    fun `getSeriesByCategory skips legacy xtream empty retry hydration`() = runTest {
         whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
         whenever(preferencesRepository.xtreamBase64TextCompatibility).thenReturn(flowOf(false))
         whenever(seriesDao.getCountByCategory(7L, 77L)).thenReturn(flowOf(0))
@@ -275,20 +300,14 @@ class SeriesRepositoryImplTest {
                 status = ProviderStatus.ACTIVE
             )
         )
-        whenever(xtreamApiService.getSeriesCategories(any())).thenReturn(
-            listOf(XtreamCategory(categoryId = "77", categoryName = "Drama"))
-        )
-        whenever(xtreamApiService.getSeriesList(any())).thenReturn(emptyList())
-
         val repository = createRepository()
 
         repository.getSeriesByCategory(7L, 77L).first()
 
+        verify(syncManager).prioritizeXtreamIndexCategory(7L, ContentType.SERIES, 77L)
         verify(seriesDao, never()).replaceCategory(eq(7L), eq(77L), any())
-        val hydrationCaptor = argumentCaptor<com.streamvault.data.local.entity.SeriesCategoryHydrationEntity>()
-        verify(seriesCategoryHydrationDao).upsert(hydrationCaptor.capture())
-        assertThat(hydrationCaptor.firstValue.lastStatus).isEqualTo("EMPTY_RETRY")
-        assertThat(hydrationCaptor.firstValue.itemCount).isEqualTo(0)
+        verify(seriesCategoryHydrationDao, never()).upsert(any())
+        verify(xtreamApiService, never()).getSeriesList(any())
     }
 
     @Test
@@ -424,6 +443,7 @@ class SeriesRepositoryImplTest {
         assertThat(series.name).isEqualTo("Stored Series")
         verify(stalkerApiService).getSeriesDetails(any(), any(), eq("55000:55000"))
         verifyNoInteractions(xtreamApiService)
+        verify(xtreamContentIndexDao, never()).markDetailHydrated(any(), any(), any(), any(), anyOrNull(), any())
     }
 
     @Test
@@ -453,6 +473,72 @@ class SeriesRepositoryImplTest {
         assertThat(result.map { it.name }).containsExactly("Drama House")
     }
 
+    @Test
+    fun `searchSeries returns empty without like fallback when fts has no rows`() = runTest {
+        whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
+        whenever(seriesDao.search(eq(7L), any(), any())).thenReturn(flowOf(emptyList()))
+        whenever(favoriteDao.getAllByType(7L, ContentType.SERIES.name)).thenReturn(flowOf(emptyList()))
+
+        val repository = createRepository()
+
+        val result = repository.searchSeries(7L, "drama").first()
+
+        assertThat(result).isEmpty()
+        verify(seriesDao, never()).searchFallback(eq(7L), any(), any())
+    }
+
+    @Test
+    fun `searchSeries does not run like fallback when fts returns rows`() = runTest {
+        whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
+        whenever(seriesDao.search(eq(7L), any(), any())).thenReturn(
+            flowOf(
+                listOf(
+                    SeriesBrowseEntity(
+                        id = 17L,
+                        seriesId = 1700L,
+                        name = "Drama",
+                        providerId = 7L
+                    )
+                )
+            )
+        )
+        whenever(favoriteDao.getAllByType(7L, ContentType.SERIES.name)).thenReturn(flowOf(emptyList()))
+
+        val repository = createRepository()
+
+        val result = repository.searchSeries(7L, "drama").first()
+
+        assertThat(result.map { it.name }).containsExactly("Drama")
+        verify(seriesDao, never()).searchFallback(eq(7L), any(), any())
+    }
+
+    @Test
+    fun `browseSeries search uses bounded page query`() = runTest {
+        whenever(preferencesRepository.parentalControlLevel).thenReturn(flowOf(0))
+        whenever(seriesDao.searchPage(eq(7L), any(), any(), any(), any(), any(), any())).thenReturn(
+            listOf(
+                SeriesBrowseEntity(id = 17L, seriesId = 1700L, name = "Drama", providerId = 7L),
+                SeriesBrowseEntity(id = 18L, seriesId = 1800L, name = "Drama Island", providerId = 7L)
+            )
+        )
+        whenever(favoriteDao.getAllByType(7L, ContentType.SERIES.name)).thenReturn(flowOf(emptyList()))
+
+        val result = createRepository().browseSeries(
+            LibraryBrowseQuery(
+                providerId = 7L,
+                searchQuery = "drama",
+                offset = 0,
+                limit = 1
+            )
+        ).first()
+
+        assertThat(result.totalCount).isEqualTo(2)
+        assertThat(result.items.map { it.name }).containsExactly("Drama")
+        verify(seriesDao, times(1)).searchPage(eq(7L), any(), any(), any(), any(), eq(2), eq(0))
+        verify(seriesDao, never()).search(eq(7L), any(), any())
+        verify(seriesDao, never()).searchFallback(eq(7L), any(), any())
+    }
+
     private fun createRepository() = SeriesRepositoryImpl(
         seriesDao = seriesDao,
         episodeDao = episodeDao,
@@ -466,6 +552,8 @@ class SeriesRepositoryImplTest {
         credentialCrypto = credentialCrypto,
         preferencesRepository = preferencesRepository,
         xtreamStreamUrlResolver = xtreamStreamUrlResolver,
+        xtreamContentIndexDao = xtreamContentIndexDao,
+        syncManager = syncManager,
         seriesCategoryHydrationDao = seriesCategoryHydrationDao
     )
 }

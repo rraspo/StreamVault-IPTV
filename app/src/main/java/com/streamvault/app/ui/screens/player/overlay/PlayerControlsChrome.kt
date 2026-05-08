@@ -135,6 +135,7 @@ fun PlayerControlsOverlay(
     onOpenStopPlaybackTimer: () -> Unit = {},
     onOpenIdleStandbyTimer: () -> Unit = {},
     onOpenAudioVideoSync: () -> Unit = {},
+    audioVideoSyncEnabled: Boolean = false,
     showEpisodesAction: Boolean = false,
     onOpenEpisodes: () -> Unit = {},
     onOpenSplitScreen: () -> Unit,
@@ -221,6 +222,7 @@ fun PlayerControlsOverlay(
                 onOpenStopPlaybackTimer = onOpenStopPlaybackTimer,
                 onOpenIdleStandbyTimer = onOpenIdleStandbyTimer,
                 onOpenAudioVideoSync = onOpenAudioVideoSync,
+                audioVideoSyncEnabled = audioVideoSyncEnabled,
                 showEpisodesAction = showEpisodesAction,
                 onOpenEpisodes = onOpenEpisodes,
                 onOpenSplitScreen = onOpenSplitScreen,
@@ -549,6 +551,7 @@ private fun PlayerBottomBar(
     onOpenStopPlaybackTimer: () -> Unit,
     onOpenIdleStandbyTimer: () -> Unit,
     onOpenAudioVideoSync: () -> Unit,
+    audioVideoSyncEnabled: Boolean,
     showEpisodesAction: Boolean,
     onOpenEpisodes: () -> Unit,
     onOpenSplitScreen: () -> Unit,
@@ -638,6 +641,7 @@ private fun PlayerBottomBar(
                         onOpenStopPlaybackTimer = onOpenStopPlaybackTimer,
                         onOpenIdleStandbyTimer = onOpenIdleStandbyTimer,
                         onOpenAudioVideoSync = onOpenAudioVideoSync,
+                        audioVideoSyncEnabled = audioVideoSyncEnabled,
                         onOpenSplitScreen = onOpenSplitScreen,
                         onEnterPictureInPicture = onEnterPictureInPicture,
                         onToggleMute = onToggleMute,
@@ -679,6 +683,7 @@ private fun PlayerBottomBar(
                         onOpenStopPlaybackTimer = onOpenStopPlaybackTimer,
                         onOpenIdleStandbyTimer = onOpenIdleStandbyTimer,
                         onOpenAudioVideoSync = onOpenAudioVideoSync,
+                        audioVideoSyncEnabled = audioVideoSyncEnabled,
                         showEpisodesAction = showEpisodesAction,
                         onOpenEpisodes = onOpenEpisodes,
                         onEnterPictureInPicture = onEnterPictureInPicture,
@@ -728,6 +733,7 @@ private fun PlayerLiveInfo(
     onOpenStopPlaybackTimer: () -> Unit,
     onOpenIdleStandbyTimer: () -> Unit,
     onOpenAudioVideoSync: () -> Unit,
+    audioVideoSyncEnabled: Boolean,
     onOpenSplitScreen: () -> Unit,
     onEnterPictureInPicture: () -> Unit,
     onToggleMute: () -> Unit,
@@ -804,7 +810,7 @@ private fun PlayerLiveInfo(
         if (videoQualityCount > 0) {
             add(PlayerActionSpec(stringResource(R.string.player_video_quality), onOpenVideoTracks))
         }
-        if (!isCastConnected) {
+        if (audioVideoSyncEnabled && !isCastConnected) {
             add(PlayerActionSpec(stringResource(R.string.player_av_sync_short), onOpenAudioVideoSync))
         }
         add(PlayerActionSpec(stringResource(R.string.multiview_nav), onOpenSplitScreen))
@@ -955,6 +961,7 @@ private fun PlayerVodInfo(
     isMuted: Boolean,
     playbackSpeed: Float,
     sleepTimerUiState: SleepTimerUiState,
+    audioVideoSyncEnabled: Boolean,
     playButtonFocusRequester: FocusRequester,
     quickActionsFocusRequester: FocusRequester,
     onSeekToPosition: (Long) -> Unit,
@@ -1039,7 +1046,7 @@ private fun PlayerVodInfo(
                 onOpenPlaybackSpeed
             )
         )
-        if (!isCastConnected) {
+        if (audioVideoSyncEnabled && !isCastConnected) {
             add(PlayerActionSpec(stringResource(R.string.player_av_sync_short), onOpenAudioVideoSync))
         }
         add(PlayerActionSpec(

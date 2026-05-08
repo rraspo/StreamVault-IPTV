@@ -222,11 +222,35 @@ internal fun LazyListScope.settingsPlaybackSection(
             value = defaultIdleTimerLabel,
             onClick = { onShowDefaultIdleTimerDialogChange(true) }
         )
-        ClickableSettingsRow(
-            label = stringResource(R.string.settings_audio_video_sync_default),
-            value = audioVideoOffsetLabel,
-            onClick = { onShowAudioVideoOffsetDialogChange(true) }
-        )
+        TvClickableSurface(
+            onClick = { viewModel.setPlayerAudioVideoSyncEnabled(!uiState.playerAudioVideoSyncEnabled) },
+            shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
+            colors = ClickableSurfaceDefaults.colors(
+                containerColor = Color.Transparent,
+                focusedContainerColor = Primary.copy(alpha = 0.15f)
+            ),
+            scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = stringResource(R.string.settings_audio_video_sync_enabled), style = MaterialTheme.typography.bodyMedium, color = OnSurface)
+                    Text(text = stringResource(R.string.settings_audio_video_sync_enabled_subtitle), style = MaterialTheme.typography.bodySmall, color = OnBackground.copy(alpha = 0.6f))
+                }
+                Switch(checked = uiState.playerAudioVideoSyncEnabled, onCheckedChange = { viewModel.setPlayerAudioVideoSyncEnabled(it) })
+            }
+        }
+        if (uiState.playerAudioVideoSyncEnabled) {
+            ClickableSettingsRow(
+                label = stringResource(R.string.settings_audio_video_sync_default),
+                value = audioVideoOffsetLabel,
+                onClick = { onShowAudioVideoOffsetDialogChange(true) }
+            )
+        }
         HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
         TvClickableSurface(
             onClick = { viewModel.setCenterTwoSlotMultiviewLayout(!uiState.centerTwoSlotMultiviewLayout) },

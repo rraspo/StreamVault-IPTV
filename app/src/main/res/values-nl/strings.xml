@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Bepaal hoe gidsgegevens worden opgehaald tijdens providerinstelling en verversing.</string>
     <string name="setup_advanced_options_show">Tonen</string>
     <string name="setup_advanced_options_hide">Verbergen</string>
-    <string name="setup_xtream_fast_sync_label">Snelle synchronisatie</string>
-    <string name="setup_xtream_fast_sync_helper">Alleen Xtream. Laadt eerst VOD-categorieën en haalt filmregels op aanvraag op. Aanbevolen voor zeer grote providers.</string>
     <string name="setup_m3u_vod_classification_label">M3U VOD-classificatie</string>
     <string name="setup_m3u_vod_classification_helper">Alleen M3U. Gebruik de playlist-URL en group-title-heuristieken om overeenkomende items te sorteren in Films in plaats van Live TV.</string>
     <string name="setup_epg_sync_mode_label">EPG-synchronisatie</string>

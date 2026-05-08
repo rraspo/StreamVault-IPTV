@@ -43,6 +43,9 @@ abstract class RepositoryModule {
     abstract fun bindSeriesRepository(impl: SeriesRepositoryImpl): SeriesRepository
 
     @Binds @Singleton
+    abstract fun bindSearchRepository(impl: SearchRepositoryImpl): SearchRepository
+
+    @Binds @Singleton
     abstract fun bindEpgRepository(impl: EpgRepositoryImpl): EpgRepository
 
     @Binds @Singleton

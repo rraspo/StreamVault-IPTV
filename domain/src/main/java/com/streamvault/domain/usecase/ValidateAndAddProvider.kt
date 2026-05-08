@@ -16,7 +16,7 @@ data class XtreamProviderSetupCommand(
     val username: String,
     val password: String,
     val name: String,
-    val xtreamFastSyncEnabled: Boolean = true,
+    val xtreamFastSyncEnabled: Boolean = false,
     val epgSyncMode: ProviderEpgSyncMode = ProviderEpgSyncMode.BACKGROUND,
     val existingProviderId: Long? = null
 )
@@ -165,7 +165,7 @@ class ValidateAndAddProvider @Inject constructor(
                             username = parsedXtream.username,
                             password = parsedXtream.password,
                             name = validatedInput.name,
-                            xtreamFastSyncEnabled = true,
+                            xtreamFastSyncEnabled = false,
                             epgSyncMode = command.epgSyncMode,
                             onProgress = onProgress,
                             id = command.existingProviderId

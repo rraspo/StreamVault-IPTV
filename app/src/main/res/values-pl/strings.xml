@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Kontroluj, jak pobierane są dane przewodnika podczas konfiguracji i odświeżania dostawcy.</string>
     <string name="setup_advanced_options_show">Pokaż</string>
     <string name="setup_advanced_options_hide">Ukryj</string>
-    <string name="setup_xtream_fast_sync_label">Szybka synchronizacja</string>
-    <string name="setup_xtream_fast_sync_helper">Tylko Xtreme. Najpierw ładuje kategorie VOD, a na żądanie pobiera wiersze filmów. Zalecane dla bardzo dużych dostawców.</string>
     <string name="setup_m3u_vod_classification_label">Klasyfikacja VOD M3U</string>
     <string name="setup_m3u_vod_classification_helper">Tylko M3U. Użyj adresu URL playlisty i heurystyki group-title, aby sortować pasujące pozycje do Filmów zamiast Telewizji na żywo.</string>
     <string name="setup_epg_sync_mode_label">Synchronizacja EPG</string>

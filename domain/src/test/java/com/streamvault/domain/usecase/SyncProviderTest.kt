@@ -80,6 +80,7 @@ private class FakeSyncStateReader(
     private val syncState: SyncState = SyncState.Success()
 ) : ProviderSyncStateReader {
     override fun currentSyncState(providerId: Long): SyncState = syncState
+    override fun observeBackgroundIndexingActive(providerId: Long): Flow<Boolean> = flowOf(false)
 }
 
 private class FakeSyncProviderRepository(

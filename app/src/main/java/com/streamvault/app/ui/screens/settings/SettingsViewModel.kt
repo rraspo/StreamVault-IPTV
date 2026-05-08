@@ -16,6 +16,8 @@ import com.streamvault.app.update.AppUpdateDownloadStatus
 import com.streamvault.app.update.AppUpdateInstaller
 import com.streamvault.app.update.GitHubReleaseChecker
 import com.streamvault.app.update.GitHubReleaseInfo
+import com.streamvault.data.local.dao.XtreamIndexJobDao
+import com.streamvault.data.local.entity.XtreamIndexJobEntity
 import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.data.sync.SyncRepairSection
@@ -67,6 +69,8 @@ import kotlinx.coroutines.launch
 import kotlin.math.max
 import javax.inject.Inject
 
+private const val XTREAM_INDEX_STATUS_PREFIX = "Xtream index:"
+
 @HiltViewModel
 @OptIn(ExperimentalCoroutinesApi::class)
 class SettingsViewModel @Inject constructor(
@@ -81,6 +85,7 @@ class SettingsViewModel @Inject constructor(
     private val recordingManager: RecordingManager,
     private val parentalControlManager: ParentalControlManager,
     private val syncManager: SyncManager,
+    private val xtreamIndexJobDao: XtreamIndexJobDao,
     private val syncMetadataRepository: SyncMetadataRepository,
     private val playbackHistoryRepository: com.streamvault.domain.repository.PlaybackHistoryRepository,
     private val watchNextManager: WatchNextManager,
@@ -142,6 +147,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         registerPreferenceObservers()
+        registerXtreamIndexJobObserver()
         registerSettingsAppUpdateObservers(
             scope = viewModelScope,
             preferencesRepository = preferencesRepository,
@@ -195,6 +201,49 @@ class SettingsViewModel @Inject constructor(
                     epgActions.cleanupEpgAssignmentsFor(removedIds)
                 }
             }
+        }
+    }
+
+    private fun registerXtreamIndexJobObserver() {
+        viewModelScope.launch {
+            xtreamIndexJobDao.observeAll().collect { jobs ->
+                val jobWarningsByProvider = jobs
+                    .groupBy { it.providerId }
+                    .mapValues { (_, providerJobs) ->
+                        providerJobs.mapNotNull { job -> job.toSettingsStatusMessage() }
+                    }
+                    .filterValues { it.isNotEmpty() }
+
+                _uiState.update { state ->
+                    val providerIds = state.providers.map { it.id }.toSet()
+                    val preservedWarnings = state.syncWarningsByProvider
+                        .filterKeys { it in providerIds }
+                        .mapValues { (_, warnings) ->
+                            warnings.filterNot { warning -> warning.startsWith(XTREAM_INDEX_STATUS_PREFIX) }
+                        }
+                        .filterValues { it.isNotEmpty() }
+                    state.copy(syncWarningsByProvider = preservedWarnings + jobWarningsByProvider)
+                }
+            }
+        }
+    }
+
+    private fun XtreamIndexJobEntity.toSettingsStatusMessage(): String? {
+        val label = when (section) {
+            "LIVE" -> "Live TV"
+            "MOVIE" -> "Movies"
+            "SERIES" -> "Series"
+            "EPG" -> "EPG"
+            else -> section.lowercase().replaceFirstChar { it.titlecase() }
+        }
+        return when (state) {
+            "QUEUED" -> "$XTREAM_INDEX_STATUS_PREFIX $label queued"
+            "RUNNING" -> "$XTREAM_INDEX_STATUS_PREFIX $label indexing"
+            "PARTIAL" -> "$XTREAM_INDEX_STATUS_PREFIX $label partial: ${indexedRows} indexed"
+            "STALE" -> "$XTREAM_INDEX_STATUS_PREFIX $label stale"
+            "FAILED_RETRYABLE" -> "$XTREAM_INDEX_STATUS_PREFIX $label retryable failed${lastError?.let { ": $it" }.orEmpty()}"
+            "FAILED_PERMANENT" -> "$XTREAM_INDEX_STATUS_PREFIX $label permanently failed${lastError?.let { ": $it" }.orEmpty()}"
+            else -> null
         }
     }
 
@@ -445,6 +494,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setPlayerAudioVideoSyncEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerAudioVideoSyncEnabled(enabled)
+        }
+    }
+
     fun setCenterTwoSlotMultiviewLayout(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setMultiViewCenterTwoSlotLayout(enabled)
@@ -689,7 +744,7 @@ class SettingsViewModel @Inject constructor(
 
     fun refreshProvider(
         providerId: Long,
-        syncMode: SettingsProviderSyncMode = SettingsProviderSyncMode.QUICK
+        syncMode: SettingsProviderSyncMode = SettingsProviderSyncMode.SYNC_NOW
     ) {
         providerActions.refreshProvider(viewModelScope, providerId, syncMode)
     }

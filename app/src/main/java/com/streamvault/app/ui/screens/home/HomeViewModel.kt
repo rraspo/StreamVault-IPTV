@@ -1012,6 +1012,8 @@ class HomeViewModel @Inject constructor(
                 is Result.Success -> {
                     if (!isActivePreviewSession(previewVersion, channel.id)) return@launch
                     engine.stop()
+                    engine.setDecoderMode(preferencesRepository.playerDecoderMode.first())
+                    engine.setSurfaceMode(preferencesRepository.playerSurfaceMode.first())
                     engine.prepare(result.data)
                     engine.setVolume(1f)
                     engine.play()

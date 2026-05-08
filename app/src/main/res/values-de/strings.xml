@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Steuere, wie Guide-Daten während der Anbieter-Einrichtung und Aktualisierung abgerufen werden.</string>
     <string name="setup_advanced_options_show">Anzeigen</string>
     <string name="setup_advanced_options_hide">Ausblenden</string>
-    <string name="setup_xtream_fast_sync_label">Schnelle Synchronisierung</string>
-    <string name="setup_xtream_fast_sync_helper">Nur Xtream. Lädt zuerst VOD-Kategorien und ruft Filmzeilen bei Bedarf ab. Empfohlen für sehr große Anbieter.</string>
     <string name="setup_m3u_vod_classification_label">M3U-VOD-Klassifizierung</string>
     <string name="setup_m3u_vod_classification_helper">Nur M3U. Verwende die Playlist-URL und group-title-Heuristiken, um passende Einträge statt Live-TV in Filme einzuordnen.</string>
     <string name="setup_epg_sync_mode_label">EPG-Synchronisierung</string>

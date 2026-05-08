@@ -174,7 +174,7 @@ class ProviderRepositoryImpl @Inject constructor(
                         username = normalizedUsername,
                         password = effectivePassword,
                         epgSyncMode = epgSyncMode,
-                        xtreamFastSyncEnabled = xtreamFastSyncEnabled,
+                        xtreamFastSyncEnabled = false,
                         isActive = true,
                         lastSyncedAt = 0,
                         createdAt = existingProvider.createdAt
@@ -185,7 +185,7 @@ class ProviderRepositoryImpl @Inject constructor(
                     val newData = authResult.data.copy(
                         name = normalizedName.ifBlank { authResult.data.name },
                         epgSyncMode = epgSyncMode,
-                        xtreamFastSyncEnabled = xtreamFastSyncEnabled
+                        xtreamFastSyncEnabled = false
                     )
                     val newId = providerDao.insert(newData.toSecureEntity())
                     newData.copy(id = newId).copy(password = "")

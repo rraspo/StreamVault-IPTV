@@ -41,6 +41,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.Border
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.ClickableSurfaceDefaults
@@ -123,6 +124,10 @@ internal fun LivePreviewPane(
     errorMessage: String?,
     modifier: Modifier = Modifier
 ) {
+    val renderSurfaceType by (playerEngine?.renderSurfaceType)?.collectAsStateWithLifecycle(
+        initialValue = PlayerRenderSurfaceType.SURFACE_VIEW
+    ) ?: remember { mutableStateOf(PlayerRenderSurfaceType.SURFACE_VIEW) }
+
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(18.dp),
@@ -151,7 +156,7 @@ internal fun LivePreviewPane(
                     PlayerRenderView(
                         playerEngine = playerEngine,
                         resizeMode = PlayerSurfaceResizeMode.FIT,
-                        surfaceType = PlayerRenderSurfaceType.SURFACE_VIEW,
+                        surfaceType = renderSurfaceType,
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {

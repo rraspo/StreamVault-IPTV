@@ -303,7 +303,7 @@ class SyncCatalogStoreTest {
     }
 
     @Test
-    fun `replaceCategories clears inherited protection when a protected category is remapped`() = runTest {
+    fun `replaceCategories preserves user protection when provider renames category`() = runTest {
         val providerId = 7L
         val currentCategory = CategoryEntity(
             id = 51L,
@@ -339,13 +339,68 @@ class SyncCatalogStoreTest {
         assertThat(updatedCategories.firstValue.single()).isEqualTo(
             currentCategory.copy(
                 name = "Documentaries",
-                isUserProtected = false,
+                isUserProtected = true,
                 syncFingerprint = "new-category"
             )
         )
-        verify(movieDao).clearProtectionForCategories(providerId, listOf(909L))
+        verify(movieDao, never()).clearProtectionForCategories(any(), any())
         verify(channelDao, never()).clearProtectionForCategories(any(), any())
         verify(seriesDao, never()).clearProtectionForCategories(any(), any())
+    }
+
+    @Test
+    fun `upsertCategories preserves unstaged categories for index-first setup`() = runTest {
+        val providerId = 7L
+        whenever(categoryDao.getByProviderAndTypeSync(providerId, ContentType.MOVIE.name)).thenReturn(
+            listOf(
+                CategoryEntity(
+                    id = 51L,
+                    categoryId = 909L,
+                    name = "Existing",
+                    type = ContentType.MOVIE,
+                    providerId = providerId,
+                    isUserProtected = true,
+                    syncFingerprint = "existing"
+                ),
+                CategoryEntity(
+                    id = 52L,
+                    categoryId = 910L,
+                    name = "Still Remote",
+                    type = ContentType.MOVIE,
+                    providerId = providerId,
+                    syncFingerprint = "still-remote"
+                )
+            )
+        )
+        whenever(catalogSyncDao.getCategoryStages(eq(providerId), any(), eq(ContentType.MOVIE.name))).thenReturn(
+            listOf(
+                CategoryImportStageEntity(
+                    sessionId = 1L,
+                    providerId = providerId,
+                    categoryId = 909L,
+                    name = "Existing Renamed",
+                    type = ContentType.MOVIE,
+                    syncFingerprint = "existing-renamed"
+                )
+            )
+        )
+
+        store().upsertCategories(
+            providerId = providerId,
+            type = ContentType.MOVIE.name,
+            categories = listOf(
+                CategoryEntity(
+                    categoryId = 909L,
+                    name = "Existing Renamed",
+                    type = ContentType.MOVIE,
+                    providerId = providerId
+                )
+            )
+        )
+
+        verify(catalogSyncDao).insertMissingCategoriesFromStage(eq(providerId), any(), eq(ContentType.MOVIE.name))
+        verify(catalogSyncDao, never()).deleteStaleCategoriesForStage(any(), any(), any())
+        verify(movieDao, never()).clearProtectionForCategories(any(), any())
     }
 
     @Test

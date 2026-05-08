@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Controla cómo se obtienen los datos de la guía durante la configuración y actualización del proveedor.</string>
     <string name="setup_advanced_options_show">Mostrar</string>
     <string name="setup_advanced_options_hide">Ocultar</string>
-    <string name="setup_xtream_fast_sync_label">Sincronización rápida</string>
-    <string name="setup_xtream_fast_sync_helper">Solo Xtream. Carga primero las categorías VOD y obtiene las filas de películas bajo demanda. Recomendado para proveedores muy grandes.</string>
     <string name="setup_m3u_vod_classification_label">Clasificación VOD de M3U</string>
     <string name="setup_m3u_vod_classification_helper">Solo M3U. Usa la URL de la lista y heurísticas de group-title para clasificar las entradas coincidentes en Películas en lugar de TV en directo.</string>
     <string name="setup_epg_sync_mode_label">Sincronización de EPG</string>

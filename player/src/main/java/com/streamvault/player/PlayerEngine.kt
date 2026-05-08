@@ -51,6 +51,7 @@ interface PlayerEngine {
     val availableVideoTracks: StateFlow<List<PlayerTrack>>
     val playbackSpeed: StateFlow<Float>
     val audioVideoOffsetMs: StateFlow<Int>
+    val audioVideoSyncEnabled: StateFlow<Boolean>
     val timeshiftState: StateFlow<LiveTimeshiftState>
     val renderSurfaceType: StateFlow<PlayerRenderSurfaceType>
 
@@ -71,6 +72,7 @@ interface PlayerEngine {
     fun setVolume(volume: Float)
     fun setMuted(muted: Boolean)
     fun setPlaybackSpeed(speed: Float)
+    fun setAudioVideoSyncEnabled(enabled: Boolean)
     fun setAudioVideoOffsetMs(offsetMs: Int)
     fun startLiveTimeshift(streamInfo: StreamInfo, channelKey: String, config: TimeshiftConfig)
     fun stopLiveTimeshift()
@@ -144,6 +146,8 @@ data class PlayerStats(
     val videoDecoderName: String = "Unknown",
     val activeDecoderPolicy: String = "AUTO",
     val renderSurfaceType: String = "SURFACE_VIEW",
+    val audioVideoSyncEnabled: Boolean = false,
+    val audioVideoSyncSinkActive: Boolean = false,
     val videoStallCount: Int = 0,
     val lastVideoFrameAgoMs: Long = 0,
     val videoBitrate: Int = 0,

@@ -102,8 +102,8 @@ fun MultiViewScreen(
     var showReplacementPicker by remember { mutableStateOf(false) }
     var showControls by rememberSaveable { mutableStateOf(false) }
     val occupiedSlots = remember(uiState.slots) { uiState.slots.filterNot { it.isEmpty } }
-    val useCenteredTwoSlotLayout = uiState.centerTwoSlotLayout && occupiedSlots.size == 2
-    val visibleSlots = if (useCenteredTwoSlotLayout) occupiedSlots else uiState.slots
+    val useCenteredCompactLayout = uiState.centerTwoSlotLayout && occupiedSlots.size in 1..2
+    val visibleSlots = if (useCenteredCompactLayout) occupiedSlots else uiState.slots
     val firstVisibleSlotIndex = visibleSlots.firstOrNull()?.index ?: 0
 
     BackHandler(enabled = showReplacementPicker) {
@@ -138,8 +138,8 @@ fun MultiViewScreen(
         }
     }
 
-    LaunchedEffect(useCenteredTwoSlotLayout, firstVisibleSlotIndex, uiState.focusedSlotIndex) {
-        if (useCenteredTwoSlotLayout && visibleSlots.none { it.index == uiState.focusedSlotIndex }) {
+    LaunchedEffect(useCenteredCompactLayout, firstVisibleSlotIndex, uiState.focusedSlotIndex) {
+        if (useCenteredCompactLayout && visibleSlots.none { it.index == uiState.focusedSlotIndex }) {
             viewModel.setFocus(firstVisibleSlotIndex)
         }
     }
@@ -223,8 +223,8 @@ fun MultiViewScreen(
         }
 
         Column(modifier = Modifier.fillMaxSize()) {
-            if (useCenteredTwoSlotLayout) {
-                CenteredTwoSlotLayout(
+            if (useCenteredCompactLayout) {
+                CenteredCompactLayout(
                     slots = visibleSlots,
                     focusedSlotIndex = uiState.focusedSlotIndex,
                     showSelectionBorder = uiState.showSelectionBorder,
@@ -362,7 +362,7 @@ private fun StandardMultiViewGrid(
 }
 
 @Composable
-private fun CenteredTwoSlotLayout(
+private fun CenteredCompactLayout(
     slots: List<MultiViewSlot>,
     focusedSlotIndex: Int,
     showSelectionBorder: Boolean,
@@ -376,27 +376,51 @@ private fun CenteredTwoSlotLayout(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.Center
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 72.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            slots.forEachIndexed { index, slot ->
+        if (slots.size == 1) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 72.dp),
+                contentAlignment = Alignment.Center
+            ) {
                 GridPlayerCell(
-                    slot = slot,
-                    slotIndex = slot.index,
+                    slot = slots.first(),
+                    slotIndex = slots.first().index,
                     focusedSlotIndex = focusedSlotIndex,
                     showSelectionBorder = showSelectionBorder,
                     showControls = showControls,
                     onClick = onSlotClick,
                     onFocused = onSlotFocused,
-                    firstSlotFocusRequester = if (index == 0) firstSlotFocusRequester else null,
+                    firstSlotFocusRequester = firstSlotFocusRequester,
                     firstControlFocusRequester = firstControlFocusRequester,
                     modifier = Modifier
-                        .weight(1f)
+                        .fillMaxWidth(0.5f)
                         .aspectRatio(16f / 9f)
                 )
+            }
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 72.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                slots.forEachIndexed { index, slot ->
+                    GridPlayerCell(
+                        slot = slot,
+                        slotIndex = slot.index,
+                        focusedSlotIndex = focusedSlotIndex,
+                        showSelectionBorder = showSelectionBorder,
+                        showControls = showControls,
+                        onClick = onSlotClick,
+                        onFocused = onSlotFocused,
+                        firstSlotFocusRequester = if (index == 0) firstSlotFocusRequester else null,
+                        firstControlFocusRequester = firstControlFocusRequester,
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(16f / 9f)
+                    )
+                }
             }
         }
     }

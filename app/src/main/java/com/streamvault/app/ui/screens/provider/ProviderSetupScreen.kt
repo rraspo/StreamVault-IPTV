@@ -353,7 +353,6 @@ fun ProviderSetupScreen(
                         onLoginXtream = { viewModel.loginXtream(serverUrl, username, password, name) },
                         onLoginStalker = { viewModel.loginStalker(serverUrl, stalkerMacAddress, name, stalkerDeviceProfile, stalkerDeviceTimezone, stalkerDeviceLocale) },
                         onAddM3u = { viewModel.addM3u(m3uUrl, name) },
-                        onToggleFastSync = { viewModel.updateXtreamFastSyncEnabled(!uiState.xtreamFastSyncEnabled) },
                         onToggleM3uVodClassification = { viewModel.updateM3uVodClassificationEnabled(!uiState.m3uVodClassificationEnabled) },
                         onSelectEpgSyncMode = viewModel::updateEpgSyncMode,
                         showImportBackupButton = !uiState.isEditing,
@@ -390,7 +389,6 @@ fun ProviderSetupScreen(
                         onLoginXtream = { viewModel.loginXtream(serverUrl, username, password, name) },
                         onLoginStalker = { viewModel.loginStalker(serverUrl, stalkerMacAddress, name, stalkerDeviceProfile, stalkerDeviceTimezone, stalkerDeviceLocale) },
                         onAddM3u = { viewModel.addM3u(m3uUrl, name) },
-                        onToggleFastSync = { viewModel.updateXtreamFastSyncEnabled(!uiState.xtreamFastSyncEnabled) },
                         onToggleM3uVodClassification = { viewModel.updateM3uVodClassificationEnabled(!uiState.m3uVodClassificationEnabled) },
                         onSelectEpgSyncMode = viewModel::updateEpgSyncMode,
                         showImportBackupButton = !uiState.isEditing,
@@ -470,7 +468,6 @@ private fun ProviderFormContent(
     onLoginXtream: () -> Unit,
     onLoginStalker: () -> Unit,
     onAddM3u: () -> Unit,
-    onToggleFastSync: () -> Unit,
     onToggleM3uVodClassification: () -> Unit,
     onSelectEpgSyncMode: (ProviderEpgSyncMode) -> Unit,
     showImportBackupButton: Boolean,
@@ -540,7 +537,6 @@ private fun ProviderFormContent(
                     AdvancedProviderOptionsSection(
                         sourceType = sourceType,
                         uiState = uiState,
-                        onToggleFastSync = onToggleFastSync,
                         onToggleM3uVodClassification = onToggleM3uVodClassification,
                         onSelectEpgSyncMode = onSelectEpgSyncMode,
                         stalkerDeviceProfile = stalkerDeviceProfile,
@@ -586,7 +582,6 @@ private fun ProviderFormContent(
                     AdvancedProviderOptionsSection(
                         sourceType = sourceType,
                         uiState = uiState,
-                        onToggleFastSync = onToggleFastSync,
                         onToggleM3uVodClassification = onToggleM3uVodClassification,
                         onSelectEpgSyncMode = onSelectEpgSyncMode,
                         stalkerDeviceProfile = stalkerDeviceProfile,
@@ -617,7 +612,6 @@ private fun ProviderFormContent(
                     AdvancedProviderOptionsSection(
                         sourceType = sourceType,
                         uiState = uiState,
-                        onToggleFastSync = onToggleFastSync,
                         onToggleM3uVodClassification = onToggleM3uVodClassification,
                         onSelectEpgSyncMode = onSelectEpgSyncMode,
                         stalkerDeviceProfile = stalkerDeviceProfile,
@@ -653,7 +647,6 @@ private fun ProviderFormContent(
                     AdvancedProviderOptionsSection(
                         sourceType = sourceType,
                         uiState = uiState,
-                        onToggleFastSync = onToggleFastSync,
                         onToggleM3uVodClassification = onToggleM3uVodClassification,
                         onSelectEpgSyncMode = onSelectEpgSyncMode,
                         stalkerDeviceProfile = stalkerDeviceProfile,
@@ -690,7 +683,6 @@ private fun ProviderFormContent(
 private fun AdvancedProviderOptionsSection(
     sourceType: SourceType,
     uiState: ProviderSetupState,
-    onToggleFastSync: () -> Unit,
     onToggleM3uVodClassification: () -> Unit,
     onSelectEpgSyncMode: (ProviderEpgSyncMode) -> Unit,
     stalkerDeviceProfile: String,
@@ -708,9 +700,8 @@ private fun AdvancedProviderOptionsSection(
         SourceType.M3U_FILE -> ProviderEpgSyncMode.UPFRONT
     }
 
-    LaunchedEffect(uiState.isEditing, uiState.epgSyncMode, uiState.xtreamFastSyncEnabled, sourceType) {
+    LaunchedEffect(uiState.isEditing, uiState.epgSyncMode, sourceType) {
         val hasNonDefaultSelection = ((sourceType == SourceType.XTREAM || sourceType == SourceType.STALKER) && uiState.epgSyncMode != defaultEpgSyncMode) ||
-            (sourceType == SourceType.XTREAM && !uiState.xtreamFastSyncEnabled) ||
             ((sourceType == SourceType.M3U_URL || sourceType == SourceType.M3U_FILE) && !uiState.m3uVodClassificationEnabled) ||
             (sourceType == SourceType.STALKER && (stalkerDeviceProfile.isNotBlank() || stalkerDeviceTimezone.isNotBlank() || stalkerDeviceLocale.isNotBlank()))
         if (uiState.isEditing && hasNonDefaultSelection) {
@@ -774,53 +765,6 @@ private fun AdvancedProviderOptionsSection(
 
         AnimatedVisibility(visible = showAdvancedOptions) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                if (sourceType == SourceType.XTREAM) {
-                    Surface(
-                        onClick = onToggleFastSync,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .mouseClickable(onClick = onToggleFastSync),
-                        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(12.dp)),
-                        colors = ClickableSurfaceDefaults.colors(
-                            containerColor = if (uiState.xtreamFastSyncEnabled) Primary.copy(alpha = 0.1f) else Surface,
-                            focusedContainerColor = Primary.copy(alpha = 0.22f)
-                        ),
-                        border = ClickableSurfaceDefaults.border(
-                            border = Border(
-                                BorderStroke(
-                                    1.dp,
-                                    if (uiState.xtreamFastSyncEnabled) Primary.copy(alpha = 0.4f) else SurfaceHighlight
-                                )
-                            ),
-                            focusedBorder = Border(BorderStroke(3.dp, PrimaryLight))
-                        ),
-                        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = androidx.compose.ui.res.stringResource(R.string.setup_xtream_fast_sync_label),
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = TextPrimary
-                                )
-                                Text(
-                                    text = androidx.compose.ui.res.stringResource(R.string.setup_xtream_fast_sync_helper),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = OnSurfaceDim
-                                )
-                            }
-                            Switch(
-                                checked = uiState.xtreamFastSyncEnabled,
-                                onCheckedChange = { onToggleFastSync() }
-                            )
-                        }
-                    }
-                }
-
                 if (sourceType == SourceType.M3U_URL || sourceType == SourceType.M3U_FILE) {
                     Surface(
                         onClick = onToggleM3uVodClassification,

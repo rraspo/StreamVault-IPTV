@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Sağlayıcı kurulumu ve yenileme sırasında rehber verilerinin nasıl alındığını kontrol edin.</string>
     <string name="setup_advanced_options_show">Göster</string>
     <string name="setup_advanced_options_hide">Gizle</string>
-    <string name="setup_xtream_fast_sync_label">Hızlı Senkronizasyon</string>
-    <string name="setup_xtream_fast_sync_helper">Yalnızca Xtream. Önce VOD kategorilerini yükler ve film satırlarını gerektiğinde getirir. Çok büyük sağlayıcılar için önerilir.</string>
     <string name="setup_m3u_vod_classification_label">M3U VOD Sınıflandırması</string>
     <string name="setup_m3u_vod_classification_helper">Yalnızca M3U. Eşleşen girişleri Canlı TV yerine Filmler\'e ayırmak için oynatma listesi URL\'si ve group-title sezgisel kurallarını kullanın.</string>
     <string name="setup_epg_sync_mode_label">EPG Senkronizasyonu</string>

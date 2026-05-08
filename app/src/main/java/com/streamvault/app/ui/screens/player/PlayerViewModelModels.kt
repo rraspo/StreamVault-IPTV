@@ -51,6 +51,8 @@ data class PlayerDiagnosticsUiState(
     val streamClassLabel: String = "Primary",
     val playbackStateLabel: String = "Idle",
     val audioVideoOffsetMs: Int = 0,
+    val audioVideoSyncEnabled: Boolean = false,
+    val audioVideoSyncSinkActive: Boolean = false,
     val alternativeStreamCount: Int = 0,
     val channelErrorCount: Int = 0,
     val archiveSupportLabel: String = "",
@@ -211,7 +213,8 @@ internal data class AudioVideoOffsetSnapshot(
     val channelOverrideMs: Int?,
     val previewOffsetMs: Int?,
     val effectiveOffsetMs: Int,
-    val engine: com.streamvault.player.PlayerEngine
+    val engine: com.streamvault.player.PlayerEngine,
+    val enabled: Boolean
 )
 
 internal data class PlayerUiTimeouts(

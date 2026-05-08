@@ -1,5 +1,6 @@
 package com.streamvault.data.remote.xtream
 
+import android.util.Log
 import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
@@ -11,6 +12,9 @@ import com.streamvault.data.remote.dto.XtreamSeriesItem
 import com.streamvault.data.remote.dto.XtreamStream
 import com.streamvault.data.remote.dto.XtreamVodInfoResponse
 import com.streamvault.data.remote.NetworkTimeoutConfig
+import com.streamvault.data.remote.http.HttpRequestProfile
+import com.streamvault.data.remote.http.safeRequestIdentitySummary
+import com.streamvault.data.remote.http.withRequestProfile
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -32,9 +36,11 @@ import java.util.concurrent.TimeUnit.SECONDS
 @OptIn(ExperimentalSerializationApi::class)
 class OkHttpXtreamApiService(
     private val client: OkHttpClient,
-    private val json: Json
+    private val json: Json,
+    private val defaultRequestProfile: HttpRequestProfile = HttpRequestProfile()
 ) : XtreamApiService {
     private companion object {
+        const val TAG = "OkHttpXtreamApi"
         const val PREVIEW_INPUT_LIMIT = 512
         const val PREVIEW_OUTPUT_LIMIT = 140
         const val RESPONSE_BUDGET_HEADROOM_BYTES = 1L * 1024L * 1024L
@@ -66,66 +72,121 @@ class OkHttpXtreamApiService(
             .build()
     }
 
-    override suspend fun authenticate(endpoint: String): XtreamAuthResponse = get(endpoint)
+    override suspend fun authenticate(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): XtreamAuthResponse = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getLiveCategories(endpoint: String): List<XtreamCategory> = get(endpoint)
+    override suspend fun getLiveCategories(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamCategory> = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getLiveStreams(endpoint: String): List<XtreamStream> = get(endpoint, RequestProfile.HEAVY_CATALOG)
+    override suspend fun getLiveStreams(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamStream> = get(endpoint, RequestProfile.HEAVY_CATALOG, requestProfile)
 
-    override suspend fun getVodCategories(endpoint: String): List<XtreamCategory> = get(endpoint)
+    override suspend fun getVodCategories(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamCategory> = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getVodStreams(endpoint: String): List<XtreamStream> = get(endpoint, RequestProfile.HEAVY_CATALOG)
+    override suspend fun getVodStreams(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamStream> = get(endpoint, RequestProfile.HEAVY_CATALOG, requestProfile)
 
-    suspend fun streamVodStreams(endpoint: String, onItem: suspend (XtreamStream) -> Unit): Int =
+    override suspend fun streamVodStreams(
+        endpoint: String,
+        requestProfile: HttpRequestProfile,
+        onItem: suspend (XtreamStream) -> Unit
+    ): Int =
         streamArray(
             endpoint = endpoint,
             profile = RequestProfile.HEAVY_CATALOG,
+            requestProfile = requestProfile,
             deserializer = XtreamStream.serializer(),
             onItem = onItem
         )
 
-    suspend fun streamLiveStreams(endpoint: String, onItem: suspend (XtreamStream) -> Unit): Int =
+    suspend fun streamLiveStreams(
+        endpoint: String,
+        requestProfile: HttpRequestProfile = HttpRequestProfile(),
+        onItem: suspend (XtreamStream) -> Unit
+    ): Int =
         streamArray(
             endpoint = endpoint,
             profile = RequestProfile.HEAVY_CATALOG,
+            requestProfile = requestProfile,
             deserializer = XtreamStream.serializer(),
             onItem = onItem
         )
 
-    override suspend fun getVodInfo(endpoint: String): XtreamVodInfoResponse = get(endpoint)
+    override suspend fun getVodInfo(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): XtreamVodInfoResponse = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getSeriesCategories(endpoint: String): List<XtreamCategory> = get(endpoint)
+    override suspend fun getSeriesCategories(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamCategory> = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getSeriesList(endpoint: String): List<XtreamSeriesItem> = get(endpoint, RequestProfile.HEAVY_CATALOG)
+    override suspend fun getSeriesList(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): List<XtreamSeriesItem> = get(endpoint, RequestProfile.HEAVY_CATALOG, requestProfile)
 
-    suspend fun streamSeriesList(endpoint: String, onItem: suspend (XtreamSeriesItem) -> Unit): Int =
+    override suspend fun streamSeriesList(
+        endpoint: String,
+        requestProfile: HttpRequestProfile,
+        onItem: suspend (XtreamSeriesItem) -> Unit
+    ): Int =
         streamArray(
             endpoint = endpoint,
             profile = RequestProfile.HEAVY_CATALOG,
+            requestProfile = requestProfile,
             deserializer = XtreamSeriesItem.serializer(),
             onItem = onItem
         )
 
-    override suspend fun getSeriesInfo(endpoint: String): XtreamSeriesInfoResponse = get(endpoint)
+    override suspend fun getSeriesInfo(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): XtreamSeriesInfoResponse = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getShortEpg(endpoint: String): XtreamEpgResponse = get(endpoint)
+    override suspend fun getShortEpg(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): XtreamEpgResponse = get(endpoint, requestProfile = requestProfile)
 
-    override suspend fun getFullEpg(endpoint: String): XtreamEpgResponse = get(endpoint)
+    override suspend fun getFullEpg(
+        endpoint: String,
+        requestProfile: HttpRequestProfile
+    ): XtreamEpgResponse = get(endpoint, requestProfile = requestProfile)
 
     private suspend inline fun <reified T> get(
         endpoint: String,
-        profile: RequestProfile = RequestProfile.STANDARD
+        profile: RequestProfile = RequestProfile.STANDARD,
+        requestProfile: HttpRequestProfile = HttpRequestProfile()
     ): T = withContext(Dispatchers.IO) {
         val descriptor = describeEndpoint(endpoint)
+        val effectiveRequestProfile = requestProfile.mergedWithDefaults(defaultRequestProfile)
         val request = Request.Builder()
             .url(endpoint)
             .get()
             .build()
+            .withRequestProfile(effectiveRequestProfile)
         try {
             val call = clientFor(profile).newCall(request)
             call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val message = "HTTP ${response.code}"
+                    Log.w(
+                        TAG,
+                        "Xtream request failed for ${descriptor.hint} (${response.request.safeRequestIdentitySummary(effectiveRequestProfile)}): $message"
+                    )
                     when (response.code) {
                         401 -> throw XtreamAuthenticationException(response.code, message)
                         403 -> {
@@ -150,6 +211,10 @@ class OkHttpXtreamApiService(
         } catch (e: XtreamApiException) {
             throw e
         } catch (e: IOException) {
+            Log.w(
+                TAG,
+                "Xtream request network failure for ${descriptor.hint} (${request.safeRequestIdentitySummary(effectiveRequestProfile)}): ${XtreamUrlFactory.sanitizeLogMessage(e.message ?: "Network request failed")}"
+            )
             throw XtreamNetworkException(XtreamUrlFactory.sanitizeLogMessage(e.message ?: "Network request failed"), e)
         }
     }
@@ -208,19 +273,26 @@ class OkHttpXtreamApiService(
     private suspend fun <T> streamArray(
         endpoint: String,
         profile: RequestProfile,
+        requestProfile: HttpRequestProfile,
         deserializer: DeserializationStrategy<T>,
         onItem: suspend (T) -> Unit
     ): Int = withContext(Dispatchers.IO) {
         val descriptor = describeEndpoint(endpoint)
+        val effectiveRequestProfile = requestProfile.mergedWithDefaults(defaultRequestProfile)
         val request = Request.Builder()
             .url(endpoint)
             .get()
             .build()
+            .withRequestProfile(effectiveRequestProfile)
         try {
             val call = clientFor(profile).newCall(request)
             call.execute().use { response ->
                 if (!response.isSuccessful) {
                     val message = "HTTP ${response.code}"
+                    Log.w(
+                        TAG,
+                        "Xtream streamed request failed for ${descriptor.hint} (${response.request.safeRequestIdentitySummary(effectiveRequestProfile)}): $message"
+                    )
                     when (response.code) {
                         401 -> throw XtreamAuthenticationException(response.code, message)
                         403 -> {
@@ -247,6 +319,10 @@ class OkHttpXtreamApiService(
         } catch (e: XtreamApiException) {
             throw e
         } catch (e: IOException) {
+            Log.w(
+                TAG,
+                "Xtream streamed request network failure for ${descriptor.hint} (${request.safeRequestIdentitySummary(effectiveRequestProfile)}): ${XtreamUrlFactory.sanitizeLogMessage(e.message ?: "Network request failed")}"
+            )
             throw XtreamNetworkException(XtreamUrlFactory.sanitizeLogMessage(e.message ?: "Network request failed"), e)
         }
     }

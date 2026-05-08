@@ -218,7 +218,10 @@ data class MovieEntity(
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
     @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
     @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
-    @ColumnInfo(name = "added_at") val addedAt: Long = 0L
+    @ColumnInfo(name = "added_at") val addedAt: Long = 0L,
+    @ColumnInfo(name = "cache_state") val cacheState: String = "DETAIL_HYDRATED",
+    @ColumnInfo(name = "detail_hydrated_at") val detailHydratedAt: Long = 0L,
+    @ColumnInfo(name = "remote_stale_at") val remoteStaleAt: Long = 0L
 )
 
 data class MovieBrowseEntity(
@@ -284,7 +287,10 @@ data class SeriesEntity(
     @ColumnInfo(name = "provider_id") val providerId: Long = 0,
     @ColumnInfo(name = "is_adult") val isAdult: Boolean = false,
     @ColumnInfo(name = "is_user_protected") val isUserProtected: Boolean = false,
-    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = ""
+    @ColumnInfo(name = "sync_fingerprint") val syncFingerprint: String = "",
+    @ColumnInfo(name = "cache_state") val cacheState: String = "DETAIL_HYDRATED",
+    @ColumnInfo(name = "detail_hydrated_at") val detailHydratedAt: Long = 0L,
+    @ColumnInfo(name = "remote_stale_at") val remoteStaleAt: Long = 0L
 )
 
 data class SeriesBrowseEntity(

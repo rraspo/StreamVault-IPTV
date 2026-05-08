@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Styr hur guide-data hämtas vid leverantörsinställning och uppdatering.</string>
     <string name="setup_advanced_options_show">Visa</string>
     <string name="setup_advanced_options_hide">Dölj</string>
-    <string name="setup_xtream_fast_sync_label">Snabb synk</string>
-    <string name="setup_xtream_fast_sync_helper">Endast Xtream. Läser in VOD-kategorier först och hämtar filmrader vid behov. Rekommenderas för mycket stora leverantörer.</string>
     <string name="setup_m3u_vod_classification_label">M3U VOD-klassificering</string>
     <string name="setup_m3u_vod_classification_helper">Endast M3U. Använd playlist-URL och group-title-heuristik för att sortera matchande poster till Filmer i stället för Live-TV.</string>
     <string name="setup_epg_sync_mode_label">EPG-synk</string>

@@ -1,21 +1,19 @@
 package com.streamvault.domain.usecase
 
 import com.google.common.truth.Truth.assertThat
-import com.streamvault.domain.model.Category
+import com.streamvault.domain.manager.ProviderSyncStateReader
 import com.streamvault.domain.model.Channel
-import com.streamvault.domain.model.LibraryBrowseQuery
 import com.streamvault.domain.model.Movie
-import com.streamvault.domain.model.PagedResult
-import com.streamvault.domain.model.Result
 import com.streamvault.domain.model.Series
-import com.streamvault.domain.model.StreamInfo
-import com.streamvault.domain.repository.ChannelRepository
-import com.streamvault.domain.repository.MovieRepository
-import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.model.SyncState
+import com.streamvault.domain.repository.SearchRepository
+import com.streamvault.domain.repository.SearchRepositoryResult
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -24,15 +22,12 @@ class SearchContentTest {
     @Test
     fun returnsCombinedResultsAcrossAllSections() = runTest {
         val useCase = SearchContent(
-            channelRepository = FakeChannelRepository(
-                searchResults = listOf(Channel(id = 1L, name = "News 1"))
+            searchRepository = FakeSearchRepository(
+                channelResults = listOf(Channel(id = 1L, name = "News 1")),
+                movieResults = listOf(Movie(id = 2L, name = "Movie 1")),
+                seriesResults = listOf(Series(id = 3L, name = "Series 1"))
             ),
-            movieRepository = FakeMovieRepository(
-                searchResults = listOf(Movie(id = 2L, name = "Movie 1"))
-            ),
-            seriesRepository = FakeSeriesRepository(
-                searchResults = listOf(Series(id = 3L, name = "Series 1"))
-            )
+            providerSyncStateReader = FakeProviderSyncStateReader()
         )
 
         val result = useCase(providerId = 99L, query = "star").first()
@@ -45,15 +40,12 @@ class SearchContentTest {
     @Test
     fun restrictsResultsToRequestedScope() = runTest {
         val useCase = SearchContent(
-            channelRepository = FakeChannelRepository(
-                searchResults = listOf(Channel(id = 1L, name = "News 1"))
+            searchRepository = FakeSearchRepository(
+                channelResults = listOf(Channel(id = 1L, name = "News 1")),
+                movieResults = listOf(Movie(id = 2L, name = "Movie 1")),
+                seriesResults = listOf(Series(id = 3L, name = "Series 1"))
             ),
-            movieRepository = FakeMovieRepository(
-                searchResults = listOf(Movie(id = 2L, name = "Movie 1"))
-            ),
-            seriesRepository = FakeSeriesRepository(
-                searchResults = listOf(Series(id = 3L, name = "Series 1"))
-            )
+            providerSyncStateReader = FakeProviderSyncStateReader()
         )
 
         val result = useCase(
@@ -70,15 +62,12 @@ class SearchContentTest {
     @Test
     fun shortQueriesReturnEmptyResults() = runTest {
         val useCase = SearchContent(
-            channelRepository = FakeChannelRepository(
-                searchResults = listOf(Channel(id = 1L, name = "News 1"))
+            searchRepository = FakeSearchRepository(
+                channelResults = listOf(Channel(id = 1L, name = "News 1")),
+                movieResults = listOf(Movie(id = 2L, name = "Movie 1")),
+                seriesResults = listOf(Series(id = 3L, name = "Series 1"))
             ),
-            movieRepository = FakeMovieRepository(
-                searchResults = listOf(Movie(id = 2L, name = "Movie 1"))
-            ),
-            seriesRepository = FakeSeriesRepository(
-                searchResults = listOf(Series(id = 3L, name = "Series 1"))
-            )
+            providerSyncStateReader = FakeProviderSyncStateReader()
         )
 
         val result = useCase(providerId = 99L, query = "a").first()
@@ -89,15 +78,39 @@ class SearchContentTest {
     }
 
     @Test
+    fun marksSearchPartialWhileProviderSyncIsActive() = runTest {
+        val useCase = SearchContent(
+            searchRepository = FakeSearchRepository(movieResults = listOf(Movie(id = 2L, name = "Movie 1"))),
+            providerSyncStateReader = FakeProviderSyncStateReader(SyncState.Syncing("Indexing movies"))
+        )
+
+        val result = useCase(providerId = 99L, query = "movie", scope = SearchContentScope.MOVIES).first()
+
+        assertThat(result.movies).hasSize(1)
+        assertThat(result.isPartialResult).isTrue()
+    }
+
+    @Test
+    fun marksSearchPartialWhileBackgroundIndexJobIsActive() = runTest {
+        val useCase = SearchContent(
+            searchRepository = FakeSearchRepository(movieResults = listOf(Movie(id = 2L, name = "Movie 1"))),
+            providerSyncStateReader = FakeProviderSyncStateReader(backgroundIndexingActive = true)
+        )
+
+        val result = useCase(providerId = 99L, query = "movie", scope = SearchContentScope.MOVIES).first()
+
+        assertThat(result.movies).hasSize(1)
+        assertThat(result.isPartialResult).isTrue()
+    }
+
+    @Test
     fun rethrows_non_io_upstream_failures() = runTest {
         val expected = IllegalStateException("channel search failed")
         val useCase = SearchContent(
-            channelRepository = FakeChannelRepository(
-                searchResults = emptyList(),
-                searchFlow = flow { throw expected }
+            searchRepository = FakeSearchRepository(
+                channelFlow = flow { throw expected }
             ),
-            movieRepository = FakeMovieRepository(searchResults = emptyList()),
-            seriesRepository = FakeSeriesRepository(searchResults = emptyList())
+            providerSyncStateReader = FakeProviderSyncStateReader()
         )
 
         val thrown = try {
@@ -110,79 +123,71 @@ class SearchContentTest {
         assertThat(thrown).isNotNull()
         assertThat(thrown?.message).isEqualTo(expected.message)
     }
+
+    @Test
+    fun marksSearchPartialWhenRepositoryDoesNotEmitWithinBudget() = runTest {
+        val useCase = SearchContent(
+            searchRepository = FakeSearchRepository(
+                searchContentFlow = flow {
+                    delay(3_000L)
+                    emit(SearchRepositoryResult(movies = listOf(Movie(id = 2L, name = "Late Movie"))))
+                }
+            ),
+            providerSyncStateReader = FakeProviderSyncStateReader()
+        )
+
+        val result = useCase(providerId = 99L, query = "movie", scope = SearchContentScope.MOVIES).first()
+
+        assertThat(result.movies).isEmpty()
+        assertThat(result.isPartialResult).isTrue()
+    }
 }
 
-private class FakeChannelRepository(
-    private val searchResults: List<Channel>,
-    private val searchFlow: Flow<List<Channel>>? = null
-) : ChannelRepository {
-    override fun searchChannels(providerId: Long, query: String): Flow<List<Channel>> = searchFlow ?: flowOf(searchResults)
-    override fun getChannels(providerId: Long): Flow<List<Channel>> = unsupported()
-    override fun getChannelCount(providerId: Long): Flow<Int> = unsupported()
-    override fun getChannelsByCategory(providerId: Long, categoryId: Long): Flow<List<Channel>> = unsupported()
-    override fun getChannelsByCategoryPage(providerId: Long, categoryId: Long, limit: Int): Flow<List<Channel>> = unsupported()
-    override fun getChannelsByNumber(providerId: Long, categoryId: Long): Flow<List<Channel>> = unsupported()
-    override fun getChannelsWithoutErrors(providerId: Long, categoryId: Long): Flow<List<Channel>> = unsupported()
-    override fun getChannelsWithoutErrorsPage(providerId: Long, categoryId: Long, limit: Int): Flow<List<Channel>> = unsupported()
-    override suspend fun getChannelsByCategoryPageOffset(providerId: Long, categoryId: Long, limit: Int, offset: Int): List<Channel> = error("Not used in test")
-    override suspend fun getChannelsWithoutErrorsPageOffset(providerId: Long, categoryId: Long, limit: Int, offset: Int): List<Channel> = error("Not used in test")
-    override fun searchChannelsByCategory(providerId: Long, categoryId: Long, query: String): Flow<List<Channel>> = unsupported()
-    override fun searchChannelsByCategoryPaged(providerId: Long, categoryId: Long, query: String, limit: Int): Flow<List<Channel>> = unsupported()
-    override fun getCategories(providerId: Long): Flow<List<Category>> = unsupported()
-    override suspend fun getChannel(channelId: Long): Channel? = error("Not used in test")
-    override suspend fun getStreamInfo(channel: Channel, preferStableUrl: Boolean): Result<StreamInfo> = error("Not used in test")
-    override suspend fun refreshChannels(providerId: Long): Result<Unit> = error("Not used in test")
-    override fun getChannelsByIds(ids: List<Long>): Flow<List<Channel>> = unsupported()
-    override suspend fun incrementChannelErrorCount(channelId: Long): Result<Unit> = error("Not used in test")
-    override suspend fun resetChannelErrorCount(channelId: Long): Result<Unit> = error("Not used in test")
+private class FakeProviderSyncStateReader(
+    private val state: SyncState = SyncState.Idle,
+    private val backgroundIndexingActive: Boolean = false
+) : ProviderSyncStateReader {
+    override fun currentSyncState(providerId: Long): SyncState = state
+    override fun observeBackgroundIndexingActive(providerId: Long): Flow<Boolean> = flowOf(backgroundIndexingActive)
 }
 
-private class FakeMovieRepository(
-    private val searchResults: List<Movie>,
-    private val searchFlow: Flow<List<Movie>>? = null
-) : MovieRepository {
-    override fun searchMovies(providerId: Long, query: String): Flow<List<Movie>> = searchFlow ?: flowOf(searchResults)
-    override fun getMovies(providerId: Long): Flow<List<Movie>> = unsupported()
-    override fun getMoviesByCategory(providerId: Long, categoryId: Long): Flow<List<Movie>> = unsupported()
-    override fun getMoviesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<Movie>> = unsupported()
-    override fun getMoviesByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<Movie>> = unsupported()
-    override fun getCategoryPreviewRows(providerId: Long, categoryIds: List<Long>, limitPerCategory: Int): Flow<Map<Long?, List<Movie>>> = unsupported()
-    override fun getTopRatedPreview(providerId: Long, limit: Int): Flow<List<Movie>> = unsupported()
-    override fun getFreshPreview(providerId: Long, limit: Int): Flow<List<Movie>> = unsupported()
-    override fun getRecommendations(providerId: Long, limit: Int): Flow<List<Movie>> = unsupported()
-    override fun getRelatedContent(providerId: Long, movieId: Long, limit: Int): Flow<List<Movie>> = unsupported()
-    override fun getMoviesByIds(ids: List<Long>): Flow<List<Movie>> = unsupported()
-    override fun getCategories(providerId: Long): Flow<List<Category>> = unsupported()
-    override fun getCategoryItemCounts(providerId: Long): Flow<Map<Long, Int>> = unsupported()
-    override fun getLibraryCount(providerId: Long): Flow<Int> = unsupported()
-    override fun browseMovies(query: LibraryBrowseQuery): Flow<PagedResult<Movie>> = unsupported()
-    override suspend fun getMovie(movieId: Long): Movie? = error("Not used in test")
-    override suspend fun getMovieDetails(providerId: Long, movieId: Long): Result<Movie> = error("Not used in test")
-    override suspend fun getStreamInfo(movie: Movie): Result<StreamInfo> = error("Not used in test")
-    override suspend fun refreshMovies(providerId: Long): Result<Unit> = error("Not used in test")
-}
+private class FakeSearchRepository(
+    private val channelResults: List<Channel> = emptyList(),
+    private val movieResults: List<Movie> = emptyList(),
+    private val seriesResults: List<Series> = emptyList(),
+    private val channelFlow: Flow<List<Channel>>? = null,
+    private val movieFlow: Flow<List<Movie>>? = null,
+    private val seriesFlow: Flow<List<Series>>? = null,
+    private val searchContentFlow: Flow<SearchRepositoryResult>? = null
+) : SearchRepository {
+    override fun searchContent(
+        providerId: Long,
+        query: String,
+        includeLive: Boolean,
+        includeMovies: Boolean,
+        includeSeries: Boolean,
+        maxResultsPerSection: Int
+    ): Flow<SearchRepositoryResult> {
+        searchContentFlow?.let { return it }
+        channelFlow?.let { if (includeLive) return it.map { channels -> SearchRepositoryResult(channels = channels) } }
+        movieFlow?.let { if (includeMovies) return it.map { movies -> SearchRepositoryResult(movies = movies) } }
+        seriesFlow?.let { if (includeSeries) return it.map { series -> SearchRepositoryResult(series = series) } }
 
-private class FakeSeriesRepository(
-    private val searchResults: List<Series>,
-    private val searchFlow: Flow<List<Series>>? = null
-) : SeriesRepository {
-    override fun searchSeries(providerId: Long, query: String): Flow<List<Series>> = searchFlow ?: flowOf(searchResults)
-    override fun getSeries(providerId: Long): Flow<List<Series>> = unsupported()
-    override fun getSeriesByCategory(providerId: Long, categoryId: Long): Flow<List<Series>> = unsupported()
-    override fun getSeriesByCategoryPage(providerId: Long, categoryId: Long, limit: Int, offset: Int): Flow<List<Series>> = unsupported()
-    override fun getSeriesByCategoryPreview(providerId: Long, categoryId: Long, limit: Int): Flow<List<Series>> = unsupported()
-    override fun getCategoryPreviewRows(providerId: Long, categoryIds: List<Long>, limitPerCategory: Int): Flow<Map<Long?, List<Series>>> = unsupported()
-    override fun getTopRatedPreview(providerId: Long, limit: Int): Flow<List<Series>> = unsupported()
-    override fun getFreshPreview(providerId: Long, limit: Int): Flow<List<Series>> = unsupported()
-    override fun getSeriesByIds(ids: List<Long>): Flow<List<Series>> = unsupported()
-    override fun getCategories(providerId: Long): Flow<List<Category>> = unsupported()
-    override fun getCategoryItemCounts(providerId: Long): Flow<Map<Long, Int>> = unsupported()
-    override fun getLibraryCount(providerId: Long): Flow<Int> = unsupported()
-    override fun browseSeries(query: LibraryBrowseQuery): Flow<PagedResult<Series>> = unsupported()
-    override suspend fun getSeriesById(seriesId: Long): Series? = error("Not used in test")
-    override suspend fun getSeriesDetails(providerId: Long, seriesId: Long): Result<Series> = error("Not used in test")
-    override suspend fun getEpisodeStreamInfo(episode: com.streamvault.domain.model.Episode): Result<StreamInfo> = error("Not used in test")
-    override suspend fun refreshSeries(providerId: Long): Result<Unit> = error("Not used in test")
-}
+        return flowOf(
+            SearchRepositoryResult(
+                channels = if (includeLive) channelResults.take(maxResultsPerSection) else emptyList(),
+                movies = if (includeMovies) movieResults.take(maxResultsPerSection) else emptyList(),
+                series = if (includeSeries) seriesResults.take(maxResultsPerSection) else emptyList()
+            )
+        )
+    }
 
-private fun <T> unsupported(): Flow<T> = error("Not used in test")
+    override fun searchChannels(providerId: Long, query: String): Flow<List<Channel>> =
+        channelFlow ?: flowOf(channelResults)
+
+    override fun searchMovies(providerId: Long, query: String): Flow<List<Movie>> =
+        movieFlow ?: flowOf(movieResults)
+
+    override fun searchSeries(providerId: Long, query: String): Flow<List<Series>> =
+        seriesFlow ?: flowOf(seriesResults)
+}

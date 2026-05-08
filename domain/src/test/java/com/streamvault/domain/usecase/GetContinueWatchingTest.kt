@@ -182,7 +182,14 @@ class GetContinueWatchingTest {
             return historyFlow ?: flowOf(multiProviderHistory.filter { it.providerId in providerIds }.take(limit))
         }
         override fun getUnwatchedCount(providerId: Long, seriesId: Long): Flow<Int> = flowOf(0)
-        override suspend fun getPlaybackHistory(contentId: Long, contentType: ContentType, providerId: Long): PlaybackHistory? = null
+        override suspend fun getPlaybackHistory(
+            contentId: Long,
+            contentType: ContentType,
+            providerId: Long,
+            seriesId: Long?,
+            seasonNumber: Int?,
+            episodeNumber: Int?
+        ): PlaybackHistory? = null
         override suspend fun markAsWatched(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun recordPlayback(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)
         override suspend fun updateResumePosition(history: PlaybackHistory) = com.streamvault.domain.model.Result.success(Unit)

@@ -87,6 +87,7 @@ class BackupManagerImpl @Inject constructor(
                 "playerDecoderMode" to preferencesRepository.playerDecoderMode.first().name,
                 "playerSurfaceMode" to preferencesRepository.playerSurfaceMode.first().name,
                 "playerPlaybackSpeed" to preferencesRepository.playerPlaybackSpeed.first().toString(),
+                "playerAudioVideoSyncEnabled" to preferencesRepository.playerAudioVideoSyncEnabled.first().toString(),
                 "playerAudioVideoOffsetMs" to preferencesRepository.playerAudioVideoOffsetMs.first().toString(),
                 "preferredAudioLanguage" to (preferencesRepository.preferredAudioLanguage.first() ?: "auto"),
                 "playerSubtitleTextScale" to preferencesRepository.playerSubtitleTextScale.first().toString(),
@@ -510,6 +511,8 @@ class BackupManagerImpl @Inject constructor(
             }
         }
         prefs["playerPlaybackSpeed"]?.toFloatOrNull()?.let { preferencesRepository.setPlayerPlaybackSpeed(it) }
+        prefs["playerAudioVideoSyncEnabled"]?.toBooleanStrictOrNull()
+            ?.let { preferencesRepository.setPlayerAudioVideoSyncEnabled(it) }
         prefs["playerAudioVideoOffsetMs"]?.toIntOrNull()?.let {
             preferencesRepository.setPlayerAudioVideoOffsetMs(it)
         }

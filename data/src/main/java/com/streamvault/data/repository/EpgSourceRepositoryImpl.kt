@@ -24,6 +24,9 @@ import com.streamvault.domain.model.EpgOverrideCandidate
 import com.streamvault.domain.model.EpgSourceType
 import com.streamvault.data.parser.XmltvParser
 import com.streamvault.data.util.UrlSecurityPolicy
+import com.streamvault.data.remote.http.HttpRequestProfile
+import com.streamvault.data.remote.http.safeRequestIdentitySummary
+import com.streamvault.data.remote.http.withRequestProfile
 import com.streamvault.domain.model.ChannelEpgMapping
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.EpgResolutionSummary
@@ -240,6 +243,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
                     // This prevents double-decompression when the URL ends in .gz:
                     // OkHttp would silently decompress gzip responses, and then
                     // maybeDecompressGzip() would try again — corrupting the stream.
+                    val requestProfile = HttpRequestProfile(ownerTag = "epg-source:$sourceId")
                     val request = Request.Builder()
                         .url(source.url)
                         .header("Accept-Encoding", "identity")
@@ -248,6 +252,7 @@ class EpgSourceRepositoryImpl @Inject constructor(
                             source.lastModifiedHeader?.let { header("If-Modified-Since", it) }
                         }
                         .build()
+                        .withRequestProfile(requestProfile)
                     val response = epgHttpClient.newCall(request).execute()
 
                     if (response.code == 304) {
@@ -261,6 +266,10 @@ class EpgSourceRepositoryImpl @Inject constructor(
                     }
 
                     if (!response.isSuccessful) {
+                        Log.w(
+                            TAG,
+                            "EPG request failed for source $sourceId (${response.request.safeRequestIdentitySummary(requestProfile)}): HTTP ${response.code}"
+                        )
                         val err = "HTTP ${response.code}"
                         response.close()
                         epgSourceDao.updateRefreshError(sourceId, err)

@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Управляйте тем, как загружаются данные телепрограммы при настройке и обновлении провайдера.</string>
     <string name="setup_advanced_options_show">Показать</string>
     <string name="setup_advanced_options_hide">Скрыть</string>
-    <string name="setup_xtream_fast_sync_label">Быстрая синхронизация</string>
-    <string name="setup_xtream_fast_sync_helper">Только Хтрим. Сначала загружает категории VOD и извлекает строки фильмов по запросу. Рекомендуется для очень крупных провайдеров.</string>
     <string name="setup_m3u_vod_classification_label">Классификация VOD в M3U</string>
     <string name="setup_m3u_vod_classification_helper">Только для M3U. Используйте URL плейлиста и эвристику group-title, чтобы сортировать подходящие записи в Фильмы вместо Live TV.</string>
     <string name="setup_epg_sync_mode_label">Синхронизация EPG</string>

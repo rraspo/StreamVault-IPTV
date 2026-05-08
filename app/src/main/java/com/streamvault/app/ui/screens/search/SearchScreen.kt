@@ -154,7 +154,7 @@ class SearchViewModel @Inject constructor(
         unlockedCategoryIds
     ) { provider, query, tab, level, unlockedIds ->
         SearchFilterParams(provider, query, tab, level, unlockedIds)
-    }.flatMapLatest { params ->
+    }.distinctUntilChanged().flatMapLatest { params ->
         val provider = params.provider
         val query = params.query
         val tab = params.tab
@@ -196,6 +196,17 @@ class SearchViewModel @Inject constructor(
                     hasActiveProvider = true,
                     queryLength = trimmedQueryLength,
                     unlockedCategoryIds = unlockedIds
+                )
+            }.onStart {
+                emit(
+                    SearchUiState(
+                        isLoading = true,
+                        hasSearched = true,
+                        parentalControlLevel = level,
+                        hasActiveProvider = true,
+                        queryLength = trimmedQueryLength,
+                        unlockedCategoryIds = unlockedIds
+                    )
                 )
             }
         }
@@ -563,6 +574,15 @@ fun SearchScreen(
                         SearchMessageState(
                             title = stringResource(R.string.search_ready_title),
                             subtitle = stringResource(R.string.search_type_to_search)
+                        )
+                    }
+                }
+
+                uiState.isLoading -> {
+                    item {
+                        SearchMessageState(
+                            title = stringResource(R.string.search_loading_title),
+                            subtitle = stringResource(R.string.search_loading_subtitle)
                         )
                     }
                 }

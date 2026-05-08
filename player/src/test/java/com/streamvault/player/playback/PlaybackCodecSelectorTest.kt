@@ -2,6 +2,7 @@ package com.streamvault.player.playback
 
 import androidx.media3.common.util.UnstableApi
 import com.google.common.truth.Truth.assertThat
+import com.streamvault.domain.model.DecoderMode
 import org.junit.Test
 
 @UnstableApi
@@ -31,6 +32,15 @@ class PlaybackCodecSelectorTest {
 
         assertThat(PlaybackCodecSelector.knownBadDecoderNames(records))
             .containsExactly("OMX.bad.decoder")
+    }
+
+    @Test
+    fun `managed codec selector is reserved for explicit decoder modes`() {
+        assertThat(shouldUseManagedCodecSelector(DecoderMode.AUTO, ActiveDecoderPolicy.AUTO)).isFalse()
+        assertThat(shouldUseManagedCodecSelector(DecoderMode.AUTO, ActiveDecoderPolicy.SOFTWARE_PREFERRED)).isFalse()
+        assertThat(shouldUseManagedCodecSelector(DecoderMode.HARDWARE, ActiveDecoderPolicy.HARDWARE_PREFERRED)).isTrue()
+        assertThat(shouldUseManagedCodecSelector(DecoderMode.SOFTWARE, ActiveDecoderPolicy.SOFTWARE_PREFERRED)).isTrue()
+        assertThat(shouldUseManagedCodecSelector(DecoderMode.COMPATIBILITY, ActiveDecoderPolicy.COMPATIBILITY)).isTrue()
     }
 
     private fun compatibilityRecord(

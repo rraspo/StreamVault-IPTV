@@ -41,6 +41,7 @@ internal fun observeSettingsPreferenceSnapshot(
             playerDecoderMode = DecoderMode.AUTO,
             playerSurfaceMode = com.streamvault.domain.model.PlayerSurfaceMode.AUTO,
             playerPlaybackSpeed = 1f,
+            playerAudioVideoSyncEnabled = false,
             playerAudioVideoOffsetMs = 0,
             centerTwoSlotMultiviewLayout = false,
             playerControlsTimeoutSeconds = 5,
@@ -105,6 +106,8 @@ internal fun observeSettingsPreferenceSnapshot(
         snapshot.copy(playerSurfaceMode = surfaceMode)
     }.combine(preferencesRepository.playerPlaybackSpeed) { snapshot, playerPlaybackSpeed ->
         snapshot.copy(playerPlaybackSpeed = playerPlaybackSpeed)
+    }.combine(preferencesRepository.playerAudioVideoSyncEnabled) { snapshot, enabled ->
+        snapshot.copy(playerAudioVideoSyncEnabled = enabled)
     }.combine(preferencesRepository.playerAudioVideoOffsetMs) { snapshot, playerAudioVideoOffsetMs ->
         snapshot.copy(playerAudioVideoOffsetMs = playerAudioVideoOffsetMs)
     }.combine(preferencesRepository.multiViewCenterTwoSlotLayout) { snapshot, centerTwoSlotLayout ->

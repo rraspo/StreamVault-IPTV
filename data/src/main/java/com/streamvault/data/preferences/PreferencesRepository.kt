@@ -119,6 +119,7 @@ class PreferencesRepository @Inject constructor(
         val PLAYER_DECODER_MODE = stringPreferencesKey("player_decoder_mode")
         val PLAYER_SURFACE_MODE = stringPreferencesKey("player_surface_mode")
         val PLAYER_PLAYBACK_SPEED = stringPreferencesKey("player_playback_speed")
+        val PLAYER_AUDIO_VIDEO_SYNC_ENABLED = booleanPreferencesKey("player_av_sync_enabled")
         val PLAYER_AUDIO_VIDEO_OFFSET_MS = intPreferencesKey("player_av_offset_ms")
         val PREFERRED_AUDIO_LANGUAGE = stringPreferencesKey("preferred_audio_language")
         val PLAYER_SUBTITLE_TEXT_SCALE = stringPreferencesKey("player_subtitle_text_scale")
@@ -282,6 +283,10 @@ class PreferencesRepository @Inject constructor(
     val playerAudioVideoOffsetMs: Flow<Int> = context.dataStore.data.map { preferences ->
         (preferences[PreferencesKeys.PLAYER_AUDIO_VIDEO_OFFSET_MS] ?: 0)
             .coerceIn(AUDIO_VIDEO_OFFSET_MIN_MS, AUDIO_VIDEO_OFFSET_MAX_MS)
+    }
+
+    val playerAudioVideoSyncEnabled: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_AUDIO_VIDEO_SYNC_ENABLED] ?: false
     }
 
     val preferredAudioLanguage: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -759,6 +764,12 @@ class PreferencesRepository @Inject constructor(
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYER_AUDIO_VIDEO_OFFSET_MS] =
                 offsetMs.coerceIn(AUDIO_VIDEO_OFFSET_MIN_MS, AUDIO_VIDEO_OFFSET_MAX_MS)
+        }
+    }
+
+    suspend fun setPlayerAudioVideoSyncEnabled(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_AUDIO_VIDEO_SYNC_ENABLED] = enabled
         }
     }
 

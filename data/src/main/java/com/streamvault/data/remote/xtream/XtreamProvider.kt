@@ -1,6 +1,7 @@
 package com.streamvault.data.remote.xtream
 
 import android.util.Log
+import com.streamvault.data.remote.http.HttpRequestProfile
 import com.streamvault.data.remote.dto.*
 import com.streamvault.data.util.AdultContentClassifier
 import com.streamvault.domain.model.*
@@ -36,6 +37,7 @@ class XtreamProvider(
 ) : IptvProvider {
     companion object {
         private const val TAG = "XtreamProvider"
+        private const val STREAM_SUMMARY_BATCH_SIZE = 500
 
         /**
          * Offset-aware formatters for Xtream EPG textual timestamps.
@@ -84,10 +86,12 @@ class XtreamProvider(
     private var liveOutputFormats: List<String> = normalizeAllowedOutputFormats(allowedOutputFormats)
     private val adultCategoryCache = mutableMapOf<ContentType, Set<Long>>()
     private val adultCategoryCacheMutex = Mutex()
+    private val requestProfile = HttpRequestProfile(ownerTag = "provider:$providerId/xtream")
 
     override suspend fun authenticate(): Result<Provider> = try {
         val response = api.authenticate(
-            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password)
+            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password),
+            requestProfile
         )
         serverInfo = response.serverInfo
         liveOutputFormats = normalizeAllowedOutputFormats(response.userInfo.allowedOutputFormats)
@@ -133,7 +137,8 @@ class XtreamProvider(
 
     override suspend fun getLiveCategories(): Result<List<Category>> = try {
         val categories = api.getLiveCategories(
-            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_live_categories")
+            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_live_categories"),
+            requestProfile
         )
         cacheAdultCategoryIds(ContentType.LIVE, categories)
         Result.success(categories.map { it.toDomain(ContentType.LIVE) })
@@ -150,7 +155,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_live_streams",
                 extraQueryParams = mapOf("category_id" to categoryId?.toString())
-            )
+            ),
+            requestProfile
         )
         Result.success(
             streams.mapNotNull { stream ->
@@ -173,7 +179,8 @@ class XtreamProvider(
 
     override suspend fun getVodCategories(): Result<List<Category>> = try {
         val categories = api.getVodCategories(
-            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_vod_categories")
+            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_vod_categories"),
+            requestProfile
         )
         cacheAdultCategoryIds(ContentType.MOVIE, categories)
         Result.success(categories.map { it.toDomain(ContentType.MOVIE) })
@@ -190,7 +197,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_vod_streams",
                 extraQueryParams = mapOf("category_id" to categoryId?.toString())
-            )
+            ),
+            requestProfile
         )
         Result.success(
             streams.mapNotNull { stream ->
@@ -209,6 +217,42 @@ class XtreamProvider(
         Result.error(XtreamErrorFormatter.message("Failed to load VOD", e), e)
     }
 
+    suspend fun streamVodSummaries(
+        categoryId: Long? = null,
+        batchSize: Int = STREAM_SUMMARY_BATCH_SIZE,
+        adultCategoryIds: Set<Long>? = null,
+        onBatch: suspend (List<Movie>) -> Unit
+    ): Result<Int> = try {
+        val resolvedAdultCategoryIds = adultCategoryIds ?: loadAdultCategoryIds(ContentType.MOVIE)
+        val buffer = mutableListOf<Movie>()
+        var acceptedCount = 0
+        api.streamVodStreams(
+            XtreamUrlFactory.buildPlayerApiUrl(
+                serverUrl = serverUrl,
+                username = username,
+                password = password,
+                action = "get_vod_streams",
+                extraQueryParams = mapOf("category_id" to categoryId?.toString())
+            ),
+            requestProfile
+        ) { stream ->
+            mapVodStream(stream, resolvedAdultCategoryIds)?.let { movie ->
+                buffer += movie
+                acceptedCount++
+                if (buffer.size >= batchSize) {
+                    onBatch(buffer.toList())
+                    buffer.clear()
+                }
+            }
+        }
+        if (buffer.isNotEmpty()) {
+            onBatch(buffer.toList())
+        }
+        Result.success(acceptedCount)
+    } catch (e: Exception) {
+        Result.error(XtreamErrorFormatter.message("Failed to stream VOD index", e), e)
+    }
+
     override suspend fun getVodInfo(vodId: Long): Result<Movie> = try {
         val response = api.getVodInfo(
             XtreamUrlFactory.buildPlayerApiUrl(
@@ -217,7 +261,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_vod_info",
                 extraQueryParams = mapOf("vod_id" to vodId.toString())
-            )
+            ),
+            requestProfile
         )
         val movieData = response.movieData
         val info = response.info
@@ -276,7 +321,8 @@ class XtreamProvider(
 
     override suspend fun getSeriesCategories(): Result<List<Category>> = try {
         val categories = api.getSeriesCategories(
-            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_series_categories")
+            XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_series_categories"),
+            requestProfile
         )
         cacheAdultCategoryIds(ContentType.SERIES, categories)
         Result.success(categories.map { it.toDomain(ContentType.SERIES) })
@@ -293,7 +339,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_series",
                 extraQueryParams = mapOf("category_id" to categoryId?.toString())
-            )
+            ),
+            requestProfile
         )
         Result.success(
             items.mapNotNull { item ->
@@ -310,6 +357,42 @@ class XtreamProvider(
         )
     } catch (e: Exception) {
         Result.error(XtreamErrorFormatter.message("Failed to load series", e), e)
+    }
+
+    suspend fun streamSeriesSummaries(
+        categoryId: Long? = null,
+        batchSize: Int = STREAM_SUMMARY_BATCH_SIZE,
+        adultCategoryIds: Set<Long>? = null,
+        onBatch: suspend (List<Series>) -> Unit
+    ): Result<Int> = try {
+        val resolvedAdultCategoryIds = adultCategoryIds ?: loadAdultCategoryIds(ContentType.SERIES)
+        val buffer = mutableListOf<Series>()
+        var acceptedCount = 0
+        api.streamSeriesList(
+            XtreamUrlFactory.buildPlayerApiUrl(
+                serverUrl = serverUrl,
+                username = username,
+                password = password,
+                action = "get_series",
+                extraQueryParams = mapOf("category_id" to categoryId?.toString())
+            ),
+            requestProfile
+        ) { item ->
+            mapSeriesItem(item, resolvedAdultCategoryIds)?.let { series ->
+                buffer += series
+                acceptedCount++
+                if (buffer.size >= batchSize) {
+                    onBatch(buffer.toList())
+                    buffer.clear()
+                }
+            }
+        }
+        if (buffer.isNotEmpty()) {
+            onBatch(buffer.toList())
+        }
+        Result.success(acceptedCount)
+    } catch (e: Exception) {
+        Result.error(XtreamErrorFormatter.message("Failed to stream series index", e), e)
     }
 
     override suspend fun getSeriesInfo(seriesId: Long): Result<Series> = try {
@@ -404,7 +487,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_simple_data_table",
                 extraQueryParams = mapOf("stream_id" to streamId.toString())
-            )
+            ),
+            requestProfile
         )
         Result.success(response.epgListings.mapNotNull { it.toDomainOrNull() })
     } catch (e: Exception) {
@@ -423,7 +507,8 @@ class XtreamProvider(
                     "stream_id" to streamId.toString(),
                     "limit" to limit.toString()
                 )
-            )
+            ),
+            requestProfile
         )
         Result.success(response.epgListings.mapNotNull { it.toDomainOrNull() })
     } catch (e: Exception) {
@@ -554,13 +639,16 @@ class XtreamProvider(
             val categories = runCatching {
                 when (type) {
                     ContentType.LIVE -> api.getLiveCategories(
-                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_live_categories")
+                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_live_categories"),
+                        requestProfile
                     )
                     ContentType.MOVIE -> api.getVodCategories(
-                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_vod_categories")
+                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_vod_categories"),
+                        requestProfile
                     )
                     ContentType.SERIES -> api.getSeriesCategories(
-                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_series_categories")
+                        XtreamUrlFactory.buildPlayerApiUrl(serverUrl, username, password, action = "get_series_categories"),
+                        requestProfile
                     )
                     ContentType.SERIES_EPISODE -> emptyList()
                 }
@@ -877,7 +965,8 @@ class XtreamProvider(
                 password = password,
                 action = "get_series_info",
                 extraQueryParams = mapOf(queryParamName to seriesId.toString())
-            )
+            ),
+            requestProfile
         )
     }
 

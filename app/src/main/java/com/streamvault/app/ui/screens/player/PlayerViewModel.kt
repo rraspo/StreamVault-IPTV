@@ -558,8 +558,9 @@ class PlayerViewModel @Inject constructor(
                 preferencesRepository.playerAudioVideoOffsetMs,
                 channelOffsetFlow,
                 audioVideoOffsetPreviewMs,
+                activePlayerEngineFlow.flatMapLatest { it.audioVideoSyncEnabled },
                 activePlayerEngineFlow
-            ) { globalOffset, channelOffset, previewOffset, engine ->
+            ) { globalOffset, channelOffset, previewOffset, enabled, engine ->
                 val effectiveOffset = (previewOffset ?: channelOffset ?: globalOffset)
                     .coerceIn(AUDIO_VIDEO_OFFSET_MIN_MS, AUDIO_VIDEO_OFFSET_MAX_MS)
                 AudioVideoOffsetSnapshot(
@@ -567,7 +568,8 @@ class PlayerViewModel @Inject constructor(
                     channelOverrideMs = channelOffset,
                     previewOffsetMs = previewOffset,
                     effectiveOffsetMs = effectiveOffset,
-                    engine = engine
+                    engine = engine,
+                    enabled = enabled
                 )
             }.collect { snapshot ->
                 _audioVideoOffsetUiState.value = PlayerAudioVideoOffsetUiState(
@@ -848,6 +850,7 @@ class PlayerViewModel @Inject constructor(
     val isMuted: StateFlow<Boolean> = activeEngineState(false) { it.isMuted }
     val mediaTitle: StateFlow<String?> = activeEngineState<String?>(null) { it.mediaTitle }
     val playbackSpeed: StateFlow<Float> = activeEngineState(1f) { it.playbackSpeed }
+    val audioVideoSyncEnabled: StateFlow<Boolean> = activeEngineState(false) { it.audioVideoSyncEnabled }
 
     val preventStandbyDuringPlayback: StateFlow<Boolean> by lazy(LazyThreadSafetyMode.NONE) {
         preferencesRepository.preventStandbyDuringPlayback

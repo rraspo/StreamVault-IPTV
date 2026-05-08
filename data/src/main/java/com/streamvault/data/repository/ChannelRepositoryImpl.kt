@@ -34,10 +34,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
@@ -364,13 +364,15 @@ class ChannelRepositoryImpl @Inject constructor(
             } else if (categoryId == ChannelRepository.ALL_CHANNELS_ID) {
                 safeSearchFlow(
                     source = channelDao.search(providerId, ftsQuery, limit),
-                    fallback = channelDao.searchFallback(providerId, query.trim().toSqlLikePattern(), limit),
+                    fallback = { channelDao.searchFallback(providerId, query.trim().toSqlLikePattern(), limit) },
                     rawQuery = query.trim()
                 )
             } else {
                 safeSearchFlow(
                     source = channelDao.searchByCategory(providerId, categoryId, ftsQuery, limit),
-                    fallback = channelDao.searchByCategoryFallback(providerId, categoryId, query.trim().toSqlLikePattern(), limit),
+                    fallback = {
+                        channelDao.searchByCategoryFallback(providerId, categoryId, query.trim().toSqlLikePattern(), limit)
+                    },
                     rawQuery = query.trim()
                 )
             }
@@ -689,17 +691,22 @@ class ChannelRepositoryImpl @Inject constructor(
 
     private fun safeSearchFlow(
         source: Flow<List<ChannelBrowseEntity>>,
-        fallback: Flow<List<ChannelBrowseEntity>>,
+        fallback: () -> Flow<List<ChannelBrowseEntity>>,
         rawQuery: String
-    ): Flow<List<ChannelBrowseEntity>> =
-        source.catch { error ->
-            if (error is SQLiteException) {
-                Log.w(TAG, "FTS channel search failed for query '$rawQuery'; falling back to LIKE search", error)
-                emitAll(fallback)
-            } else {
-                throw error
+    ): Flow<List<ChannelBrowseEntity>> = flow {
+        try {
+            source.collect { ftsRows ->
+                if (ftsRows.isEmpty()) {
+                    emitAll(fallback())
+                } else {
+                    emit(ftsRows)
+                }
             }
+        } catch (error: SQLiteException) {
+            Log.w(TAG, "FTS channel search failed for query '$rawQuery'; using LIKE-only search", error)
+            emitAll(fallback())
         }
+    }
 
     private fun String.toSqlLikePattern(): String {
         val escaped = buildString(length) {

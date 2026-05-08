@@ -75,7 +75,7 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             insertStageRows(limitedChannels, catalogSyncDao::insertChannelStages)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "LIVE") }
+                categories?.let { applyCategories(providerId, sessionId, "LIVE", pruneStale = !overflowed) }
                 if (overflowed) {
                     upsertChannels(providerId, sessionId)
                 } else {
@@ -96,7 +96,7 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             val stagingResult = stageMovieSequence(providerId, sessionId, movies)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "MOVIE") }
+                categories?.let { applyCategories(providerId, sessionId, "MOVIE", pruneStale = !stagingResult.overflowed) }
                 if (stagingResult.overflowed) {
                     upsertMovies(providerId, sessionId)
                 } else {
@@ -118,7 +118,7 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             val stagingResult = stageSeriesSequence(providerId, sessionId, series)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "SERIES") }
+                categories?.let { applyCategories(providerId, sessionId, "SERIES", pruneStale = !stagingResult.overflowed) }
                 if (stagingResult.overflowed) {
                     upsertSeries(providerId, sessionId)
                 } else {
@@ -183,7 +183,7 @@ internal class SyncCatalogStore(
         try {
             transactionRunner.inTransaction {
                 categories?.let { stageCategories(providerId, sessionId, it) }
-                categories?.let { applyCategories(providerId, sessionId, "LIVE") }
+                categories?.let { applyCategories(providerId, sessionId, "LIVE", pruneStale = false) }
                 upsertChannels(providerId, sessionId)
                 catalogSyncDao.rebuildChannelFts()
             }
@@ -200,7 +200,7 @@ internal class SyncCatalogStore(
         try {
             transactionRunner.inTransaction {
                 categories?.let { stageCategories(providerId, sessionId, it) }
-                categories?.let { applyCategories(providerId, sessionId, "MOVIE") }
+                categories?.let { applyCategories(providerId, sessionId, "MOVIE", pruneStale = false) }
                 upsertMovies(providerId, sessionId)
                 catalogSyncDao.rebuildMovieFts()
             }
@@ -218,7 +218,7 @@ internal class SyncCatalogStore(
         try {
             transactionRunner.inTransaction {
                 categories?.let { stageCategories(providerId, sessionId, it) }
-                categories?.let { applyCategories(providerId, sessionId, "SERIES") }
+                categories?.let { applyCategories(providerId, sessionId, "SERIES", pruneStale = false) }
                 upsertSeries(providerId, sessionId)
                 catalogSyncDao.rebuildSeriesFts()
             }
@@ -239,7 +239,7 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             insertStageRows(stagedChannels, catalogSyncDao::insertChannelStages)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "LIVE") }
+                categories?.let { applyCategories(providerId, sessionId, "LIVE", pruneStale = false) }
                 upsertChannels(providerId, sessionId)
                 catalogSyncDao.rebuildChannelFts()
             }
@@ -260,7 +260,7 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             val stagingResult = stageMovieSequence(providerId, sessionId, movies)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "MOVIE") }
+                categories?.let { applyCategories(providerId, sessionId, "MOVIE", pruneStale = false) }
                 upsertMovies(providerId, sessionId)
                 catalogSyncDao.rebuildMovieFts()
             }
@@ -282,11 +282,24 @@ internal class SyncCatalogStore(
             categories?.let { stageCategories(providerId, sessionId, it) }
             val stagingResult = stageSeriesSequence(providerId, sessionId, series)
             transactionRunner.inTransaction {
-                categories?.let { applyCategories(providerId, sessionId, "SERIES") }
+                categories?.let { applyCategories(providerId, sessionId, "SERIES", pruneStale = false) }
                 upsertSeries(providerId, sessionId)
                 catalogSyncDao.rebuildSeriesFts()
             }
             return stagingResult.acceptedCount
+        } finally {
+            clearSession(providerId, sessionId)
+        }
+    }
+
+    suspend fun upsertCategories(providerId: Long, type: String, categories: List<CategoryEntity>) {
+        val sessionId = newSessionId()
+        try {
+            clearProviderStaging(providerId)
+            stageCategories(providerId, sessionId, categories)
+            transactionRunner.inTransaction {
+                applyCategories(providerId, sessionId, type, pruneStale = false)
+            }
         } finally {
             clearSession(providerId, sessionId)
         }
@@ -373,7 +386,12 @@ internal class SyncCatalogStore(
         catalogSyncDao.clearProviderCategoryStages(providerId)
     }
 
-    private suspend fun applyCategories(providerId: Long, sessionId: Long, type: String) {
+    private suspend fun applyCategories(
+        providerId: Long,
+        sessionId: Long,
+        type: String,
+        pruneStale: Boolean = true
+    ) {
         val stagedByCategoryId = catalogSyncDao.getCategoryStages(providerId, sessionId, type)
             .associateBy { it.categoryId }
         val changed = categoryDao.getByProviderAndTypeSync(providerId, type)
@@ -396,7 +414,9 @@ internal class SyncCatalogStore(
             categoryDao.updateAll(changed)
         }
         catalogSyncDao.insertMissingCategoriesFromStage(providerId, sessionId, type)
-        catalogSyncDao.deleteStaleCategoriesForStage(providerId, sessionId, type)
+        if (pruneStale) {
+            catalogSyncDao.deleteStaleCategoriesForStage(providerId, sessionId, type)
+        }
     }
 
     private suspend fun applyChannels(providerId: Long, sessionId: Long) {

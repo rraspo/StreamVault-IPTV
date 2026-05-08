@@ -754,6 +754,12 @@ fun DiagnosticsOverlay(
             }
             PlayerOverlaySectionLabel(stringResource(R.string.player_diagnostics_section_audio))
             PlayerMetaRow(stringResource(R.string.player_diagnostics_audio_codec), stats.audioCodec)
+            val avSyncPathLabel = when {
+                !diagnostics.audioVideoSyncEnabled -> stringResource(R.string.player_diagnostics_av_sync_stock)
+                diagnostics.audioVideoSyncSinkActive -> stringResource(R.string.player_diagnostics_av_sync_custom)
+                else -> stringResource(R.string.player_diagnostics_av_sync_waiting)
+            }
+            PlayerMetaRow(stringResource(R.string.player_diagnostics_av_sync), avSyncPathLabel)
             PlayerMetaRow(stringResource(R.string.player_diagnostics_av_offset), formatOffsetLabel(diagnostics.audioVideoOffsetMs))
             PlayerOverlaySectionLabel(stringResource(R.string.player_diagnostics_section_recovery))
             diagnostics.lastFailureReason?.let { reason ->

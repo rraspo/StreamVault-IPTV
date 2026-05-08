@@ -12,6 +12,7 @@ import com.streamvault.data.remote.xtream.XtreamProvider
 import com.streamvault.data.remote.xtream.XtreamStreamUrlResolver
 import com.streamvault.data.security.CredentialCrypto
 import com.streamvault.data.sync.ContentCachePolicy
+import com.streamvault.data.sync.SyncManager
 import com.streamvault.domain.model.*
 import com.streamvault.domain.model.Result.Success
 import com.streamvault.domain.repository.PlaybackHistoryRepository
@@ -20,7 +21,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
@@ -30,13 +30,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import com.streamvault.data.util.toFtsPrefixQuery
 import com.streamvault.data.util.rankSearchResults
-import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import com.streamvault.data.preferences.PreferencesRepository
@@ -59,6 +57,8 @@ class SeriesRepositoryImpl @Inject constructor(
     private val credentialCrypto: CredentialCrypto,
     private val preferencesRepository: PreferencesRepository,
     private val xtreamStreamUrlResolver: XtreamStreamUrlResolver,
+    private val xtreamContentIndexDao: XtreamContentIndexDao,
+    private val syncManager: SyncManager,
     private val seriesCategoryHydrationDao: SeriesCategoryHydrationDao
 ) : SeriesRepository {
     private companion object {
@@ -67,12 +67,14 @@ class SeriesRepositoryImpl @Inject constructor(
         const val SEARCH_OVERSAMPLE_LIMIT = 500
         const val MIN_SEARCH_QUERY_LENGTH = 2
         const val BROWSE_WINDOW_BUFFER = 80
-        const val XTREAM_SERIES_CATEGORY_TIMEOUT_MILLIS = 60_000L
         const val XTREAM_CATEGORY_HYDRATION_CONCURRENCY = 1
         const val XTREAM_EMPTY_CATEGORY_RETRY_COOLDOWN_MILLIS = 30_000L
         const val CURSOR_BATCH_SIZE = 40
         const val STALKER_PREVIEW_REQUIRED_COUNT_THRESHOLD = 24
         const val STALKER_PREVIEW_MAX_REMOTE_PAGES = 2
+        const val DETAIL_REFRESH_TTL_MILLIS = 14L * 24L * 60L * 60L * 1000L
+        const val CACHE_STATE_SUMMARY_ONLY = "SUMMARY_ONLY"
+        const val CACHE_STATE_DETAIL_HYDRATED = "DETAIL_HYDRATED"
     }
 
     private data class CachedXtreamProvider(
@@ -277,9 +279,12 @@ class SeriesRepositoryImpl @Inject constructor(
 
     override fun browseSeries(query: LibraryBrowseQuery): Flow<PagedResult<Series>> {
         return flow {
-            query.categoryId?.let { ensureXtreamCategoryLoaded(query.providerId, it, browseFetchLimit(query)) }
+            val normalizedSearch = query.searchQuery.trim()
+            query.categoryId
+                ?.takeIf { normalizedSearch.length < MIN_SEARCH_QUERY_LENGTH }
+                ?.let { ensureXtreamCategoryLoaded(query.providerId, it, browseFetchLimit(query)) }
             emit(fetchSeriesBrowseResult(query))
-        }
+        }.flowOn(Dispatchers.IO)
     }
 
     override fun searchSeries(providerId: Long, query: String): Flow<List<Series>> =
@@ -288,8 +293,10 @@ class SeriesRepositoryImpl @Inject constructor(
             flowOf(emptyList())
             } else combine(
                 safeSeriesSearchFlow(
-                    source = seriesDao.search(providerId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
-                    fallback = seriesDao.searchFallback(providerId, query.trim().toSqlLikePattern(), SEARCH_OVERSAMPLE_LIMIT),
+                    source = seriesDao.search(providerId, ftsQuery, SEARCH_RESULT_LIMIT),
+                    fallback = {
+                        seriesDao.searchFallback(providerId, query.trim().toSqlLikePattern(), SEARCH_RESULT_LIMIT)
+                    },
                     rawQuery = query.trim()
                 ),
                 preferencesRepository.parentalControlLevel
@@ -326,6 +333,10 @@ class SeriesRepositoryImpl @Inject constructor(
             return Result.success(buildSeriesWithPersistedEpisodes(seriesEntity))
         }
 
+        if (provider.type == ProviderType.XTREAM_CODES && seriesEntity.hasFreshXtreamDetails()) {
+            return Result.success(buildSeriesWithPersistedEpisodes(seriesEntity))
+        }
+
         val remoteResult = try {
             when (provider.type) {
                 ProviderType.XTREAM_CODES -> getOrCreateXtreamProvider(providerId, provider).getSeriesInfo(seriesEntity.seriesId)
@@ -335,6 +346,15 @@ class SeriesRepositoryImpl @Inject constructor(
                 ProviderType.M3U -> return Result.success(buildSeriesWithPersistedEpisodes(seriesEntity))
             }
         } catch (e: Exception) {
+            if (provider.type == ProviderType.XTREAM_CODES) {
+                xtreamContentIndexDao.markDetailHydrationError(
+                    providerId = providerId,
+                    contentType = ContentType.SERIES.name,
+                    remoteId = seriesEntity.providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesEntity.seriesId.toString(),
+                    errorState = "DETAIL_FAILED_RETRYABLE"
+                )
+                return Result.success(buildSeriesWithPersistedEpisodes(seriesEntity))
+            }
             return Result.error(e.message ?: "Failed to access provider credentials", e)
         }
 
@@ -358,9 +378,21 @@ class SeriesRepositoryImpl @Inject constructor(
                     youtubeTrailer = remoteSeries.youtubeTrailer ?: seriesEntity.youtubeTrailer,
                     episodeRunTime = remoteSeries.episodeRunTime ?: seriesEntity.episodeRunTime,
                     lastModified = if (remoteSeries.lastModified > 0) remoteSeries.lastModified else seriesEntity.lastModified,
-                    providerSeriesId = remoteSeries.providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesEntity.providerSeriesId
+                    providerSeriesId = remoteSeries.providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesEntity.providerSeriesId,
+                    cacheState = CACHE_STATE_DETAIL_HYDRATED,
+                    detailHydratedAt = System.currentTimeMillis()
                 )
                 seriesDao.update(updatedSeries)
+                if (provider.type == ProviderType.XTREAM_CODES) {
+                    xtreamContentIndexDao.markDetailHydrated(
+                        providerId = providerId,
+                        contentType = ContentType.SERIES.name,
+                        remoteId = seriesEntity.providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesEntity.seriesId.toString(),
+                        localContentId = seriesEntity.id,
+                        imageUrl = updatedSeries.posterUrl,
+                        detailHydratedAt = updatedSeries.detailHydratedAt
+                    )
+                }
 
                 val episodesToPersist = remoteSeries.seasons
                     .flatMap { season ->
@@ -436,6 +468,14 @@ class SeriesRepositoryImpl @Inject constructor(
                 )
             }
             is Result.Error -> {
+                if (provider.type == ProviderType.XTREAM_CODES) {
+                    xtreamContentIndexDao.markDetailHydrationError(
+                        providerId = providerId,
+                        contentType = ContentType.SERIES.name,
+                        remoteId = seriesEntity.providerSeriesId?.takeIf { it.isNotBlank() } ?: seriesEntity.seriesId.toString(),
+                        errorState = "DETAIL_FAILED_RETRYABLE"
+                    )
+                }
                 val localSeries = buildSeriesWithPersistedEpisodes(seriesEntity)
                 Result.success(localSeries)
             }
@@ -497,12 +537,14 @@ class SeriesRepositoryImpl @Inject constructor(
                     combine(
                         safeSeriesSearchFlow(
                             source = seriesDao.searchByCategory(query.providerId, categoryId, ftsQuery, SEARCH_OVERSAMPLE_LIMIT),
-                            fallback = seriesDao.searchByCategoryFallback(
-                                query.providerId,
-                                categoryId,
-                                normalizedSearch.toSqlLikePattern(),
-                                SEARCH_OVERSAMPLE_LIMIT
-                            ),
+                            fallback = {
+                                seriesDao.searchByCategoryFallback(
+                                    query.providerId,
+                                    categoryId,
+                                    normalizedSearch.toSqlLikePattern(),
+                                    SEARCH_OVERSAMPLE_LIMIT
+                                )
+                            },
                             rawQuery = normalizedSearch
                         ),
                         preferencesRepository.parentalControlLevel
@@ -735,6 +777,61 @@ class SeriesRepositoryImpl @Inject constructor(
         (query.offset + query.limit + BROWSE_WINDOW_BUFFER).coerceAtMost(SEARCH_RESULT_LIMIT)
 
     private suspend fun fetchSeriesBrowseResult(query: LibraryBrowseQuery): PagedResult<Series> {
+        val normalizedSearch = query.searchQuery.trim()
+        if (normalizedSearch.length >= MIN_SEARCH_QUERY_LENGTH && supportsFastSeriesSearchBrowse(query)) {
+            return fetchFastSeriesSearchBrowseResult(query, normalizedSearch)
+        }
+
+        if (normalizedSearch.length >= MIN_SEARCH_QUERY_LENGTH) {
+            val searchResults = seriesBrowseSource(query).first()
+            val favoriteIds = favoriteDao.getAllByType(query.providerId, ContentType.SERIES.name)
+                .first()
+                .asSequence()
+                .filter { it.groupId == null }
+                .map { it.contentId }
+                .toSet()
+            val history = playbackHistoryDao.getByProvider(query.providerId).first()
+            val inProgressIds = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES || it.contentType == ContentType.SERIES_EPISODE }
+                .filter {
+                    it.resumePositionMs > 0L && (
+                        it.totalDurationMs <= 0L ||
+                            it.resumePositionMs < (it.totalDurationMs * 0.95f).toLong()
+                        )
+                }
+                .mapNotNull { it.seriesId ?: it.contentId }
+                .toSet()
+            val completedSeriesIds = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES_EPISODE }
+                .filter { it.totalDurationMs > 0L && it.resumePositionMs >= (it.totalDurationMs * 0.95f).toLong() }
+                .mapNotNull { it.seriesId }
+                .toSet()
+            val watchCounts = history
+                .asSequence()
+                .filter { it.contentType == ContentType.SERIES || it.contentType == ContentType.SERIES_EPISODE }
+                .groupBy { it.seriesId ?: it.contentId }
+                .mapValues { (_, entries) -> entries.maxOf { it.watchCount } }
+            val filteredResults = applySeriesBrowseQuery(
+                series = searchResults,
+                query = query,
+                favoriteIds = favoriteIds,
+                inProgressIds = inProgressIds,
+                completedSeriesIds = completedSeriesIds,
+                watchCounts = watchCounts
+            )
+            val items = filteredResults.drop(query.offset).take(query.limit)
+
+            return PagedResult(
+                items = items,
+                totalCount = filteredResults.size,
+                offset = query.offset,
+                limit = query.limit,
+                hasMoreRemote = false
+            )
+        }
+
         val totalCount = seriesBrowseTotalCount(query).first()
         val favoriteIds = favoriteDao.getAllByType(query.providerId, ContentType.SERIES.name)
             .first()
@@ -796,6 +893,59 @@ class SeriesRepositoryImpl @Inject constructor(
             offset = query.offset,
             limit = query.limit,
             hasMoreRemote = hasMoreRemote
+        )
+    }
+
+    private suspend fun fetchFastSeriesSearchBrowseResult(
+        query: LibraryBrowseQuery,
+        normalizedSearch: String
+    ): PagedResult<Series> {
+        val ftsQuery = normalizedSearch.toFtsPrefixQuery() ?: return PagedResult(
+            items = emptyList(),
+            totalCount = 0,
+            offset = query.offset,
+            limit = query.limit
+        )
+        val includeProtected = if (preferencesRepository.parentalControlLevel.first() >= 3) 0 else 1
+        val pageLimit = query.limit + 1
+        val rows = query.categoryId?.let { categoryId ->
+            seriesDao.searchByCategoryPage(
+                providerId = query.providerId,
+                categoryId = categoryId,
+                query = ftsQuery,
+                rawQuery = normalizedSearch,
+                prefixLike = normalizedSearch.toSqlPrefixLikePattern(),
+                includeProtected = includeProtected,
+                limit = pageLimit,
+                offset = query.offset
+            )
+        } ?: seriesDao.searchPage(
+            providerId = query.providerId,
+            query = ftsQuery,
+            rawQuery = normalizedSearch,
+            prefixLike = normalizedSearch.toSqlPrefixLikePattern(),
+            includeProtected = includeProtected,
+            limit = pageLimit,
+            offset = query.offset
+        )
+        val hasMore = rows.size > query.limit
+        val favoriteIds = favoriteDao.getAllByType(query.providerId, ContentType.SERIES.name)
+            .first()
+            .asSequence()
+            .filter { it.groupId == null }
+            .map { it.contentId }
+            .toSet()
+        val items = rows
+            .take(query.limit)
+            .map { it.toDomain() }
+            .map { series -> if (series.id in favoriteIds) series.copy(isFavorite = true) else series }
+
+        return PagedResult(
+            items = items,
+            totalCount = query.offset + items.size + if (hasMore) 1 else 0,
+            offset = query.offset,
+            limit = query.limit,
+            hasMoreRemote = hasMore
         )
     }
 
@@ -944,6 +1094,10 @@ class SeriesRepositoryImpl @Inject constructor(
         }
     }
 
+    private fun supportsFastSeriesSearchBrowse(query: LibraryBrowseQuery): Boolean =
+        query.filterBy.type == LibraryFilterType.ALL &&
+            query.sortBy in setOf(LibrarySortBy.LIBRARY, LibrarySortBy.TITLE)
+
     private fun seriesMatchesFilter(
         series: Series,
         filterType: LibraryFilterType,
@@ -968,17 +1122,22 @@ class SeriesRepositoryImpl @Inject constructor(
 
     private fun safeSeriesSearchFlow(
         source: Flow<List<SeriesBrowseEntity>>,
-        fallback: Flow<List<SeriesBrowseEntity>>,
+        fallback: () -> Flow<List<SeriesBrowseEntity>>,
         rawQuery: String
-    ): Flow<List<SeriesBrowseEntity>> =
-        source.catch { error ->
-            if (error is SQLiteException) {
-                Log.w(TAG, "FTS series search failed for query '$rawQuery'; falling back to LIKE search", error)
-                emitAll(fallback)
-            } else {
-                throw error
+    ): Flow<List<SeriesBrowseEntity>> = flow {
+        try {
+            source.collect { ftsRows ->
+                if (ftsRows.isEmpty()) {
+                    emit(emptyList())
+                } else {
+                    emit(ftsRows)
+                }
             }
+        } catch (error: SQLiteException) {
+            Log.w(TAG, "FTS series search failed for queryLength=${rawQuery.length}; using LIKE-only search", error)
+            emitAll(fallback())
         }
+    }
 
     private fun String.toSqlLikePattern(): String {
         val escaped = buildString(length) {
@@ -990,6 +1149,18 @@ class SeriesRepositoryImpl @Inject constructor(
             }
         }
         return "%$escaped%"
+    }
+
+    private fun String.toSqlPrefixLikePattern(): String {
+        val escaped = buildString(length) {
+            this@toSqlPrefixLikePattern.forEach { char ->
+                when (char) {
+                    '%', '_', '\\' -> append('\\')
+                }
+                append(char)
+            }
+        }
+        return "$escaped%"
     }
 
     private suspend fun ensureXtreamCategoryLoaded(
@@ -1005,6 +1176,14 @@ class SeriesRepositoryImpl @Inject constructor(
 
         val localCount = seriesDao.getCountByCategory(providerId, categoryId).first()
         val hydration = seriesCategoryHydrationDao.get(providerId, categoryId)
+        if (provider.type == ProviderType.XTREAM_CODES) {
+            if (localCount > 0) {
+                loadedXtreamCategories.add(key)
+            } else {
+                syncManager.prioritizeXtreamIndexCategory(providerId, ContentType.SERIES, categoryId)
+            }
+            return
+        }
         if (provider.type == ProviderType.STALKER_PORTAL) {
             hydrateStalkerSeriesCategoryToCount(
                 providerId = providerId,
@@ -1017,27 +1196,6 @@ class SeriesRepositoryImpl @Inject constructor(
             )
             return
         }
-        val isFresh = hydration?.isFresh() == true && (localCount > 0 || hydration.itemCount == 0)
-
-        if (isFresh) {
-            loadedXtreamCategories.add(key)
-            return
-        }
-
-        // Stale but has cached data — show immediately, refresh in background
-        if (localCount > 0 && refreshStaleInBackground) {
-            loadedXtreamCategories.add(key)
-            triggerSeriesCategoryHydration(providerId, categoryId, provider, requiredCount)
-            return
-        }
-
-        if (localCount > 0) {
-            loadedXtreamCategories.add(key)
-            return
-        }
-
-        // No data — fetch inline so the user sees something right away
-        hydrateSeriesCategory(providerId, categoryId, provider)
     }
 
     private fun triggerSeriesCategoryHydration(
@@ -1051,6 +1209,9 @@ class SeriesRepositoryImpl @Inject constructor(
         if (!backgroundRefreshes.add(key)) return
         repositoryScope.launch {
             try {
+                if (provider.type == ProviderType.XTREAM_CODES) {
+                    return@launch
+                }
                 val localCount = seriesDao.getCountByCategory(providerId, categoryId).first()
                 val hydration = seriesCategoryHydrationDao.get(providerId, categoryId)
                 if (localCount == 0 && hydration?.isEmptyRetryCoolingDown() == true) return@launch
@@ -1064,96 +1225,9 @@ class SeriesRepositoryImpl @Inject constructor(
                         hydration = hydration,
                         allowWildcard = allowStalkerWildcard
                     )
-                } else {
-                    hydrateSeriesCategory(providerId, categoryId, provider)
                 }
             } finally {
                 backgroundRefreshes.remove(key)
-            }
-        }
-    }
-
-    private suspend fun hydrateSeriesCategory(
-        providerId: Long,
-        categoryId: Long,
-        provider: ProviderEntity
-    ) {
-        val key = "$providerId:$categoryId"
-        val lock = xtreamCategoryLoadLocks.getOrPut(key) { Mutex() }
-        lock.withLock {
-            val localCount = seriesDao.getCountByCategory(providerId, categoryId).first()
-            val hydration = seriesCategoryHydrationDao.get(providerId, categoryId)
-            if (hydration?.isFresh() == true && (localCount > 0 || hydration.itemCount == 0)) {
-                loadedXtreamCategories.add(key)
-                return
-            }
-
-            runCatching {
-                val result = withXtreamSeriesCategoryTimeout(categoryId) {
-                    if (provider.type == ProviderType.XTREAM_CODES) {
-                        getOrCreateXtreamProvider(providerId, provider).getSeriesList(categoryId)
-                    } else {
-                        return@withXtreamSeriesCategoryTimeout Success(emptyList())
-                    }
-                }
-                when (result) {
-                    is Success -> {
-                        val entities = result.data.map { item -> item.toEntity() }
-                        val lazyXtreamHydration = shouldUsePersistedCategoryHydration(provider)
-                        if (lazyXtreamHydration && entities.isEmpty()) {
-                            seriesCategoryHydrationDao.upsert(
-                                SeriesCategoryHydrationEntity(
-                                    providerId = providerId,
-                                    categoryId = categoryId,
-                                    lastHydratedAt = System.currentTimeMillis(),
-                                    itemCount = localCount,
-                                    lastStatus = "EMPTY_RETRY",
-                                    lastError = "Xtream category returned an empty result; retry pending.",
-                                    lastLoadedPage = 0,
-                                    totalPages = 0,
-                                    isComplete = false,
-                                    pageSize = 0
-                                )
-                            )
-                            loadedXtreamCategories.remove(key)
-                        } else {
-                            seriesDao.replaceCategory(providerId, categoryId, entities)
-                            episodeDao.deleteOrphans()
-                            seriesCategoryHydrationDao.upsert(
-                                SeriesCategoryHydrationEntity(
-                                    providerId = providerId,
-                                    categoryId = categoryId,
-                                    lastHydratedAt = System.currentTimeMillis(),
-                                    itemCount = entities.size,
-                                    lastStatus = "SUCCESS",
-                                    lastError = null,
-                                    lastLoadedPage = 1,
-                                    totalPages = 1,
-                                    isComplete = true,
-                                    pageSize = entities.size
-                                )
-                            )
-                            loadedXtreamCategories.add(key)
-                        }
-                    }
-                    else -> Unit
-                }
-            }.onFailure { error ->
-                val currentCount = seriesDao.getCountByCategory(providerId, categoryId).first()
-                seriesCategoryHydrationDao.upsert(
-                    SeriesCategoryHydrationEntity(
-                        providerId = providerId,
-                        categoryId = categoryId,
-                        lastHydratedAt = hydration?.lastHydratedAt ?: 0L,
-                        itemCount = currentCount,
-                        lastStatus = "ERROR",
-                        lastError = error.message,
-                        lastLoadedPage = hydration?.lastLoadedPage ?: 0,
-                        totalPages = hydration?.totalPages ?: 0,
-                        isComplete = hydration?.isComplete ?: false,
-                        pageSize = hydration?.pageSize ?: 0
-                    )
-                )
             }
         }
     }
@@ -1244,21 +1318,12 @@ class SeriesRepositoryImpl @Inject constructor(
         return !ContentCachePolicy.shouldRefresh(lastHydratedAt, XTREAM_EMPTY_CATEGORY_RETRY_COOLDOWN_MILLIS, now)
     }
 
-    private fun shouldUsePersistedCategoryHydration(provider: ProviderEntity): Boolean {
-        return provider.type == ProviderType.XTREAM_CODES && provider.xtreamFastSyncEnabled
-    }
-
-    private suspend fun <T> withXtreamSeriesCategoryTimeout(
-        categoryId: Long,
-        block: suspend () -> T
-    ): T {
-        return try {
-            withTimeout(XTREAM_SERIES_CATEGORY_TIMEOUT_MILLIS) {
-                block()
-            }
-        } catch (e: TimeoutCancellationException) {
-            throw IOException("Timed out after 60 seconds while loading series category $categoryId", e)
-        }
+    private fun SeriesEntity.hasFreshXtreamDetails(now: Long = System.currentTimeMillis()): Boolean {
+        if (cacheState == CACHE_STATE_SUMMARY_ONLY) return false
+        if (detailHydratedAt <= 0L) return false
+        if (remoteStaleAt > 0L) return false
+        if (ContentCachePolicy.shouldRefresh(detailHydratedAt, DETAIL_REFRESH_TTL_MILLIS, now)) return false
+        return true
     }
 
     private fun seriesFreshnessScore(series: Series): Long =

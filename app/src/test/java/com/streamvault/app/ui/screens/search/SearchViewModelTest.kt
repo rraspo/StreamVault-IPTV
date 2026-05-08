@@ -17,10 +17,13 @@ import com.streamvault.domain.usecase.SearchContent
 import com.streamvault.domain.usecase.SearchContentResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.launch
@@ -130,6 +133,52 @@ class SearchViewModelTest {
         assertThat(viewModel.uiState.value.hasActiveProvider).isTrue()
         assertThat(viewModel.uiState.value.queryLength).isEqualTo(1)
         assertThat(viewModel.uiState.value.hasSearched).isFalse()
+        collectorJob.cancel()
+    }
+
+    @Test
+    fun `ui state reports loading while search results are pending`() = runTest {
+        whenever(providerRepository.getActiveProvider()).thenReturn(
+            flowOf(
+                Provider(
+                    id = 5L,
+                    name = "Provider",
+                    type = ProviderType.M3U,
+                    serverUrl = "http://test"
+                )
+            )
+        )
+        whenever(searchContent.invoke(any(), any(), any(), any())).thenReturn(
+            flow {
+                delay(1_000)
+                emit(SearchContentResult(channels = listOf(Channel(id = 1L, name = "News", streamUrl = "http://stream", providerId = 5L))))
+            }
+        )
+
+        viewModel = SearchViewModel(
+            providerRepository,
+            searchContent,
+            preferencesRepository,
+            parentalControlManager,
+            favoriteRepository,
+            categoryRepository,
+            recordingManager
+        )
+
+        val collectorJob = backgroundScope.launch { viewModel.uiState.collect { } }
+        advanceUntilIdle()
+        viewModel.onQueryChange("news")
+        testScheduler.advanceTimeBy(400)
+        runCurrent()
+
+        assertThat(viewModel.uiState.value.isLoading).isTrue()
+        assertThat(viewModel.uiState.value.hasSearched).isTrue()
+
+        testScheduler.advanceTimeBy(1_000)
+        advanceUntilIdle()
+
+        assertThat(viewModel.uiState.value.isLoading).isFalse()
+        assertThat(viewModel.uiState.value.channels.map { it.id }).containsExactly(1L)
         collectorJob.cancel()
     }
 

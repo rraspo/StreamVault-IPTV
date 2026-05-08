@@ -18,8 +18,7 @@ private const val XTREAM_FETCHER_TAG = "SyncManager"
 internal class SyncManagerXtreamFetcher(
     private val xtreamCatalogApiService: XtreamApiService,
     private val xtreamSupport: SyncManagerXtreamSupport,
-    private val sanitizeThrowableMessage: (Throwable?) -> String,
-    private val pageSize: Int
+    private val sanitizeThrowableMessage: (Throwable?) -> String
 ) {
     suspend fun fetchLiveCategoryOutcome(
         provider: Provider,
@@ -68,7 +67,7 @@ internal class SyncManagerXtreamFetcher(
                     XTREAM_FETCHER_TAG,
                     "Xtream live category '${category.categoryName}' completed in ${elapsedMs}ms with ${rawStreams.size} raw items."
                 )
-                CategoryFetchOutcome.Success(category.categoryName, api.mapLiveStreamsResponse(rawStreams))
+                CategoryFetchOutcome.Success(category.categoryName, api.mapLiveStreamsResponse(rawStreams), rawStreams.size)
             }
         }
         return TimedCategoryOutcome(category, outcome, elapsedMs)
@@ -123,7 +122,7 @@ internal class SyncManagerXtreamFetcher(
                     XTREAM_FETCHER_TAG,
                     "Xtream movie category '${category.categoryName}' completed in ${elapsedMs}ms with ${rawStreams.size} raw items."
                 )
-                CategoryFetchOutcome.Success(category.categoryName, api.mapVodStreamsResponse(rawStreams))
+                CategoryFetchOutcome.Success(category.categoryName, api.mapVodStreamsResponse(rawStreams), rawStreams.size)
             }
         }
         return TimedCategoryOutcome(category, outcome, elapsedMs)
@@ -178,128 +177,10 @@ internal class SyncManagerXtreamFetcher(
                     XTREAM_FETCHER_TAG,
                     "Xtream series category '${category.categoryName}' completed in ${elapsedMs}ms with ${rawSeries.size} raw items."
                 )
-                CategoryFetchOutcome.Success(category.categoryName, api.mapSeriesListResponse(rawSeries))
+                CategoryFetchOutcome.Success(category.categoryName, api.mapSeriesListResponse(rawSeries), rawSeries.size)
             }
         }
         return TimedCategoryOutcome(category, outcome, elapsedMs)
     }
 
-    suspend fun fetchMoviePageOutcome(
-        provider: Provider,
-        api: XtreamProvider,
-        page: Int
-    ): TimedPageOutcome<Movie> {
-        var rawStreams: List<XtreamStream> = emptyList()
-        var pageFailure: Throwable? = null
-        val elapsedMs = measureTimeMillis {
-            when (val attempt = xtreamSupport.attemptNonCancellation {
-                xtreamSupport.withMovieRequestTimeout("movie page $page") {
-                    xtreamSupport.retryXtreamCatalogTransient(provider.id) {
-                        xtreamSupport.executeXtreamRequest(provider.id, XtreamAdaptiveSyncPolicy.Stage.PAGED) {
-                            xtreamCatalogApiService.getVodStreams(
-                                XtreamUrlFactory.buildPlayerApiUrl(
-                                    serverUrl = provider.serverUrl,
-                                    username = provider.username,
-                                    password = provider.password,
-                                    action = "get_vod_streams",
-                                    extraQueryParams = paginationParamsForPage(page)
-                                )
-                            )
-                        }
-                    }
-                }
-            }) {
-                is Attempt.Success -> rawStreams = attempt.value
-                is Attempt.Failure -> pageFailure = attempt.error
-            }
-        }
-        val outcome = when {
-            pageFailure != null -> {
-                Log.w(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged movie request failed for provider ${provider.id} on page $page after ${elapsedMs}ms: ${sanitizeThrowableMessage(pageFailure)}"
-                )
-                PageFetchOutcome.Failure(page, pageFailure!!)
-            }
-            rawStreams.isEmpty() -> {
-                Log.i(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged movie request for provider ${provider.id} page $page completed in ${elapsedMs}ms with a valid empty result."
-                )
-                PageFetchOutcome.Empty(page)
-            }
-            else -> {
-                Log.i(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged movie request for provider ${provider.id} page $page completed in ${elapsedMs}ms with ${rawStreams.size} raw items."
-                )
-                PageFetchOutcome.Success(api.mapVodStreamsResponse(rawStreams), rawStreams.size)
-            }
-        }
-        return TimedPageOutcome(page = page, outcome = outcome, elapsedMs = elapsedMs)
-    }
-
-    suspend fun fetchSeriesPageOutcome(
-        provider: Provider,
-        api: XtreamProvider,
-        page: Int
-    ): TimedPageOutcome<Series> {
-        var rawSeries: List<XtreamSeriesItem> = emptyList()
-        var pageFailure: Throwable? = null
-        val elapsedMs = measureTimeMillis {
-            when (val attempt = xtreamSupport.attemptNonCancellation {
-                xtreamSupport.withSeriesRequestTimeout("series page $page") {
-                    xtreamSupport.retryXtreamCatalogTransient(provider.id) {
-                        xtreamSupport.executeXtreamRequest(provider.id, XtreamAdaptiveSyncPolicy.Stage.PAGED) {
-                            xtreamCatalogApiService.getSeriesList(
-                                XtreamUrlFactory.buildPlayerApiUrl(
-                                    serverUrl = provider.serverUrl,
-                                    username = provider.username,
-                                    password = provider.password,
-                                    action = "get_series",
-                                    extraQueryParams = paginationParamsForPage(page)
-                                )
-                            )
-                        }
-                    }
-                }
-            }) {
-                is Attempt.Success -> rawSeries = attempt.value
-                is Attempt.Failure -> pageFailure = attempt.error
-            }
-        }
-        val outcome = when {
-            pageFailure != null -> {
-                Log.w(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged series request failed for provider ${provider.id} on page $page after ${elapsedMs}ms: ${sanitizeThrowableMessage(pageFailure)}"
-                )
-                PageFetchOutcome.Failure(page, pageFailure!!)
-            }
-            rawSeries.isEmpty() -> {
-                Log.i(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged series request for provider ${provider.id} page $page completed in ${elapsedMs}ms with a valid empty result."
-                )
-                PageFetchOutcome.Empty(page)
-            }
-            else -> {
-                Log.i(
-                    XTREAM_FETCHER_TAG,
-                    "Xtream paged series request for provider ${provider.id} page $page completed in ${elapsedMs}ms with ${rawSeries.size} raw items."
-                )
-                PageFetchOutcome.Success(api.mapSeriesListResponse(rawSeries), rawSeries.size)
-            }
-        }
-        return TimedPageOutcome(page = page, outcome = outcome, elapsedMs = elapsedMs)
-    }
-
-    private fun paginationParamsForPage(page: Int): Map<String, String> {
-        return mapOf(
-            "page" to page.toString(),
-            "limit" to pageSize.toString(),
-            "offset" to ((page - 1) * pageSize).toString(),
-            "items_per_page" to pageSize.toString()
-        )
-    }
 }

@@ -198,14 +198,14 @@ fun MoviesScreen(
                     subtitle = stringResource(R.string.home_add_first_provider_subtitle)
                 )
             }
-        } else if (!uiState.hasActiveProvider || (uiState.moviesByCategory.isEmpty() && uiState.libraryCount == 0 && uiState.searchQuery.isBlank() && !uiState.isLoadingPreviewRows)) {
+        } else if (!uiState.hasActiveProvider || (uiState.selectedCategory == null && uiState.moviesByCategory.isEmpty() && uiState.libraryCount == 0 && uiState.searchQuery.isBlank() && !uiState.isLoadingPreviewRows)) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AppMessageState(
                     title = stringResource(R.string.vod_sync_needed_title),
                     subtitle = stringResource(R.string.vod_sync_needed_subtitle)
                 )
             }
-        } else if (uiState.moviesByCategory.isEmpty() && !uiState.isLoadingPreviewRows) {
+        } else if (uiState.selectedCategory == null && uiState.searchQuery.isBlank() && uiState.moviesByCategory.isEmpty() && !uiState.isLoadingPreviewRows) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 AppMessageState(
                     title = stringResource(R.string.movies_no_found),
@@ -851,6 +851,20 @@ private fun MoviesVodContent(
                             color = Color.White.copy(alpha = 0.7f)
                         )
                     }
+                }
+            }
+        } else if (filteredGridMovies.isEmpty()) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(loadingSectionHeight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AppMessageState(
+                        title = stringResource(R.string.movies_no_found),
+                        subtitle = stringResource(R.string.movies_no_found_subtitle)
+                    )
                 }
             }
         } else {

@@ -102,6 +102,7 @@ fun ChannelInfoOverlay(
     onOpenVideoTracks: () -> Unit = {},
     onOpenVariants: () -> Unit = {},
     onOpenAudioVideoSync: () -> Unit = {},
+    audioVideoSyncEnabled: Boolean = false,
     onEnterPictureInPicture: () -> Unit = {},
     isCastConnected: Boolean = false,
     onCast: () -> Unit = {},
@@ -444,7 +445,7 @@ fun ChannelInfoOverlay(
                         )
                     }
                 }
-                if (!isCastConnected) {
+                if (audioVideoSyncEnabled && !isCastConnected) {
                     item {
                         QuickActionButton(
                             icon = "A/V",

@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">プロバイダー設定と更新時の番組表データ取得方法を管理します。</string>
     <string name="setup_advanced_options_show">表示</string>
     <string name="setup_advanced_options_hide">非表示</string>
-    <string name="setup_xtream_fast_sync_label">高速同期</string>
-    <string name="setup_xtream_fast_sync_helper">エクストリームのみ。最初に VOD カテゴリをロードし、オンデマンドで映画行をフェッチします。非常に大規模なプロバイダーに推奨されます。</string>
     <string name="setup_m3u_vod_classification_label">M3U VOD分類</string>
     <string name="setup_m3u_vod_classification_helper">M3Uのみ。プレイリストURLとgroup-titleの条件で一致する項目をライブTVではなく映画に分類します。</string>
     <string name="setup_epg_sync_mode_label">EPG同期</string>

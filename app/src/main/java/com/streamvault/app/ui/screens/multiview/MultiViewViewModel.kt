@@ -80,7 +80,10 @@ class MultiViewViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            preferencesRepository.playerAudioVideoOffsetMs.collect {
+            combine(
+                preferencesRepository.playerAudioVideoSyncEnabled,
+                preferencesRepository.playerAudioVideoOffsetMs
+            ) { _, _ -> Unit }.collect {
                 applyAudioVideoOffsetsToActiveEngines()
             }
         }
@@ -267,7 +270,11 @@ class MultiViewViewModel @Inject constructor(
 
                         val channel = slot.channel
                             ?: throw IllegalStateException("Missing channel for slot ${slot.index}")
-                        localEngine.setAudioVideoOffsetMs(effectiveAudioVideoOffsetForChannel(channel.id))
+                        val avSyncEnabled = preferencesRepository.playerAudioVideoSyncEnabled.first()
+                        localEngine.setAudioVideoSyncEnabled(avSyncEnabled)
+                        localEngine.setAudioVideoOffsetMs(
+                            if (avSyncEnabled) effectiveAudioVideoOffsetForChannel(channel.id) else 0
+                        )
                         val streamInfo = when (val result = channelRepository.getStreamInfo(channel)) {
                             is Result.Success -> result.data
                             is Result.Error -> throw IllegalStateException(result.message)
@@ -643,6 +650,7 @@ class MultiViewViewModel @Inject constructor(
     }
 
     private suspend fun effectiveAudioVideoOffsetForChannel(channelId: Long): Int {
+        if (!preferencesRepository.playerAudioVideoSyncEnabled.first()) return 0
         val globalOffset = preferencesRepository.playerAudioVideoOffsetMs.first()
         if (channelId <= 0L) return globalOffset
         return preferencesRepository.observeAudioVideoOffsetForChannel(channelId).first() ?: globalOffset
@@ -653,7 +661,9 @@ class MultiViewViewModel @Inject constructor(
         playerEngines.forEach { (index, engine) ->
             val channelId = slots.getOrNull(index)?.channel?.id ?: return@forEach
             viewModelScope.launch {
-                engine.setAudioVideoOffsetMs(effectiveAudioVideoOffsetForChannel(channelId))
+                val enabled = preferencesRepository.playerAudioVideoSyncEnabled.first()
+                engine.setAudioVideoSyncEnabled(enabled)
+                engine.setAudioVideoOffsetMs(if (enabled) effectiveAudioVideoOffsetForChannel(channelId) else 0)
             }
         }
     }

@@ -5,6 +5,7 @@ import com.streamvault.app.R
 import com.streamvault.app.tvinput.TvInputChannelSyncManager
 import com.streamvault.data.sync.SyncManager
 import com.streamvault.data.sync.SyncRepairSection
+import com.streamvault.domain.model.ProviderType
 import com.streamvault.domain.model.Result
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,8 +22,11 @@ internal class SettingsSyncActions(
     fun syncProviderSection(scope: CoroutineScope, providerId: Long, selection: ProviderSyncSelection) {
         scope.launch {
             when (selection) {
-                ProviderSyncSelection.ALL -> refreshProvider(scope, providerId, SettingsProviderSyncMode.FULL)
-                ProviderSyncSelection.FAST -> refreshProvider(scope, providerId, SettingsProviderSyncMode.QUICK)
+                ProviderSyncSelection.SYNC_NOW -> runSectionSync(
+                    providerId = providerId,
+                    selections = syncNowSelections(providerId)
+                )
+                ProviderSyncSelection.REBUILD_INDEX -> refreshProvider(scope, providerId, SettingsProviderSyncMode.REBUILD_INDEX)
                 else -> runSectionSync(providerId, listOf(selection))
             }
         }
@@ -105,7 +109,8 @@ internal class SettingsSyncActions(
         providerId: Long,
         selections: List<ProviderSyncSelection>
     ) {
-        val providerName = uiState.value.providers.firstOrNull { it.id == providerId }?.name
+        val provider = uiState.value.providers.firstOrNull { it.id == providerId }
+        val providerName = provider?.name
         uiState.update {
             it.copy(
                 isSyncing = true,
@@ -123,7 +128,7 @@ internal class SettingsSyncActions(
                     ProviderSyncSelection.MOVIES -> SyncRepairSection.MOVIES
                     ProviderSyncSelection.SERIES -> SyncRepairSection.SERIES
                     ProviderSyncSelection.EPG -> SyncRepairSection.EPG
-                    ProviderSyncSelection.ALL, ProviderSyncSelection.FAST -> null
+                    ProviderSyncSelection.SYNC_NOW, ProviderSyncSelection.REBUILD_INDEX -> null
                 } ?: return@forEach
 
                 uiState.update { state ->
@@ -140,13 +145,12 @@ internal class SettingsSyncActions(
                     uiState.update { state -> state.copy(syncProgress = progress, syncingProviderName = providerName) }
                 }) {
                     is Result.Error -> failures += "${selection.label(appContext)}: ${result.message}"
-                    else -> completed += selection.label(appContext)
+                    else -> completed += selection.completionLabel(isXtream = provider?.type == ProviderType.XTREAM_CODES)
                 }
             }
 
             if (completed.any {
-                    it == appContext.getString(R.string.settings_sync_option_all) ||
-                        it == appContext.getString(R.string.settings_sync_option_tv)
+                    it == appContext.getString(R.string.settings_sync_option_tv)
                 }
             ) {
                 tvInputChannelSyncManager.refreshTvInputCatalog()
@@ -184,5 +188,23 @@ internal class SettingsSyncActions(
                 )
             }
         }
+    }
+
+    private fun syncNowSelections(providerId: Long): List<ProviderSyncSelection> {
+        val provider = uiState.value.providers.firstOrNull { it.id == providerId }
+        return buildList {
+            add(ProviderSyncSelection.TV)
+            add(ProviderSyncSelection.MOVIES)
+            if (provider?.type == ProviderType.XTREAM_CODES) {
+                add(ProviderSyncSelection.SERIES)
+            }
+            add(ProviderSyncSelection.EPG)
+        }
+    }
+
+    private fun ProviderSyncSelection.completionLabel(isXtream: Boolean): String = when {
+        isXtream && this == ProviderSyncSelection.MOVIES -> "Movies index queued"
+        isXtream && this == ProviderSyncSelection.SERIES -> "Series index queued"
+        else -> label(appContext)
     }
 }

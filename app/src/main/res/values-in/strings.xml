@@ -728,8 +728,6 @@
     <string name="setup_advanced_options_helper">Atur cara data panduan diambil saat penyiapan dan penyegaran penyedia.</string>
     <string name="setup_advanced_options_show">Tampilkan</string>
     <string name="setup_advanced_options_hide">Sembunyikan</string>
-    <string name="setup_xtream_fast_sync_label">Sinkronisasi Cepat</string>
-    <string name="setup_xtream_fast_sync_helper">Hanya Xtream. Memuat kategori VOD terlebih dahulu dan mengambil baris film sesuai permintaan. Direkomendasikan untuk penyedia yang sangat besar.</string>
     <string name="setup_m3u_vod_classification_label">Klasifikasi VOD M3U</string>
     <string name="setup_m3u_vod_classification_helper">Hanya M3U. Gunakan URL playlist dan heuristik group-title untuk mengurutkan entri yang cocok ke Film, bukan TV Langsung.</string>
     <string name="setup_epg_sync_mode_label">Sinkronisasi EPG</string>

@@ -44,6 +44,7 @@ data class SettingsUiState(
     val playerDecoderMode: DecoderMode = DecoderMode.AUTO,
     val playerSurfaceMode: PlayerSurfaceMode = PlayerSurfaceMode.AUTO,
     val playerPlaybackSpeed: Float = 1f,
+    val playerAudioVideoSyncEnabled: Boolean = false,
     val playerAudioVideoOffsetMs: Int = 0,
     val centerTwoSlotMultiviewLayout: Boolean = false,
     val playerControlsTimeoutSeconds: Int = 5,

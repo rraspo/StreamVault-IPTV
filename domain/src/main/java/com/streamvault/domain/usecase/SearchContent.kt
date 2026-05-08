@@ -1,11 +1,12 @@
 package com.streamvault.domain.usecase
 
+import com.streamvault.domain.manager.ProviderSyncStateReader
 import com.streamvault.domain.model.Channel
 import com.streamvault.domain.model.Movie
 import com.streamvault.domain.model.Series
-import com.streamvault.domain.repository.ChannelRepository
-import com.streamvault.domain.repository.MovieRepository
-import com.streamvault.domain.repository.SeriesRepository
+import com.streamvault.domain.model.SyncState
+import com.streamvault.domain.repository.SearchRepository
+import com.streamvault.domain.repository.SearchRepositoryResult
 import com.streamvault.domain.util.shouldRethrowDomainFlowFailure
 import java.util.logging.Level
 import java.util.logging.Logger
@@ -13,8 +14,10 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withTimeoutOrNull
 
 enum class SearchContentScope {
     ALL,
@@ -31,10 +34,13 @@ data class SearchContentResult(
 )
 
 class SearchContent @Inject constructor(
-    private val channelRepository: ChannelRepository,
-    private val movieRepository: MovieRepository,
-    private val seriesRepository: SeriesRepository
+    private val searchRepository: SearchRepository,
+    private val providerSyncStateReader: ProviderSyncStateReader
 ) {
+    private companion object {
+        const val SEARCH_RESPONSE_TIMEOUT_MS = 2_500L
+    }
+
     private val logger = Logger.getLogger("SearchContent")
 
     operator fun invoke(
@@ -49,46 +55,52 @@ class SearchContent @Inject constructor(
         }
 
         return combine(
-            if (scope == SearchContentScope.ALL || scope == SearchContentScope.LIVE) {
-                channelRepository.searchChannels(providerId, normalizedQuery)
-                    .map { it to false }
-                    .catch { error ->
-                        if (error.shouldRethrowDomainFlowFailure()) throw error
-                        logger.log(Level.WARNING, "Channel search section failed", error)
-                        emit(emptyList<Channel>() to true)
-                    }
-            } else {
-                flowOf(emptyList<Channel>() to false)
-            },
-            if (scope == SearchContentScope.ALL || scope == SearchContentScope.MOVIES) {
-                movieRepository.searchMovies(providerId, normalizedQuery)
-                    .map { it to false }
-                    .catch { error ->
-                        if (error.shouldRethrowDomainFlowFailure()) throw error
-                        logger.log(Level.WARNING, "Movie search section failed", error)
-                        emit(emptyList<Movie>() to true)
-                    }
-            } else {
-                flowOf(emptyList<Movie>() to false)
-            },
-            if (scope == SearchContentScope.ALL || scope == SearchContentScope.SERIES) {
-                seriesRepository.searchSeries(providerId, normalizedQuery)
-                    .map { it to false }
-                    .catch { error ->
-                        if (error.shouldRethrowDomainFlowFailure()) throw error
-                        logger.log(Level.WARNING, "Series search section failed", error)
-                        emit(emptyList<Series>() to true)
-                    }
-            } else {
-                flowOf(emptyList<Series>() to false)
+            contentSearchFlow(providerId, normalizedQuery, scope, maxResultsPerSection),
+            providerSyncStateReader.observeBackgroundIndexingActive(providerId)
+        ) { searchResult, indexWorkActive ->
+            val (result, searchDegraded) = searchResult
+            val indexingActive = when (providerSyncStateReader.currentSyncState(providerId)) {
+                is SyncState.Syncing,
+                is SyncState.Partial -> true
+                else -> false
             }
-        ) { (channels, channelsDegraded), (movies, moviesDegraded), (series, seriesDegraded) ->
             SearchContentResult(
-                channels = channels.take(maxResultsPerSection),
-                movies = movies.take(maxResultsPerSection),
-                series = series.take(maxResultsPerSection),
-                isPartialResult = channelsDegraded || moviesDegraded || seriesDegraded
+                channels = result.channels,
+                movies = result.movies,
+                series = result.series,
+                isPartialResult = searchDegraded || indexingActive || indexWorkActive
             )
         }
     }
+
+    private fun contentSearchFlow(
+        providerId: Long,
+        query: String,
+        scope: SearchContentScope,
+        maxResultsPerSection: Int
+    ): Flow<Pair<SearchRepositoryResult, Boolean>> =
+        flow {
+            val result = withTimeoutOrNull(SEARCH_RESPONSE_TIMEOUT_MS) {
+                searchRepository.searchContent(
+                    providerId = providerId,
+                    query = query,
+                    includeLive = scope == SearchContentScope.ALL || scope == SearchContentScope.LIVE,
+                    includeMovies = scope == SearchContentScope.ALL || scope == SearchContentScope.MOVIES,
+                    includeSeries = scope == SearchContentScope.ALL || scope == SearchContentScope.SERIES,
+                    maxResultsPerSection = maxResultsPerSection
+                ).first()
+            }
+
+            if (result == null) {
+                logger.warning("Search timed out for provider $providerId and query '$query'")
+                emit(SearchRepositoryResult() to true)
+            } else {
+                emit(result to false)
+            }
+        }
+            .catch { error ->
+                if (error.shouldRethrowDomainFlowFailure()) throw error
+                logger.log(Level.WARNING, "Unified content search failed", error)
+                emit(SearchRepositoryResult() to true)
+            }
 }

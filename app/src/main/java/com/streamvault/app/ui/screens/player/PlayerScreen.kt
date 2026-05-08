@@ -207,6 +207,7 @@ fun PlayerScreen(
     val isMuted by viewModel.isMuted.collectAsStateWithLifecycle()
     val mediaTitle by viewModel.mediaTitle.collectAsStateWithLifecycle()
     val playbackSpeed by viewModel.playbackSpeed.collectAsStateWithLifecycle()
+    val audioVideoSyncEnabled by viewModel.audioVideoSyncEnabled.collectAsStateWithLifecycle()
     val audioVideoOffsetState by viewModel.audioVideoOffsetUiState.collectAsStateWithLifecycle()
     val castConnectionState by viewModel.castConnectionState.collectAsStateWithLifecycle()
     val seekPreview by viewModel.seekPreview.collectAsStateWithLifecycle()
@@ -262,6 +263,13 @@ fun PlayerScreen(
         if (sleepTimerExitEvent > 0) {
             viewModel.consumeSleepTimerExitEvent()
             onBack()
+        }
+    }
+
+    LaunchedEffect(audioVideoSyncEnabled) {
+        if (!audioVideoSyncEnabled && showAudioVideoOffsetDialog) {
+            showAudioVideoOffsetDialog = false
+            viewModel.dismissAudioVideoOffsetPreview()
         }
     }
 
@@ -1025,6 +1033,7 @@ fun PlayerScreen(
             onOpenStopPlaybackTimer = { showStopPlaybackTimerDialog = true },
             onOpenIdleStandbyTimer = { showIdleStandbyTimerDialog = true },
             onOpenAudioVideoSync = { showAudioVideoOffsetDialog = true },
+            audioVideoSyncEnabled = audioVideoSyncEnabled,
             showEpisodesAction = canOpenEpisodePicker,
             onOpenEpisodes = { showEpisodePicker = true },
             onOpenSplitScreen = { showSplitDialog = true },
@@ -1154,7 +1163,9 @@ fun PlayerScreen(
                 }
             )
             PlayerAudioVideoOffsetDialog(
-                visible = showAudioVideoOffsetDialog && castConnectionState != CastConnectionState.CONNECTED,
+                visible = showAudioVideoOffsetDialog &&
+                    audioVideoSyncEnabled &&
+                    castConnectionState != CastConnectionState.CONNECTED,
                 state = audioVideoOffsetState,
                 canSaveChannel = currentChannel != null,
                 onDismiss = {
@@ -1334,6 +1345,7 @@ fun PlayerScreen(
                     onOpenVideoTracks = { showTrackSelection = TrackType.VIDEO },
                     onOpenVariants = { showVariantSelection = true },
                     onOpenAudioVideoSync = { showAudioVideoOffsetDialog = true },
+                    audioVideoSyncEnabled = audioVideoSyncEnabled,
                     onEnterPictureInPicture = enterPictureInPicture,
                     isCastConnected = castConnectionState == CastConnectionState.CONNECTED,
                     onCast = { viewModel.castCurrentMedia { mainActivity?.openCastRouteChooser() } },
@@ -1409,6 +1421,7 @@ private fun PlayerControlsOverlayHost(
     onOpenStopPlaybackTimer: () -> Unit,
     onOpenIdleStandbyTimer: () -> Unit,
     onOpenAudioVideoSync: () -> Unit,
+    audioVideoSyncEnabled: Boolean,
     showEpisodesAction: Boolean,
     onOpenEpisodes: () -> Unit,
     onOpenSplitScreen: () -> Unit,
@@ -1470,6 +1483,7 @@ private fun PlayerControlsOverlayHost(
         onOpenStopPlaybackTimer = onOpenStopPlaybackTimer,
         onOpenIdleStandbyTimer = onOpenIdleStandbyTimer,
         onOpenAudioVideoSync = onOpenAudioVideoSync,
+        audioVideoSyncEnabled = audioVideoSyncEnabled,
         showEpisodesAction = showEpisodesAction,
         onOpenEpisodes = onOpenEpisodes,
         onOpenSplitScreen = onOpenSplitScreen,

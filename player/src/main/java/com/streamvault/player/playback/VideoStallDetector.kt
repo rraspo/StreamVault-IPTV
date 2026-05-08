@@ -10,6 +10,7 @@ class VideoStallDetector(
 ) {
     private var startedAtMs: Long = 0L
     private var lastFrameAtMs: Long = 0L
+    private var firstFramePositionMs: Long = 0L
     private var lastPositionMs: Long = 0L
     private var lastPositionCheckMs: Long = 0L
     private var stalled = false
@@ -18,12 +19,16 @@ class VideoStallDetector(
         val now = nowMs()
         startedAtMs = now
         lastFrameAtMs = 0L
+        firstFramePositionMs = 0L
         lastPositionMs = 0L
         lastPositionCheckMs = now
         stalled = false
     }
 
-    fun onVideoFrameRendered() {
+    fun onVideoFrameRendered(currentPositionMs: Long = 0L) {
+        if (lastFrameAtMs <= 0L) {
+            firstFramePositionMs = currentPositionMs.coerceAtLeast(0L)
+        }
         lastFrameAtMs = nowMs()
         stalled = false
     }
@@ -36,17 +41,19 @@ class VideoStallDetector(
     fun shouldReportStall(
         playbackState: PlaybackState,
         isPlaying: Boolean,
+        playbackStarted: Boolean,
         currentPositionMs: Long,
         bufferedDurationMs: Long
     ): Boolean {
         val now = nowMs()
-        if (playbackState != PlaybackState.READY || !isPlaying || bufferedDurationMs <= 1_000L) {
+        if (playbackState != PlaybackState.READY || !isPlaying || !playbackStarted || bufferedDurationMs <= 1_000L) {
             lastPositionMs = currentPositionMs
             lastPositionCheckMs = now
             stalled = false
             return false
         }
         if (now - startedAtMs < initialGraceMs || lastFrameAtMs <= 0L) return false
+        if (currentPositionMs - firstFramePositionMs < minPositionAdvanceMs) return false
 
         val positionAdvanced = currentPositionMs - lastPositionMs >= minPositionAdvanceMs
         val checkWindowElapsed = now - lastPositionCheckMs >= minPositionAdvanceMs

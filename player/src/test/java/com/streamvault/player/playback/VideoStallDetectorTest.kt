@@ -18,6 +18,7 @@ class VideoStallDetectorTest {
             detector.shouldReportStall(
                 playbackState = PlaybackState.READY,
                 isPlaying = true,
+                playbackStarted = true,
                 currentPositionMs = 3_000L,
                 bufferedDurationMs = 5_000L
             )
@@ -29,13 +30,14 @@ class VideoStallDetectorTest {
         val detector = detector()
         detector.reset()
         nowMs = 1_000L
-        detector.onVideoFrameRendered()
+        detector.onVideoFrameRendered(currentPositionMs = 500L)
         nowMs = 9_000L
 
         assertThat(
             detector.shouldReportStall(
                 playbackState = PlaybackState.READY,
                 isPlaying = true,
+                playbackStarted = true,
                 currentPositionMs = 3_000L,
                 bufferedDurationMs = 5_000L
             )
@@ -44,6 +46,7 @@ class VideoStallDetectorTest {
             detector.shouldReportStall(
                 playbackState = PlaybackState.READY,
                 isPlaying = true,
+                playbackStarted = true,
                 currentPositionMs = 5_000L,
                 bufferedDurationMs = 5_000L
             )
@@ -55,12 +58,13 @@ class VideoStallDetectorTest {
         val detector = detector()
         detector.reset()
         nowMs = 1_000L
-        detector.onVideoFrameRendered()
+        detector.onVideoFrameRendered(currentPositionMs = 500L)
         nowMs = 9_000L
 
-        assertThat(detector.shouldReportStall(PlaybackState.BUFFERING, true, 4_000L, 5_000L)).isFalse()
-        assertThat(detector.shouldReportStall(PlaybackState.READY, false, 4_000L, 5_000L)).isFalse()
-        assertThat(detector.shouldReportStall(PlaybackState.READY, true, 4_000L, 0L)).isFalse()
+        assertThat(detector.shouldReportStall(PlaybackState.BUFFERING, true, true, 4_000L, 5_000L)).isFalse()
+        assertThat(detector.shouldReportStall(PlaybackState.READY, false, true, 4_000L, 5_000L)).isFalse()
+        assertThat(detector.shouldReportStall(PlaybackState.READY, true, false, 4_000L, 5_000L)).isFalse()
+        assertThat(detector.shouldReportStall(PlaybackState.READY, true, true, 4_000L, 0L)).isFalse()
     }
 
     @Test
@@ -68,14 +72,33 @@ class VideoStallDetectorTest {
         val detector = detector()
         detector.reset()
         nowMs = 1_000L
-        detector.onVideoFrameRendered()
+        detector.onVideoFrameRendered(currentPositionMs = 500L)
         nowMs = 9_000L
-        assertThat(detector.shouldReportStall(PlaybackState.READY, true, 3_000L, 5_000L)).isTrue()
+        assertThat(detector.shouldReportStall(PlaybackState.READY, true, true, 3_000L, 5_000L)).isTrue()
 
         nowMs = 9_100L
-        detector.onVideoFrameRendered()
+        detector.onVideoFrameRendered(currentPositionMs = 3_000L)
         nowMs = 15_000L
-        assertThat(detector.shouldReportStall(PlaybackState.READY, true, 6_000L, 5_000L)).isTrue()
+        assertThat(detector.shouldReportStall(PlaybackState.READY, true, true, 6_000L, 5_000L)).isTrue()
+    }
+
+    @Test
+    fun `does not report before playback advances beyond first frame`() {
+        val detector = detector()
+        detector.reset()
+        nowMs = 1_000L
+        detector.onVideoFrameRendered(currentPositionMs = 2_500L)
+        nowMs = 9_000L
+
+        assertThat(
+            detector.shouldReportStall(
+                playbackState = PlaybackState.READY,
+                isPlaying = true,
+                playbackStarted = true,
+                currentPositionMs = 3_000L,
+                bufferedDurationMs = 5_000L
+            )
+        ).isFalse()
     }
 
     private fun detector() = VideoStallDetector(
