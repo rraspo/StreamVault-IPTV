@@ -169,7 +169,16 @@ class AppUpdateInstaller @Inject constructor(
         }
     }
 
-    suspend fun startDownload(releaseInfo: GitHubReleaseInfo): Result<Unit> = withContext(Dispatchers.IO) {
+    // libVLC fork: installing upstream's APK would replace this build and remove
+    // the VLC engine. Updates are picked up by rebasing on upstream and rebuilding
+    // (see CLAUDE.md), so the release check stays as a rebase reminder but the
+    // download/install paths refuse with guidance. The upstream implementations are
+    // kept below (unused) so upstream merges stay cheap.
+    suspend fun startDownload(releaseInfo: GitHubReleaseInfo): Result<Unit> =
+        Result.error(context.getString(com.streamvault.app.R.string.settings_update_fork_rebase_notice))
+
+    @Suppress("unused", "UnusedPrivateMember")
+    private suspend fun startDownloadUpstream(releaseInfo: GitHubReleaseInfo): Result<Unit> = withContext(Dispatchers.IO) {
         val downloadUrl = releaseInfo.downloadUrl
             ?: return@withContext Result.error("Update download is unavailable for this release")
         if (!isHttpsUrl(downloadUrl)) {
@@ -223,7 +232,12 @@ class AppUpdateInstaller @Inject constructor(
         }
     }
 
-    suspend fun installDownloadedUpdate(expectedSha256: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
+    // libVLC fork: see startDownload — updating happens by rebase, never by APK install.
+    suspend fun installDownloadedUpdate(expectedSha256: String? = null): Result<Unit> =
+        Result.error(context.getString(com.streamvault.app.R.string.settings_update_fork_rebase_notice))
+
+    @Suppress("unused", "UnusedPrivateMember")
+    private suspend fun installDownloadedUpdateUpstream(expectedSha256: String? = null): Result<Unit> = withContext(Dispatchers.IO) {
         val currentState = refreshState()
         if (currentState.status != AppUpdateDownloadStatus.Downloaded || currentState.versionName.isNullOrBlank()) {
             return@withContext Result.error("No downloaded update is ready to install")

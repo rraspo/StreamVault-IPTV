@@ -322,16 +322,9 @@ internal fun LazyListScope.settingsAboutSection(
             }
         )
         if (shouldShowUpdateDownloadAction(uiState.appUpdate)) {
-            ClickableSettingsRow(
+            SettingsRow(
                 label = stringResource(R.string.settings_update_download),
-                value = formatUpdateDownloadLabel(uiState.appUpdate, context),
-                onClick = {
-                    if (uiState.appUpdate.downloadStatus == com.streamvault.app.update.AppUpdateDownloadStatus.Downloaded) {
-                        onInstallDownloadedUpdate()
-                    } else if (uiState.appUpdate.downloadStatus != com.streamvault.app.update.AppUpdateDownloadStatus.Downloading) {
-                        onDownloadLatestUpdate()
-                    }
-                }
+                value = stringResource(R.string.settings_update_fork_rebase_notice)
             )
         }
         if (!uiState.appUpdate.releaseUrl.isNullOrBlank()) {
