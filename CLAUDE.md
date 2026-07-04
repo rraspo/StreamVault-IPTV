@@ -77,6 +77,12 @@ The `beta` variant is non-debuggable and non-minified, signed with the release k
 - Upstream sync: `git fetch upstream && git merge upstream/master` — keep the VLC
   engine additive (new files + the two NetworkModule provider bodies + settings toggle
   plumbing) so merges stay cheap.
+- In-app updates are repurposed as a **rebase reminder**: the daily upstream GitHub
+  release check stays, but the dashboard banner/Settings copy say "time to rebase"
+  and `AppUpdateInstaller.startDownload`/`installDownloadedUpdate` refuse with that
+  guidance (choke point for every caller), so the fork build can never be replaced
+  by an upstream APK. The upstream implementations remain as unused private
+  `*Upstream` functions to keep merges cheap.
 
 ## Test channels (acceptance for engine work)
 
