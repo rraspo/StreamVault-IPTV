@@ -1,6 +1,7 @@
 package com.streamvault.app.ui.screens.player
 
 import android.os.SystemClock
+import android.util.Log
 import androidx.lifecycle.viewModelScope
 import com.streamvault.domain.model.ContentType
 import com.streamvault.domain.model.Episode
@@ -70,9 +71,16 @@ fun PlayerViewModel.toggleAspectRatio() {
     }
     _aspectRatio.value = nextRatio
 
-    if (currentContentId != -1L) {
+    // channel_preferences.channel_id has a FK to the live-channels table; movie and
+    // episode content ids are not in it, so persisting for VOD crashes with a
+    // SQLITE_CONSTRAINT_FOREIGNKEY. Persist only for live; VOD keeps the chosen
+    // ratio for the session. The write is also best-effort: a preference persist
+    // must never take playback down.
+    if (currentContentType == ContentType.LIVE && currentContentId != -1L) {
         viewModelScope.launch {
-            preferencesRepository.setAspectRatioForChannel(currentContentId, nextRatio.name)
+            runCatching {
+                preferencesRepository.setAspectRatioForChannel(currentContentId, nextRatio.name)
+            }.onFailure { Log.w("PlayerControls", "aspect ratio persist failed", it) }
         }
     }
 }
