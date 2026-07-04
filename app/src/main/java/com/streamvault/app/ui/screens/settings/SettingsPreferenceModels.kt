@@ -53,6 +53,7 @@ internal data class SettingsPreferenceSnapshot(
     val preferredAudioLanguage: String,
     val playerMediaSessionEnabled: Boolean,
     val playerFastRetryOnTransientFailures: Boolean,
+    val playerUseVlcEngine: Boolean,
     val playerDecoderMode: DecoderMode,
     val playerPlaybackBufferMode: PlaybackBufferMode,
     val playerAudioOutputPreference: AudioOutputPreference,

@@ -739,6 +739,12 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun setPlayerUseVlcEngine(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerUseVlcEngine(enabled)
+        }
+    }
+
     fun setPlayerTimeshiftEnabled(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setPlayerTimeshiftEnabled(enabled)

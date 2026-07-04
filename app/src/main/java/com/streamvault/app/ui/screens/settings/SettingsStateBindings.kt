@@ -51,6 +51,7 @@ internal fun observeSettingsPreferenceSnapshot(
             preferredAudioLanguage = "auto",
             playerMediaSessionEnabled = true,
             playerFastRetryOnTransientFailures = false,
+            playerUseVlcEngine = true,
             playerDecoderMode = DecoderMode.AUTO,
             playerPlaybackBufferMode = PlaybackBufferMode.AUTO,
             playerAudioOutputPreference = AudioOutputPreference.AUTO,
@@ -133,6 +134,8 @@ internal fun observeSettingsPreferenceSnapshot(
         snapshot.copy(playerMediaSessionEnabled = mediaSessionEnabled)
     }.combine(preferencesRepository.playerFastRetryOnTransientFailures) { snapshot, enabled ->
         snapshot.copy(playerFastRetryOnTransientFailures = enabled)
+    }.combine(preferencesRepository.playerUseVlcEngine) { snapshot, enabled ->
+        snapshot.copy(playerUseVlcEngine = enabled)
     }.combine(preferencesRepository.playerDecoderMode) { snapshot, decoderMode ->
         snapshot.copy(playerDecoderMode = decoderMode)
     }.combine(preferencesRepository.playerPlaybackBufferMode) { snapshot, bufferMode ->

@@ -15,6 +15,7 @@ internal fun SettingsUiState.applyPreferenceSnapshot(snapshot: SettingsPreferenc
         preferredAudioLanguage = snapshot.preferredAudioLanguage,
         playerMediaSessionEnabled = snapshot.playerMediaSessionEnabled,
         playerFastRetryOnTransientFailures = snapshot.playerFastRetryOnTransientFailures,
+        playerUseVlcEngine = snapshot.playerUseVlcEngine,
         playerDecoderMode = snapshot.playerDecoderMode,
         playerPlaybackBufferMode = snapshot.playerPlaybackBufferMode,
         playerAudioOutputPreference = snapshot.playerAudioOutputPreference,

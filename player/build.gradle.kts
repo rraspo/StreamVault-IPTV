@@ -128,6 +128,9 @@ dependencies {
     implementation(libs.media3.session)
     implementation(libs.media3.ui)
 
+    // libVLC engine (this fork)
+    implementation(libs.libvlc.all)
+
     // OkHttp (for custom data source)
     implementation(libs.okhttp)
 

@@ -72,6 +72,7 @@ data class SettingsUiState(
     val preferredAudioLanguage: String = "auto",
     val playerMediaSessionEnabled: Boolean = true,
     val playerFastRetryOnTransientFailures: Boolean = false,
+    val playerUseVlcEngine: Boolean = true,
     val playerDecoderMode: DecoderMode = DecoderMode.AUTO,
     val playerPlaybackBufferMode: PlaybackBufferMode = PlaybackBufferMode.AUTO,
     val playerAudioOutputPreference: AudioOutputPreference = AudioOutputPreference.AUTO,

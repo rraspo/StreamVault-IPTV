@@ -16,10 +16,14 @@ import com.streamvault.data.remote.xtream.XtreamApiService
 import com.streamvault.data.remote.xtream.OkHttpXtreamApiService
 import com.streamvault.data.remote.xtream.XtreamUrlFactory
 import com.streamvault.data.parser.XmltvParser
+import com.streamvault.data.preferences.PreferencesRepository
 import com.streamvault.player.AudioCompatibilityMemoryStore
 import com.streamvault.player.Media3PlayerEngine
 import com.streamvault.player.PlayerEngine
 import com.streamvault.player.PlaybackSupportSnapshotStore
+import com.streamvault.player.vlc.VlcPlayerEngine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -127,6 +131,13 @@ object NetworkModule {
     @Singleton
     fun provideGson(): Gson = GsonBuilder().create()
 
+    /**
+     * Engine choice for this fork (VLC by default). Read once here, at first engine
+     * injection, so flipping the settings toggle takes effect on the next app start.
+     */
+    private fun useVlcEngine(preferencesRepository: PreferencesRepository): Boolean =
+        runBlocking { preferencesRepository.playerUseVlcEngine.first() }
+
     @Provides
     @Singleton
     @MainPlayerEngine
@@ -135,14 +146,19 @@ object NetworkModule {
         okHttpClient: OkHttpClient,
         playbackCompatibilityRepository: com.streamvault.domain.repository.PlaybackCompatibilityRepository,
         audioCompatibilityMemoryStore: AudioCompatibilityMemoryStore,
-        playbackSupportSnapshotStore: PlaybackSupportSnapshotStore
-    ): PlayerEngine = Media3PlayerEngine(
-        context,
-        okHttpClient,
-        playbackCompatibilityRepository,
-        audioCompatibilityMemoryStore,
-        playbackSupportSnapshotStore
-    )
+        playbackSupportSnapshotStore: PlaybackSupportSnapshotStore,
+        preferencesRepository: PreferencesRepository
+    ): PlayerEngine = if (useVlcEngine(preferencesRepository)) {
+        VlcPlayerEngine(context)
+    } else {
+        Media3PlayerEngine(
+            context,
+            okHttpClient,
+            playbackCompatibilityRepository,
+            audioCompatibilityMemoryStore,
+            playbackSupportSnapshotStore
+        )
+    }
 
     /**
      * Factory binding for preview and multiview playback.
@@ -155,15 +171,23 @@ object NetworkModule {
         okHttpClient: OkHttpClient,
         playbackCompatibilityRepository: com.streamvault.domain.repository.PlaybackCompatibilityRepository,
         audioCompatibilityMemoryStore: AudioCompatibilityMemoryStore,
-        playbackSupportSnapshotStore: PlaybackSupportSnapshotStore
-    ): PlayerEngine = Media3PlayerEngine(
-        context,
-        okHttpClient,
-        playbackCompatibilityRepository,
-        audioCompatibilityMemoryStore,
-        playbackSupportSnapshotStore
-    ).apply {
-        enableMediaSession = false
-        bypassAudioFocus = true
+        playbackSupportSnapshotStore: PlaybackSupportSnapshotStore,
+        preferencesRepository: PreferencesRepository
+    ): PlayerEngine = if (useVlcEngine(preferencesRepository)) {
+        VlcPlayerEngine(context).apply {
+            enableMediaSession = false
+            bypassAudioFocus = true
+        }
+    } else {
+        Media3PlayerEngine(
+            context,
+            okHttpClient,
+            playbackCompatibilityRepository,
+            audioCompatibilityMemoryStore,
+            playbackSupportSnapshotStore
+        ).apply {
+            enableMediaSession = false
+            bypassAudioFocus = true
+        }
     }
 }

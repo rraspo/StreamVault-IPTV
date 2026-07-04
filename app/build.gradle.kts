@@ -65,7 +65,10 @@ android {
         buildConfigField("String", "APP_UPDATE_CHANNEL", "\"stable\"")
         buildConfigField("long", "BUILD_TIMESTAMP_UTC", "0L")
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // This fork targets the Google TV Streamer, whose userspace is 32-bit
+            // (abilist: armeabi-v7a,armeabi). Shipping arm64 would add ~45 MB of
+            // unused libVLC natives. Widen if an arm64 device ever joins.
+            abiFilters += listOf("armeabi-v7a")
         }
         // Dev seeding hooks — populated from rootProject/local.properties in the
         // `debug` build type only. Release builds inherit these empty defaults so

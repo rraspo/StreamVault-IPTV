@@ -147,6 +147,7 @@ class PreferencesRepository @Inject constructor(
         val PLAYER_MEDIA_SESSION_ENABLED = booleanPreferencesKey("player_media_session_enabled")
         val PLAYER_FAST_RETRY_ON_TRANSIENT_FAILURES =
             booleanPreferencesKey("player_fast_retry_on_transient_failures")
+        val PLAYER_USE_VLC_ENGINE = booleanPreferencesKey("player_use_vlc_engine")
         val PLAYER_DECODER_MODE = stringPreferencesKey("player_decoder_mode")
         val PLAYER_PLAYBACK_BUFFER_MODE = stringPreferencesKey("player_playback_buffer_mode")
         val PLAYER_LIVE_STREAM_FORMAT_MODE = stringPreferencesKey("player_live_stream_format_mode")
@@ -306,6 +307,11 @@ class PreferencesRepository @Inject constructor(
 
     val playerFastRetryOnTransientFailures: Flow<Boolean> = context.dataStore.data.map { preferences ->
         preferences[PreferencesKeys.PLAYER_FAST_RETRY_ON_TRANSIENT_FAILURES] ?: false
+    }
+
+    /** Engine choice for this fork; read once at engine creation, so a change needs an app restart. */
+    val playerUseVlcEngine: Flow<Boolean> = context.dataStore.data.map { preferences ->
+        preferences[PreferencesKeys.PLAYER_USE_VLC_ENGINE] ?: true
     }
 
     val playerDecoderMode: Flow<DecoderMode> = context.dataStore.data.map { preferences ->
@@ -879,6 +885,12 @@ class PreferencesRepository @Inject constructor(
     suspend fun setPlayerFastRetryOnTransientFailures(enabled: Boolean) {
         context.dataStore.edit { preferences ->
             preferences[PreferencesKeys.PLAYER_FAST_RETRY_ON_TRANSIENT_FAILURES] = enabled
+        }
+    }
+
+    suspend fun setPlayerUseVlcEngine(enabled: Boolean) {
+        context.dataStore.edit { preferences ->
+            preferences[PreferencesKeys.PLAYER_USE_VLC_ENGINE] = enabled
         }
     }
 
