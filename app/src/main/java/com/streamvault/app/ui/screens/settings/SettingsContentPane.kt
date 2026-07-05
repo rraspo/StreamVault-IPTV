@@ -2,13 +2,19 @@ package com.streamvault.app.ui.screens.settings
 
 import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.streamvault.app.ui.components.dialogs.PlaybackEngineSwitchDialog
 import com.streamvault.domain.model.Provider
 
 @Composable
@@ -39,8 +45,12 @@ internal fun SettingsContentPane(
     onOpenUri: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Desired engine value awaiting confirmation. Non-null while the restart dialog is up.
+    var pendingEngineSwitch by remember { mutableStateOf<Boolean?>(null) }
+
+    Box(modifier = modifier.fillMaxHeight()) {
     LazyColumn(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxHeight()
             .imePadding(),
         contentPadding = PaddingValues(start = 20.dp, top = 76.dp, end = 20.dp, bottom = 32.dp),
@@ -106,7 +116,8 @@ internal fun SettingsContentPane(
                 onShowSubtitleBackgroundDialogChange = { dialogState.showSubtitleBackgroundDialog = it },
                 onShowLiveTranslationEndpointDialogChange = { dialogState.showLiveTranslationEndpointDialog = it },
                 onShowWifiQualityDialogChange = { dialogState.showWifiQualityDialog = it },
-                onShowEthernetQualityDialogChange = { dialogState.showEthernetQualityDialog = it }
+                onShowEthernetQualityDialogChange = { dialogState.showEthernetQualityDialog = it },
+                onRequestEngineSwitch = { pendingEngineSwitch = it }
             )
         } else if (dialogState.selectedCategory == 2) {
     settingsBrowsingSection(
@@ -199,5 +210,17 @@ internal fun SettingsContentPane(
                 onDeleteCrashReport = onDeleteCrashReport
             )
         }
+    }
+
+    pendingEngineSwitch?.let { desiredVlc ->
+        PlaybackEngineSwitchDialog(
+            switchingToVlc = desiredVlc,
+            onDismissRequest = { pendingEngineSwitch = null },
+            onConfirm = {
+                pendingEngineSwitch = null
+                viewModel.setPlayerUseVlcEngineAndRestart(desiredVlc)
+            }
+        )
+    }
     }
 }

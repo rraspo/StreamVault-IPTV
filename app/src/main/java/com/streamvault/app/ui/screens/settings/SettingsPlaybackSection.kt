@@ -80,7 +80,8 @@ internal fun LazyListScope.settingsPlaybackSection(
     onShowSubtitleBackgroundDialogChange: (Boolean) -> Unit,
     onShowLiveTranslationEndpointDialogChange: (Boolean) -> Unit,
     onShowWifiQualityDialogChange: (Boolean) -> Unit,
-    onShowEthernetQualityDialogChange: (Boolean) -> Unit
+    onShowEthernetQualityDialogChange: (Boolean) -> Unit,
+    onRequestEngineSwitch: (Boolean) -> Unit
 ) {
     item {
         val liveStreamFormatMode by viewModel.playerLiveStreamFormatMode.collectAsStateWithLifecycle()
@@ -180,7 +181,7 @@ internal fun LazyListScope.settingsPlaybackSection(
         }
         HorizontalDivider(color = Color.White.copy(alpha = 0.07f), modifier = Modifier.padding(vertical = 4.dp))
         TvClickableSurface(
-            onClick = { viewModel.setPlayerUseVlcEngine(!uiState.playerUseVlcEngine) },
+            onClick = { onRequestEngineSwitch(!uiState.playerUseVlcEngine) },
             shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(8.dp)),
             colors = ClickableSurfaceDefaults.colors(
                 containerColor = Color.Transparent,
@@ -200,7 +201,7 @@ internal fun LazyListScope.settingsPlaybackSection(
                 }
                 Switch(
                     checked = uiState.playerUseVlcEngine,
-                    onCheckedChange = { viewModel.setPlayerUseVlcEngine(it) }
+                    onCheckedChange = { onRequestEngineSwitch(it) }
                 )
             }
         }

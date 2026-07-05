@@ -655,6 +655,12 @@
     <string name="settings_update_available_message">Upstream StreamVault %1$s released — time to rebase the fork.</string>
     <string name="settings_update_fork_rebase_notice" translatable="false">This build is the libVLC fork and never installs upstream APKs. Update by rebasing the fork on upstream and rebuilding (see CLAUDE.md in rraspo/StreamVault-IPTV).</string>
     <string name="settings_update_current_message">You already have the latest StreamVault release.</string>
+    <string name="settings_engine_name_vlc" translatable="false">VLC</string>
+    <string name="settings_engine_name_exoplayer" translatable="false">ExoPlayer</string>
+    <string name="settings_engine_switch_title">Switch playback engine?</string>
+    <string name="settings_engine_switch_body">Switching to %1$s restarts StreamVault to apply the change.</string>
+    <string name="settings_engine_switch_cancel">Cancel</string>
+    <string name="settings_engine_switch_confirm">Restart</string>
     <string name="settings_syncing">Syncing data, please wait...</string>
     <string name="settings_syncing_title">Syncing data...</string>
     <string name="settings_syncing_subtitle">Please wait while your playlist is imported.</string>

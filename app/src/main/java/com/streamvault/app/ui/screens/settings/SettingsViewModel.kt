@@ -745,6 +745,17 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Persist the engine choice and restart the app so the new engine is actually used.
+     * The engine is resolved once at startup, so a live switch needs a process restart.
+     */
+    fun setPlayerUseVlcEngineAndRestart(enabled: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setPlayerUseVlcEngine(enabled)
+            com.streamvault.app.util.AppRestarter.restart(appContext)
+        }
+    }
+
     fun setPlayerTimeshiftEnabled(enabled: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setPlayerTimeshiftEnabled(enabled)
