@@ -3,7 +3,10 @@ package com.streamvault.player.vlc
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import android.view.SurfaceView
+import android.view.TextureView
 import android.view.View
+import android.widget.FrameLayout
 import androidx.media3.common.text.Cue
 import com.streamvault.domain.model.AudioOutputPreference
 import com.streamvault.domain.model.DecoderMode
@@ -37,12 +40,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.withTimeoutOrNull
 import org.videolan.libvlc.LibVLC
 import org.videolan.libvlc.Media
 import org.videolan.libvlc.MediaPlayer
 import org.videolan.libvlc.interfaces.IMedia
-import org.videolan.libvlc.util.VLCVideoLayout
+import org.videolan.libvlc.interfaces.IVLCVout
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.WeakHashMap
@@ -67,7 +71,12 @@ class VlcPlayerEngine(
         private const val TAG = "VlcPlayerEngine"
         private const val NETWORK_CACHING_MS = 1500
         private const val VOLUME_MAX = 100
+        private const val RESOLVE_TIMEOUT_MS = 3000L
+        private const val RESOLVE_CACHE_TTL_MS = 30L * 60L * 1000L
     }
+
+    /** .local hostname -> (IPv4, elapsedRealtime of resolution). */
+    private val resolvedHostCache = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
 
     // Parity with Media3PlayerEngine's auxiliary-engine knobs so NetworkModule can
     // configure either engine identically. VLC has no MediaSession/audio-focus
@@ -89,8 +98,30 @@ class VlcPlayerEngine(
     private var prepareStartMs = 0L
     private var firstFrameTtffMs = 0L
 
-    private var boundLayout: VLCVideoLayout? = null
-    private val layoutUsesTextureView = WeakHashMap<View, Boolean>()
+    // Render-view state. libVLC's VLCVideoLayout/VideoHelper convenience layer is NOT
+    // used: its geometry updater silently early-returns in several situations (surfaces
+    // not yet attached natively at first layout, no further layout changes on a TV) and
+    // the native vout is then left without a window size - it falls back to the video's
+    // own dimensions and draws into a wrong subrect of the surface. Instead the engine
+    // owns a plain FrameLayout + SurfaceView/TextureView and drives IVLCVout directly:
+    // window size from layout bounds, aspect via setAspectRatio()/setScale().
+    private var boundLayout: FrameLayout? = null
+    private val renderSurfaces = WeakHashMap<View, View>()
+    private var currentResizeMode = PlayerSurfaceResizeMode.FIT
+    private var appliedResizeKey: String? = null
+    private var voutVideoWidth = 0
+    private var voutVideoHeight = 0
+    private var voutVideoSarNum = 0
+    private var voutVideoSarDen = 0
+
+    private val videoLayoutListener = IVLCVout.OnNewVideoLayoutListener {
+            _, width, height, visibleWidth, visibleHeight, sarNum, sarDen ->
+        voutVideoWidth = if (visibleWidth > 0) visibleWidth else width
+        voutVideoHeight = if (visibleHeight > 0) visibleHeight else height
+        voutVideoSarNum = sarNum
+        voutVideoSarDen = sarDen
+        mediaPlayer?.let { applyResizeMode(it, currentResizeMode, force = true) }
+    }
 
     private val _playbackState = MutableStateFlow(PlaybackState.IDLE)
     override val playbackState: StateFlow<PlaybackState> = _playbackState.asStateFlow()
@@ -230,6 +261,10 @@ class VlcPlayerEngine(
                 _duration.value = event.lengthChanged
             }
             MediaPlayer.Event.Vout -> {
+                // A (re)created vout starts from AWindow's stored window size; reassert
+                // the live layout bounds in case none was ever pushed (setWindowSize
+                // no-ops natively when the value is unchanged).
+                pushWindowGeometry()
                 refreshVideoFormat()
                 refreshStats()
             }
@@ -353,25 +388,45 @@ class VlcPlayerEngine(
             // mDNS names also resolve to and never falls back to IPv4, so resolve
             // .local hosts with the Android resolver (which prefers the working
             // route) and hand VLC a numeric-IPv4 URL instead.
-            val playbackUrl = withContext(Dispatchers.IO) { resolveLocalHostname(streamInfo.url) }
+            val playbackUrl = resolveLocalHostname(streamInfo.url)
             if (lastStreamInfo === streamInfo && !isDisposed) {
                 startPlayback(player, streamInfo, playbackUrl)
             }
         }
     }
 
-    private fun resolveLocalHostname(url: String): String {
+    private suspend fun resolveLocalHostname(url: String): String {
         val uri = android.net.Uri.parse(url)
         val host = uri.host ?: return url
         if (!host.endsWith(".local", ignoreCase = true)) return url
-        return runCatching {
-            val ipv4 = InetAddress.getAllByName(host).filterIsInstance<Inet4Address>().firstOrNull()
-                ?: return url
-            url.replaceFirst(host, ipv4.hostAddress ?: return url)
-        }.getOrElse {
-            Log.w(TAG, "mDNS resolution failed for $host, passing hostname to VLC", it)
-            url
+        val now = SystemClock.elapsedRealtime()
+        val cached = resolvedHostCache[host]
+        if (cached != null && now - cached.second < RESOLVE_CACHE_TTL_MS) {
+            return url.replaceFirst(host, cached.first)
         }
+        // Android resolves .local via unicast DNS to the router; a cold or flaky lookup
+        // can block for ~30s, which the user sees as endless buffering on a zap. Bound
+        // it and fall back to the last known address (LAN IPs are stable).
+        val ipv4 = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) {
+            runInterruptible(Dispatchers.IO) {
+                runCatching {
+                    InetAddress.getAllByName(host)
+                        .filterIsInstance<Inet4Address>()
+                        .firstOrNull()
+                        ?.hostAddress
+                }.getOrNull()
+            }
+        }
+        if (ipv4 != null) {
+            resolvedHostCache[host] = ipv4 to now
+            return url.replaceFirst(host, ipv4)
+        }
+        if (cached != null) {
+            Log.w(TAG, "mDNS re-resolution slow for $host, reusing ${cached.first}")
+            return url.replaceFirst(host, cached.first)
+        }
+        Log.w(TAG, "mDNS resolution failed for $host, passing hostname to VLC")
+        return url
     }
 
     private fun startPlayback(player: MediaPlayer, streamInfo: StreamInfo, playbackUrl: String) {
@@ -508,62 +563,166 @@ class VlcPlayerEngine(
         resizeMode: PlayerSurfaceResizeMode,
         surfaceType: PlayerRenderSurfaceType
     ): View {
-        val layout = VLCVideoLayout(context)
+        val container = FrameLayout(context)
         val useTexture = when (surfaceType) {
             PlayerRenderSurfaceType.TEXTURE_VIEW -> true
             PlayerRenderSurfaceType.SURFACE_VIEW -> false
             PlayerRenderSurfaceType.AUTO -> requestedSurfaceMode == PlayerSurfaceMode.TEXTURE_VIEW
         }
-        layoutUsesTextureView[layout] = useTexture
-        return layout
+        val videoView: View = if (useTexture) TextureView(context) else SurfaceView(context)
+        container.addView(
+            videoView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        renderSurfaces[container] = videoView
+        container.addOnLayoutChangeListener { view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            val widthChanged = right - left != oldRight - oldLeft
+            val heightChanged = bottom - top != oldBottom - oldTop
+            if ((widthChanged || heightChanged) && boundLayout === view) {
+                // Pure native size hint plus aspect params - no view mutation, so this is
+                // safe to run inside the layout pass.
+                pushWindowGeometry()
+            }
+        }
+        return container
     }
 
     override fun bindRenderView(renderView: View, resizeMode: PlayerSurfaceResizeMode) {
         if (ensureNotDisposed("bindRenderView")) return
-        val layout = renderView as? VLCVideoLayout ?: run {
-            Log.w(TAG, "bindRenderView: not a VLCVideoLayout, ignoring")
+        val layout = renderView as? FrameLayout ?: run {
+            Log.w(TAG, "bindRenderView: unknown render view type, ignoring")
             return
         }
         val player = getOrCreatePlayer()
         if (boundLayout !== layout) {
-            runCatching { player.detachViews() }
+            runCatching { player.getVLCVout().detachViews() }
             boundLayout = layout
             attachViewsTo(player, layout)
         }
+        currentResizeMode = resizeMode
         applyResizeMode(player, resizeMode)
     }
 
-    private fun attachViewsTo(player: MediaPlayer, layout: VLCVideoLayout) {
-        val useTexture = layoutUsesTextureView[layout] ?: false
+    private fun attachViewsTo(player: MediaPlayer, layout: FrameLayout) {
+        val videoView = renderSurfaces[layout] ?: run {
+            Log.w(TAG, "attachViewsTo: no video view for layout, ignoring")
+            return
+        }
         runCatching {
-            player.attachViews(layout, null, false, useTexture)
-            _renderSurfaceType.value = if (useTexture) {
+            val vout = player.getVLCVout()
+            when (videoView) {
+                is SurfaceView -> vout.setVideoView(videoView)
+                is TextureView -> vout.setVideoView(videoView)
+                else -> return
+            }
+            vout.attachViews(videoLayoutListener)
+            player.setVideoTrackEnabled(true)
+            _renderSurfaceType.value = if (videoView is TextureView) {
                 PlayerRenderSurfaceType.TEXTURE_VIEW
             } else {
                 PlayerRenderSurfaceType.SURFACE_VIEW
             }
+            // AWindow stores the window size and replays it on native registration, so
+            // pushing it here is correct whether or not playback has started. If the
+            // layout has no size yet, the layout-change listener pushes it on first layout.
+            if (layout.width > 0 && layout.height > 0) {
+                vout.setWindowSize(layout.width, layout.height)
+            }
         }.onFailure { Log.e(TAG, "attachViews failed", it) }
     }
 
-    private fun applyResizeMode(player: MediaPlayer, resizeMode: PlayerSurfaceResizeMode) {
-        val scale = when (resizeMode) {
-            PlayerSurfaceResizeMode.FIT -> MediaPlayer.ScaleType.SURFACE_BEST_FIT
-            PlayerSurfaceResizeMode.FILL -> MediaPlayer.ScaleType.SURFACE_FILL
-            PlayerSurfaceResizeMode.ZOOM -> MediaPlayer.ScaleType.SURFACE_FIT_SCREEN
+    private fun pushWindowGeometry() {
+        val layout = boundLayout ?: return
+        val player = mediaPlayer ?: return
+        if (layout.width <= 0 || layout.height <= 0) return
+        runCatching { player.getVLCVout().setWindowSize(layout.width, layout.height) }
+        applyResizeMode(player, currentResizeMode, force = true)
+    }
+
+    private fun applyResizeMode(
+        player: MediaPlayer,
+        resizeMode: PlayerSurfaceResizeMode,
+        force: Boolean = false
+    ) {
+        val layoutWidth = boundLayout?.width ?: 0
+        val layoutHeight = boundLayout?.height ?: 0
+        val key = "$resizeMode:${layoutWidth}x$layoutHeight:" +
+            "${voutVideoWidth}x$voutVideoHeight:$voutVideoSarNum/$voutVideoSarDen"
+        if (!force && key == appliedResizeKey) return
+        appliedResizeKey = key
+        runCatching {
+            when (resizeMode) {
+                PlayerSurfaceResizeMode.FIT -> {
+                    player.setAspectRatio(null)
+                    player.setScale(0f)
+                }
+                PlayerSurfaceResizeMode.FILL -> {
+                    if (layoutWidth > 0 && layoutHeight > 0) {
+                        player.setScale(0f)
+                        player.setAspectRatio("$layoutWidth:$layoutHeight")
+                    } else {
+                        player.setAspectRatio(null)
+                        player.setScale(0f)
+                    }
+                }
+                PlayerSurfaceResizeMode.ZOOM -> {
+                    val (videoWidth, videoHeight) = currentVideoDimensions(player)
+                    if (layoutWidth > 0 && layoutHeight > 0 && videoWidth > 0 && videoHeight > 0) {
+                        val displayAspect = layoutWidth.toFloat() / layoutHeight
+                        val videoAspect = videoWidth.toFloat() / videoHeight
+                        val scale = if (displayAspect >= videoAspect) {
+                            layoutWidth.toFloat() / videoWidth
+                        } else {
+                            layoutHeight.toFloat() / videoHeight
+                        }
+                        player.setAspectRatio(null)
+                        player.setScale(scale)
+                    } else {
+                        // Video dimensions not known yet; the vout layout callback
+                        // re-applies the mode once they arrive.
+                        player.setAspectRatio(null)
+                        player.setScale(0f)
+                    }
+                }
+            }
+        }.onFailure { Log.w(TAG, "applyResizeMode failed", it) }
+    }
+
+    /** Display width/height of the video, corrected for sample aspect ratio. */
+    private fun currentVideoDimensions(player: MediaPlayer): Pair<Int, Int> {
+        var width = voutVideoWidth
+        var height = voutVideoHeight
+        var sarNum = voutVideoSarNum
+        var sarDen = voutVideoSarDen
+        if (width <= 0 || height <= 0) {
+            val track = runCatching { player.currentVideoTrack }.getOrNull()
+            if (track != null) {
+                width = track.width
+                height = track.height
+                sarNum = track.sarNum
+                sarDen = track.sarDen
+            }
         }
-        runCatching { player.videoScale = scale }
+        if (sarNum > 0 && sarDen > 0 && sarNum != sarDen) {
+            width = width * sarNum / sarDen
+        }
+        return width to height
     }
 
     override fun clearRenderBinding() {
-        runCatching { mediaPlayer?.detachViews() }
+        runCatching { mediaPlayer?.getVLCVout()?.detachViews() }
         boundLayout = null
+        appliedResizeKey = null
     }
 
     override fun releaseRenderView(renderView: View) {
         if (boundLayout === renderView) {
             clearRenderBinding()
         }
-        layoutUsesTextureView.remove(renderView)
+        renderSurfaces.remove(renderView)
     }
 
     // --- Modes recorded for future phases (no live-path effect) ------------------------
@@ -649,10 +808,15 @@ class VlcPlayerEngine(
         runCatching {
             player.setEventListener(null)
             player.stop()
-            player.detachViews()
+            player.getVLCVout().detachViews()
             player.release()
         }.onFailure { Log.w(TAG, "player teardown failed", it) }
         boundLayout = null
+        appliedResizeKey = null
+        voutVideoWidth = 0
+        voutVideoHeight = 0
+        voutVideoSarNum = 0
+        voutVideoSarDen = 0
     }
 
     private fun resetFlows() {
